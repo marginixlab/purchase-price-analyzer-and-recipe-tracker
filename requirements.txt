@@ -1,1 +1,7 @@
-cd C:\Users\StAccounting19\Downloads\price_analyzer.\.venv\Scripts\python.exe -m uvicorn main:app --reload
+fastapi
+uvicorn
+pandas
+jinja2
+python-multipart
+openpyxl
+xlrd

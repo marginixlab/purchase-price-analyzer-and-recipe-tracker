@@ -32,6 +32,7 @@ LATEST_RESULTS_PATH = BASE_DIR / "latest_results.csv"
 CODES_PATH = BASE_DIR / "codes.json"
 RECIPES_PATH = BASE_DIR / "recipes.json"
 QUOTE_COMPARISONS_PATH = BASE_DIR / "quote_comparisons.json"
+GUIDE_KNOWLEDGE_PATH = BASE_DIR / "guide_knowledge.json"
 OPTIONAL_UNIT_COLUMNS = ["Purchase Unit", "Unit"]
 OPTIONAL_QUANTITY_COLUMNS = ["Quantity", "Qty"]
 OPTIONAL_UNIT_PRICE_COLUMNS = ["Unit Price", "Price"]
@@ -105,22 +106,23 @@ REQUIRED_FIELD_SYNONYMS = {
     ]
 }
 QUOTE_COMPARE_REQUIRED_FIELDS = [
-    "Supplier Name",
     "Product Name",
+    "Supplier",
     "Unit",
     "Quantity",
-    "Unit Price"
+    "Unit Price",
+    "Date"
 ]
 QUOTE_COMPARE_OPTIONAL_FIELDS = [
     "Total Price",
     "Currency",
     "Delivery Time",
-    "Payment Term",
+    "Payment Terms",
     "Valid Until",
     "Notes"
 ]
 QUOTE_COMPARE_FIELD_SYNONYMS = {
-    "Supplier Name": [
+    "Supplier": [
         "supplier",
         "supplier name",
         "vendor",
@@ -175,7 +177,7 @@ QUOTE_COMPARE_FIELD_SYNONYMS = {
         "delivery days",
         "lead time"
     ],
-    "Payment Term": [
+    "Payment Terms": [
         "payment",
         "payment term",
         "terms",
@@ -194,6 +196,13 @@ QUOTE_COMPARE_FIELD_SYNONYMS = {
         "comments",
         "remark",
         "remarks"
+    ],
+    "Date": [
+        "date",
+        "quote date",
+        "offer date",
+        "pricing date",
+        "submitted date"
     ]
 }
 RECIPE_PRICING_MODES = {
@@ -369,7 +378,7 @@ def build_sample_dataframe() -> pd.DataFrame:
 
 def build_quote_compare_sample_dataframe() -> pd.DataFrame:
     return pd.DataFrame({
-        "Supplier Name": [
+        "Supplier": [
             "Atlas Packaging",
             "Blue Harbor Supply",
             "Northline Goods",
@@ -457,7 +466,7 @@ def build_quote_compare_sample_dataframe() -> pd.DataFrame:
             "16 days",
             "10 days"
         ],
-        "Payment Term": [
+        "Payment Terms": [
             "Net 30",
             "Net 45",
             "Net 21",
@@ -654,13 +663,60 @@ def apply_column_mapping(
     })
 
 
-def read_uploaded_dataframe(contents: bytes, filename: str) -> pd.DataFrame:
+def read_uploaded_dataframe(file: UploadFile) -> pd.DataFrame:
+    filename = file.filename or ""
     extension = Path(filename).suffix.lower()
-    if extension == ".csv":
-        return pd.read_csv(io.BytesIO(contents))
-    if extension in {".xlsx", ".xls"}:
-        return pd.read_excel(io.BytesIO(contents))
-    raise ValueError("Unsupported file type. Please upload a CSV or Excel file (.csv, .xlsx, or .xls).")
+
+    if not filename:
+        raise ValueError("No file was uploaded.")
+
+    try:
+        file.file.seek(0)
+        first_byte = file.file.read(1)
+        file.file.seek(0)
+    except Exception as exc:
+        logger.exception("Failed to reset uploaded file pointer: %s", filename)
+        raise ValueError("The uploaded file could not be prepared for reading.") from exc
+
+    if not first_byte:
+        raise ValueError("The uploaded file is empty.")
+
+    try:
+        if extension == ".csv":
+            dataframe = pd.read_csv(file.file)
+        elif extension == ".xlsx":
+            dataframe = pd.read_excel(file.file, engine="openpyxl")
+        elif extension == ".xls":
+            dataframe = pd.read_excel(file.file, engine="xlrd")
+        else:
+            raise ValueError("Unsupported file type. Please upload a CSV or Excel file (.csv, .xlsx, or .xls).")
+    except ImportError as exc:
+        if extension == ".xlsx":
+            raise ValueError("Excel support for .xlsx files is not installed. Add openpyxl to enable Excel uploads.") from exc
+        if extension == ".xls":
+            raise ValueError("Legacy Excel support for .xls files is not installed. Add xlrd to enable .xls uploads.") from exc
+        raise
+    except ValueError:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to parse uploaded file: %s", filename)
+        if extension == ".xlsx":
+            raise ValueError("The .xlsx file could not be read. Please upload a valid Excel workbook.") from exc
+        if extension == ".xls":
+            raise ValueError("The .xls file could not be read. Please upload a valid legacy Excel workbook.") from exc
+        if extension == ".csv":
+            raise ValueError("The .csv file could not be read. Please upload a valid CSV file.") from exc
+        raise
+    finally:
+        try:
+            file.file.seek(0)
+        except Exception:
+            logger.debug("Could not reset uploaded file pointer after parsing: %s", filename)
+
+    if dataframe is None or dataframe.columns.empty:
+        raise ValueError("The uploaded file does not contain any readable columns.")
+
+    return dataframe
 
 
 def build_mapping_review_payload(
@@ -888,6 +944,10 @@ class AskDataPayload(BaseModel):
     rows: list[dict[str, Any]] | None = None
 
 
+class GuideAskPayload(BaseModel):
+    question: str
+
+
 class UploadMappingPayload(BaseModel):
     mappings: dict[str, str | None]
 
@@ -917,6 +977,7 @@ class QuoteBidPayload(BaseModel):
     quantity: float
     unit_price: float | None = None
     total_price: float | None = None
+    quote_date: str | None = None
     currency: str
     delivery_time: str
     payment_term: str
@@ -930,6 +991,8 @@ class QuoteComparisonPayload(BaseModel):
     sourcing_need: str | None = None
     bids: list[QuoteBidPayload]
     weighting: dict[str, float] | None = None
+    source_type: str | None = None
+    mode: str | None = None
 
 
 class QuoteComparisonDeletePayload(BaseModel):
@@ -956,6 +1019,18 @@ def coalesce_number(primary: Any, fallback: Any = 0) -> float:
     if pd.notna(fallback):
         return float(fallback)
     return 0.0
+
+
+def normalize_request_value(value: Any) -> Any:
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+        if value.isdigit():
+            return int(value)
+    return value
 
 
 def ensure_recipes_file() -> None:
@@ -1006,7 +1081,349 @@ def save_quote_comparisons_store(store: dict[str, Any]) -> None:
     QUOTE_COMPARISONS_PATH.write_text(json.dumps(store, indent=2), encoding="utf-8")
 
 
+GUIDE_ASSISTANT_FALLBACK = "I couldn't find that feature in this tool yet."
+GUIDE_ASSISTANT_STOPWORDS = {
+    "a", "an", "and", "are", "can", "do", "find", "for", "help", "how", "i", "in",
+    "is", "me", "my", "of", "the", "this", "to", "use", "with", "you", "your"
+}
+GUIDE_ASSISTANT_SYNONYMS = {
+    "analyse": "analyze",
+    "analysing": "analyze",
+    "analysis": "analyze",
+    "comparing": "compare",
+    "comparison": "compare",
+    "differences": "compare",
+    "difference": "compare",
+    "inspect": "review",
+    "inspecting": "review",
+    "vendors": "supplier",
+    "vendor": "supplier",
+    "suppliers": "supplier",
+    "prices": "price",
+    "pricing": "price",
+    "cost": "price",
+    "costs": "price",
+    "overpaying": "overpay",
+    "overspend": "overpay",
+    "overspending": "overpay",
+    "expensive": "overpay",
+    "opportunity": "savings",
+    "opportunities": "savings",
+    "margin": "savings",
+    "add": "upload",
+    "import": "upload",
+    "importing": "upload",
+    "adding": "upload",
+    "recipes": "recipe",
+    "ingredients": "ingredient",
+    "menu": "recipe",
+    "food": "recipe"
+}
+GUIDE_ACTION_CATALOG = {
+    "go_analyzer": {"label": "Open Analyzer", "href": "/"},
+    "go_upload": {"label": "Go to Upload & Analyze", "href": "/#uploadPanel"},
+    "go_top_insights": {"label": "Go to Top Insights", "href": "/#topInsightsPanel"},
+    "go_workspace": {"label": "Open Workspace Table", "href": "/#workspacePanel"},
+    "go_ask_data": {"label": "Open Ask Your Data", "href": "/#askDataPanel"},
+    "go_quote_compare": {"label": "Open Quote Compare", "href": "/quote-compare"},
+    "go_recipes": {"label": "Open Recipes", "href": "/recipes"}
+}
+
+
+def load_guide_knowledge() -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(GUIDE_KNOWLEDGE_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        logger.warning("Guide knowledge file not found: %s", GUIDE_KNOWLEDGE_PATH)
+        return []
+    except json.JSONDecodeError:
+        logger.exception("Guide knowledge file is invalid: %s", GUIDE_KNOWLEDGE_PATH)
+        return []
+
+    entries = payload.get("entries", [])
+    return entries if isinstance(entries, list) else []
+
+
+def normalize_guide_text(value: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9]+", " ", str(value or "").strip().lower())
+    normalized_tokens = []
+    for token in cleaned.split():
+        normalized_tokens.append(GUIDE_ASSISTANT_SYNONYMS.get(token, token))
+    return " ".join(normalized_tokens)
+
+
+def tokenize_guide_text(value: str) -> set[str]:
+    return {
+        token for token in normalize_guide_text(value).split()
+        if len(token) > 2 and token not in GUIDE_ASSISTANT_STOPWORDS
+    }
+
+
+def find_guide_answer(question: str) -> dict[str, Any]:
+    normalized_question = normalize_guide_text(question)
+    question_tokens = tokenize_guide_text(question)
+    best_entry: dict[str, Any] | None = None
+    best_score = 0
+
+    for entry in load_guide_knowledge():
+        title = normalize_guide_text(entry.get("title", ""))
+        intents = [normalize_guide_text(intent) for intent in entry.get("intents", []) if intent]
+        keywords = [normalize_guide_text(keyword) for keyword in entry.get("keywords", []) if keyword]
+        synonyms = [normalize_guide_text(keyword) for keyword in entry.get("synonyms", []) if keyword]
+        examples = [normalize_guide_text(example) for example in entry.get("example_questions", []) if example]
+        intent_groups = [set(tokenize_guide_text(value)) for value in entry.get("intent_groups", []) if value]
+        weighted_phrase_groups = [
+            ("title", [value for value in [title] if value]),
+            ("intent", intents),
+            ("example", examples),
+            ("synonym", synonyms)
+        ]
+        candidate_keywords = [*keywords, *synonyms]
+        score = 0
+        phrase_match = False
+        entry_token_pool = set()
+
+        for group_name, values in weighted_phrase_groups:
+            for candidate in values:
+                candidate_tokens = set(candidate.split())
+                entry_token_pool.update(candidate_tokens)
+                overlap = len(candidate_tokens & question_tokens)
+                exact_weight = 13 if group_name == "intent" else 11
+                contains_weight = 10 if group_name in {"intent", "example"} else 8
+                subset_weight = 8 if group_name == "intent" else 6
+                overlap_weight = 5 if group_name in {"intent", "example"} else 3
+
+                if normalized_question == candidate:
+                    score += exact_weight
+                    phrase_match = True
+                elif candidate in normalized_question:
+                    score += contains_weight
+                    phrase_match = True
+                elif candidate_tokens and candidate_tokens.issubset(question_tokens):
+                    score += subset_weight
+                    phrase_match = True
+                elif overlap >= 2:
+                    score += overlap_weight
+                    phrase_match = True
+
+        for intent_group in intent_groups:
+            entry_token_pool.update(intent_group)
+            if intent_group and len(intent_group & question_tokens) >= min(len(intent_group), 2):
+                score += 7
+                phrase_match = True
+
+        keyword_hits = 0
+        for keyword in candidate_keywords:
+            if not keyword:
+                continue
+            keyword_tokens = set(keyword.split())
+            entry_token_pool.update(keyword_tokens)
+            if keyword in normalized_question:
+                keyword_hits += 1
+            elif keyword_tokens and keyword_tokens.issubset(question_tokens):
+                keyword_hits += 1
+            elif len(keyword_tokens & question_tokens) >= 1:
+                keyword_hits += 1
+
+        score += keyword_hits * 2
+        if phrase_match and keyword_hits:
+            score += 2
+
+        if question_tokens and entry_token_pool:
+            token_overlap = len(question_tokens & entry_token_pool)
+            if token_overlap:
+                score += token_overlap
+
+        if score > best_score:
+            best_score = score
+            best_entry = entry
+
+    if not best_entry or best_score < 6:
+        return {
+            "found": False,
+            "id": None,
+            "title": "Guide Assistant",
+            "answer": GUIDE_ASSISTANT_FALLBACK,
+            "related_section": None,
+            "next_step": None,
+            "actions": [],
+            "workflow_steps": []
+        }
+
+    return {
+        "found": True,
+        "id": best_entry.get("id"),
+        "title": str(best_entry.get("title") or "Guide Answer"),
+        "answer": str(best_entry.get("answer") or GUIDE_ASSISTANT_FALLBACK),
+        "related_section": best_entry.get("related_section"),
+        "next_step": best_entry.get("next_step"),
+        "actions": list(best_entry.get("actions") or []),
+        "workflow_steps": [str(step) for step in best_entry.get("workflow_steps", []) if step]
+    }
+
+
+def load_latest_results_frame() -> pd.DataFrame | None:
+    if not LATEST_RESULTS_PATH.exists():
+        return None
+    try:
+        frame = pd.read_csv(LATEST_RESULTS_PATH)
+    except Exception:
+        logger.exception("Failed to load latest results for Guide context")
+        return None
+    return frame if not frame.empty else None
+
+
+def build_guide_analysis_snapshot() -> dict[str, Any] | None:
+    frame = load_latest_results_frame()
+    if frame is None:
+        return None
+
+    overpay_rows = int((frame["Status"] == "Overpay").sum()) if "Status" in frame else 0
+    total_rows = int(len(frame))
+    total_savings = round(float(frame["Savings Opportunity"].fillna(0).sum()), 2) if "Savings Opportunity" in frame else 0.0
+
+    compare_ready_products = 0
+    if {"Product Display", "Supplier"}.issubset(frame.columns):
+        compare_ready_products = int((frame.groupby("Product Display")["Supplier"].nunique() > 1).sum())
+
+    top_supplier = None
+    if {"Supplier", "Savings Opportunity"}.issubset(frame.columns):
+        supplier_savings = (
+            frame.groupby("Supplier", as_index=False)["Savings Opportunity"]
+            .sum()
+            .sort_values("Savings Opportunity", ascending=False)
+        )
+        if not supplier_savings.empty:
+            top_supplier = str(supplier_savings.iloc[0]["Supplier"])
+
+    highest_risk_product = None
+    if {"Product Display", "Savings Opportunity"}.issubset(frame.columns):
+        product_savings = (
+            frame.groupby("Product Display", as_index=False)["Savings Opportunity"]
+            .sum()
+            .sort_values("Savings Opportunity", ascending=False)
+        )
+        if not product_savings.empty:
+            highest_risk_product = str(product_savings.iloc[0]["Product Display"])
+
+    return {
+        "total_rows": total_rows,
+        "overpay_rows": overpay_rows,
+        "total_savings": total_savings,
+        "compare_ready_products": compare_ready_products,
+        "top_supplier": top_supplier,
+        "highest_risk_product": highest_risk_product
+    }
+
+
+def resolve_guide_actions(action_ids: list[str] | None) -> list[dict[str, str]]:
+    resolved: list[dict[str, str]] = []
+    for action_id in action_ids or []:
+        action = GUIDE_ACTION_CATALOG.get(str(action_id))
+        if not action:
+            continue
+        if any(existing["href"] == action["href"] for existing in resolved):
+            continue
+        resolved.append({"label": action["label"], "href": action["href"]})
+    return resolved
+
+
+def append_guide_action(actions: list[dict[str, str]], action_id: str) -> list[dict[str, str]]:
+    action = GUIDE_ACTION_CATALOG.get(action_id)
+    if not action:
+        return actions
+    if any(existing["href"] == action["href"] for existing in actions):
+        return actions
+    return [*actions, {"label": action["label"], "href": action["href"]}]
+
+
+def build_beginner_guide_steps(snapshot: dict[str, Any] | None) -> list[str]:
+    if not snapshot:
+        return [
+            "Step 1: Upload your purchasing file and confirm the mapped columns before analysis.",
+            "Step 2: Review Top Insights to spot the biggest margin leaks first.",
+            "Step 3: Open the Workspace Table to compare suppliers on repeated price differences.",
+            "Step 4: Filter high-volume or high-savings items so you can prioritize action.",
+            "Step 5: Use Ask Your Data for an executive-ready summary once the evidence is clear."
+        ]
+
+    step_two = "Step 2: Review Top Insights for the biggest margin leaks in the current analysis."
+    if snapshot["overpay_rows"] > 0:
+        step_two = f"Step 2: Review Top Insights first because the current analysis already shows {snapshot['overpay_rows']} overpay rows."
+
+    step_three = "Step 3: Open the Workspace Table to compare suppliers where price gaps repeat."
+    if snapshot["compare_ready_products"] > 0:
+        step_three = f"Step 3: Compare suppliers in the Workspace Table because {snapshot['compare_ready_products']} product groups already show supplier variation."
+
+    step_four = "Step 4: Filter the highest-volume or highest-savings items so you can prioritize effort."
+    if snapshot["total_savings"] > 0:
+        step_four = f"Step 4: Prioritize the highest-savings items first because the current visible opportunity is about ${snapshot['total_savings']:,.2f}."
+
+    return [
+        "Step 1: Upload your purchasing file and confirm the mapped columns before analysis.",
+        step_two,
+        step_three,
+        step_four,
+        "Step 5: Use Ask Your Data for an executive-ready summary once the evidence is clear."
+    ]
+
+
+def build_guide_response(question: str) -> dict[str, Any]:
+    response = find_guide_answer(question)
+    snapshot = build_guide_analysis_snapshot()
+    actions = resolve_guide_actions(response.get("actions"))
+    workflow_steps = [str(step) for step in response.get("workflow_steps", []) if step]
+    context_note = None
+
+    if response.get("id") == "beginner-flow":
+        workflow_steps = build_beginner_guide_steps(snapshot)
+        for action_id in ["go_upload", "go_top_insights", "go_workspace", "go_ask_data"]:
+            actions = append_guide_action(actions, action_id)
+    elif snapshot and response.get("found"):
+        response_id = response.get("id")
+        if response_id == "compare-suppliers":
+            if snapshot["compare_ready_products"] > 0:
+                context_note = (
+                    f"Current analysis already contains {snapshot['compare_ready_products']} product groups with multiple suppliers, "
+                    "so supplier comparison is immediately available."
+                )
+                actions = append_guide_action(actions, "go_workspace")
+            if snapshot.get("top_supplier"):
+                response["next_step"] = (
+                    f"Start with {snapshot['top_supplier']} in Top Insights, then compare that supplier against alternatives in the Workspace Table."
+                )
+        elif response_id == "review-supplier-pricing":
+            if snapshot.get("top_supplier"):
+                context_note = f"{snapshot['top_supplier']} currently appears as the strongest supplier signal to review first."
+            if snapshot["overpay_rows"] > 0:
+                response["next_step"] = (
+                    "Open Top Insights to see which supplier is contributing to repeated overpay, then inspect that supplier across the Workspace Table."
+                )
+        elif response_id == "find-overpay-rows" and snapshot["overpay_rows"] > 0:
+            context_note = f"The current analysis shows {snapshot['overpay_rows']} rows already flagged as Overpay."
+            actions = append_guide_action(actions, "go_top_insights")
+            actions = append_guide_action(actions, "go_workspace")
+        elif response_id == "savings-opportunities" and snapshot["total_savings"] > 0:
+            context_note = f"The current visible savings opportunity is about ${snapshot['total_savings']:,.2f}."
+            actions = append_guide_action(actions, "go_top_insights")
+        elif response_id == "use-recipes" and snapshot["total_rows"] > 0:
+            context_note = f"The current analysis already contains {snapshot['total_rows']} rows, so Recipes can use that purchasing data as its cost source."
+            actions = append_guide_action(actions, "go_recipes")
+        elif response_id == "upload-and-mapping" and snapshot["total_rows"] > 0:
+            context_note = f"A saved analysis with {snapshot['total_rows']} rows is already available if you want to review before replacing it."
+            actions = append_guide_action(actions, "go_analyzer")
+
+    return {
+        **response,
+        "actions": actions,
+        "workflow_steps": workflow_steps,
+        "context_note": context_note,
+        "context_available": snapshot is not None
+    }
+
+
 def parse_days_from_text(value: str | None) -> int | None:
+    value = normalize_request_value(value)
     text = str(value or "").strip().lower()
     if not text:
         return None
@@ -1029,7 +1446,7 @@ def normalize_quote_weighting(weighting: dict[str, Any] | None = None) -> dict[s
     normalized = {}
     source = weighting or {}
     for key, default_value in QUOTE_COMPARE_DEFAULT_WEIGHTS.items():
-        raw_value = source.get(key, default_value)
+        raw_value = normalize_request_value(source.get(key, default_value))
         try:
             normalized[key] = max(float(raw_value), 0.0)
         except (TypeError, ValueError):
@@ -1051,6 +1468,7 @@ def normalize_quote_comparison_payload(payload: dict[str, Any]) -> dict[str, Any
         supplier_name = str(bid.get("supplier_name", "")).strip()
         product_name = str(bid.get("product_name", "")).strip()
         unit = str(bid.get("unit", "")).strip()
+        quote_date = str(bid.get("quote_date", bid.get("date", ""))).strip()
         currency = str(bid.get("currency", "")).strip().upper()
         delivery_time = str(bid.get("delivery_time", "")).strip()
         payment_term = str(bid.get("payment_term", "")).strip()
@@ -1058,15 +1476,15 @@ def normalize_quote_comparison_payload(payload: dict[str, Any]) -> dict[str, Any
         notes = str(bid.get("notes", "")).strip()
 
         try:
-            quantity = float(bid.get("quantity", 0) or 0)
+            quantity = float(normalize_request_value(bid.get("quantity", 0)) or 0)
         except (TypeError, ValueError):
             quantity = 0.0
         try:
-            unit_price = float(bid.get("unit_price", 0) or 0)
+            unit_price = float(normalize_request_value(bid.get("unit_price", 0)) or 0)
         except (TypeError, ValueError):
             unit_price = 0.0
         try:
-            total_price = float(bid.get("total_price", 0) or 0)
+            total_price = float(normalize_request_value(bid.get("total_price", 0)) or 0)
         except (TypeError, ValueError):
             total_price = 0.0
 
@@ -1081,6 +1499,7 @@ def normalize_quote_comparison_payload(payload: dict[str, Any]) -> dict[str, Any
             "quantity": quantity,
             "unit_price": round(unit_price, 4),
             "total_price": round(resolved_total, 4),
+            "quote_date": quote_date,
             "currency": currency or "USD",
             "delivery_time": delivery_time,
             "payment_term": payment_term,
@@ -1093,6 +1512,8 @@ def normalize_quote_comparison_payload(payload: dict[str, Any]) -> dict[str, Any
         "name": str(payload.get("name", "")).strip(),
         "sourcing_need": str(payload.get("sourcing_need", "")).strip(),
         "weighting": normalize_quote_weighting(payload.get("weighting")),
+        "source_type": str(payload.get("source_type", "")).strip() or "manual",
+        "mode": str(payload.get("mode", "")).strip() or "compare",
         "bids": normalized_bids
     }
 
@@ -1119,20 +1540,20 @@ def build_quote_bids_from_dataframe(dataframe: pd.DataFrame) -> list[dict[str, A
     optional_fields = set(QUOTE_COMPARE_OPTIONAL_FIELDS)
 
     for _, row in dataframe.iterrows():
-        supplier_name = str(row.get("Supplier Name", "")).strip()
+        supplier_name = str(row.get("Supplier", row.get("Supplier Name", ""))).strip()
         product_name = str(row.get("Product Name", "")).strip()
         unit = str(row.get("Unit", "")).strip()
 
         try:
-            quantity = float(row.get("Quantity", 0) or 0)
+            quantity = float(normalize_request_value(row.get("Quantity", 0)) or 0)
         except (TypeError, ValueError):
             quantity = 0.0
         try:
-            unit_price = float(row.get("Unit Price", 0) or 0)
+            unit_price = float(normalize_request_value(row.get("Unit Price", 0)) or 0)
         except (TypeError, ValueError):
             unit_price = 0.0
         try:
-            total_price = float(row.get("Total Price", 0) or 0) if "Total Price" in optional_fields and "Total Price" in dataframe.columns else 0.0
+            total_price = float(normalize_request_value(row.get("Total Price", 0)) or 0) if "Total Price" in optional_fields and "Total Price" in dataframe.columns else 0.0
         except (TypeError, ValueError):
             total_price = 0.0
 
@@ -1147,9 +1568,10 @@ def build_quote_bids_from_dataframe(dataframe: pd.DataFrame) -> list[dict[str, A
             "quantity": round(quantity, 4),
             "unit_price": round(unit_price, 4),
             "total_price": round(resolved_total, 4),
+            "quote_date": str(row.get("Date", "")).strip(),
             "currency": str(row.get("Currency", "")).strip().upper() or "USD",
             "delivery_time": str(row.get("Delivery Time", "")).strip(),
-            "payment_term": str(row.get("Payment Term", "")).strip(),
+            "payment_term": str(row.get("Payment Terms", "")).strip(),
             "valid_until": str(row.get("Valid Until", "")).strip(),
             "notes": str(row.get("Notes", "")).strip()
         })
@@ -1332,7 +1754,7 @@ def normalize_recipe_payload(payload: dict[str, Any]) -> dict[str, Any]:
     for ingredient in payload.get("ingredients", []):
         product_name = str(ingredient.get("product_name", "")).strip()
         unit = str(ingredient.get("unit", "")).strip()
-        quantity_raw = ingredient.get("quantity", 0)
+        quantity_raw = normalize_request_value(ingredient.get("quantity", 0))
         try:
             quantity = float(quantity_raw)
         except (TypeError, ValueError):
@@ -1348,7 +1770,7 @@ def normalize_recipe_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "recipe_id": str(payload.get("recipe_id") or "").strip() or None,
         "name": str(payload.get("name", "")).strip(),
-        "yield_portions": float(payload.get("yield_portions", 0) or 0),
+        "yield_portions": float(normalize_request_value(payload.get("yield_portions", 0)) or 0),
         "pricing_mode": str(payload.get("pricing_mode", "")).strip(),
         "ingredients": normalized_ingredients
     }
@@ -2148,6 +2570,14 @@ def create_app() -> FastAPI:
             build_page_context(request, active_view="recipes")
         )
 
+    @app.get("/guide")
+    def guide_view(request: Request):
+        return safe_template_response(
+            request,
+            INDEX_TEMPLATE,
+            build_page_context(request, active_view="guide")
+        )
+
     @app.get("/quote-compare")
     def quote_compare_view(request: Request):
         return safe_template_response(
@@ -2263,12 +2693,11 @@ def create_app() -> FastAPI:
 
     @app.post("/upload")
     async def upload_file(request: Request, file: UploadFile = File(...)):
-        contents = await file.read()
         filename = file.filename or ""
         json_response = wants_json_response(request)
 
         try:
-            df = read_uploaded_dataframe(contents, filename)
+            df = read_uploaded_dataframe(file)
         except ValueError as exc:
             error_message = str(exc)
             if json_response:
@@ -2314,11 +2743,10 @@ def create_app() -> FastAPI:
 
     @app.post("/upload/inspect")
     async def inspect_upload_file(file: UploadFile = File(...)):
-        contents = await file.read()
         filename = file.filename or ""
 
         try:
-            df = read_uploaded_dataframe(contents, filename)
+            df = read_uploaded_dataframe(file)
         except ValueError as exc:
             return JSONResponse(
                 {"success": False, "message": str(exc)},
@@ -2350,11 +2778,10 @@ def create_app() -> FastAPI:
         file: UploadFile = File(...),
         mappings: str = Form(...)
     ):
-        contents = await file.read()
         filename = file.filename or ""
 
         try:
-            df = read_uploaded_dataframe(contents, filename)
+            df = read_uploaded_dataframe(file)
         except ValueError as exc:
             return JSONResponse(
                 {"success": False, "message": str(exc)},
@@ -2441,6 +2868,21 @@ def create_app() -> FastAPI:
                 status_code=500
             )
 
+        return JSONResponse({
+            "success": True,
+            **answer
+        })
+
+    @app.post("/guide/ask")
+    def guide_ask(payload: GuideAskPayload):
+        question = (payload.question or "").strip()
+        if not question:
+            return JSONResponse(
+                {"success": False, "message": "Enter a product-help question first."},
+                status_code=400
+            )
+
+        answer = build_guide_response(question)
         return JSONResponse({
             "success": True,
             **answer
@@ -2568,11 +3010,10 @@ def create_app() -> FastAPI:
 
     @app.post("/quote-compare/upload/inspect")
     async def inspect_quote_compare_upload(file: UploadFile = File(...)):
-        contents = await file.read()
         filename = file.filename or ""
 
         try:
-            df = read_uploaded_dataframe(contents, filename)
+            df = read_uploaded_dataframe(file)
             columns = [str(column) for column in df.columns]
             required_detection = detect_column_mappings(
                 columns,
@@ -2616,7 +3057,7 @@ def create_app() -> FastAPI:
             "required_fields": QUOTE_COMPARE_REQUIRED_FIELDS,
             "optional_fields": QUOTE_COMPARE_OPTIONAL_FIELDS,
             "message": "We detected likely supplier-offer fields from your upload.",
-            "review_message": "Review the required quote fields below before importing the offers.",
+            "review_message": "Review required and optional column matches before moving into quote analysis.",
             "mapping": {
                 **required_detection["mapping"],
                 **{
@@ -2638,7 +3079,6 @@ def create_app() -> FastAPI:
         file: UploadFile = File(...),
         mappings: str = Form(...)
     ):
-        contents = await file.read()
         filename = file.filename or ""
 
         try:
@@ -2655,7 +3095,7 @@ def create_app() -> FastAPI:
             )
 
         try:
-            df = read_uploaded_dataframe(contents, filename)
+            df = read_uploaded_dataframe(file)
             full_mapping = {
                 field_name: parsed_mapping.get(field_name)
                 for field_name in [*QUOTE_COMPARE_REQUIRED_FIELDS, *QUOTE_COMPARE_OPTIONAL_FIELDS]
@@ -2668,6 +3108,7 @@ def create_app() -> FastAPI:
             normalized_comparison = normalize_quote_comparison_payload({
                 "name": Path(filename).stem.replace("_", " ").strip() or "Uploaded quote comparison",
                 "sourcing_need": "",
+                "source_type": "upload",
                 "bids": build_quote_bids_from_dataframe(mapped_df)
             })
             evaluation = calculate_quote_comparison(normalized_comparison)
@@ -2727,6 +3168,8 @@ def create_app() -> FastAPI:
             "name": normalized_comparison["name"],
             "sourcing_need": normalized_comparison["sourcing_need"],
             "weighting": normalized_comparison["weighting"],
+            "source_type": normalized_comparison["source_type"],
+            "mode": normalized_comparison["mode"],
             "bids": normalized_comparison["bids"],
             "updated_at": now,
             "created_at": existing_comparison.get("created_at") if existing_comparison else now

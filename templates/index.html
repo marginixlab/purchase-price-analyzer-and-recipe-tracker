@@ -30,7 +30,6 @@
                 <p class="brand-title">Premium pricing review for procurement teams</p>
             </div>
             <div class="header-actions">
-                <button id="guidePanelToggle" class="secondary-btn workspace-toggle-btn" type="button" hidden>Guide</button>
                 <button id="notesPanelToggle" class="secondary-btn workspace-toggle-btn" type="button" hidden>Notes</button>
                 <button id="logoutButton" class="secondary-btn" type="button" hidden>Log Out</button>
             </div>
@@ -38,36 +37,10 @@
 
         <nav class="app-view-nav" aria-label="Primary workspace">
             <a class="app-view-tab {% if active_view == 'analyzer' %}is-active{% endif %}" href="/" aria-current="{% if active_view == 'analyzer' %}page{% else %}false{% endif %}">Analyzer</a>
+            <a class="app-view-tab {% if active_view == 'guide' %}is-active{% endif %}" href="/guide" aria-current="{% if active_view == 'guide' %}page{% else %}false{% endif %}">Guide</a>
             <a class="app-view-tab {% if active_view == 'recipes' %}is-active{% endif %}" href="/recipes" aria-current="{% if active_view == 'recipes' %}page{% else %}false{% endif %}">Recipes</a>
             <a class="app-view-tab {% if active_view == 'quote_compare' %}is-active{% endif %}" href="/quote-compare" aria-current="{% if active_view == 'quote_compare' %}page{% else %}false{% endif %}">Quote Compare</a>
         </nav>
-
-        <aside class="side-panel side-panel-left" id="guidePanel" hidden aria-hidden="true">
-            <div class="side-panel-card">
-                <div class="side-panel-head">
-                    <div>
-                        <div class="side-panel-kicker">Workspace Guide</div>
-                        <h2 class="side-panel-title">Helpful reminders</h2>
-                    </div>
-                    <button type="button" class="side-panel-close" id="closeGuidePanelButton" aria-label="Close guide panel">Close</button>
-                </div>
-                <div class="side-panel-body">
-                    <div class="side-panel-section-label">Checklist</div>
-                    <ul class="side-panel-checklist">
-                        <li>Upload your file</li>
-                        <li>Check overpay rows</li>
-                        <li>Compare suppliers</li>
-                        <li>Review savings opportunities</li>
-                    </ul>
-                    <div class="side-panel-section-label">Tips</div>
-                    <div class="side-panel-tip-list">
-                        <p>Use filters only after you review the top insights once.</p>
-                        <p>Collapse sections you are not using to keep the workspace focused.</p>
-                        <p>Open Ask Your Data after analysis when you want an executive summary.</p>
-                    </div>
-                </div>
-            </div>
-        </aside>
 
         <aside class="side-panel side-panel-right" id="notesPanel" hidden aria-hidden="true">
             <div class="side-panel-card">
@@ -661,6 +634,129 @@
         </div>
         {% endif %}
 
+        {% if active_view == 'guide' %}
+        <section class="guide-workspace" id="guideWorkspace" data-has-analysis="{{ 'true' if rows else 'false' }}">
+            <section class="guide-workspace-hero">
+                <div>
+                    <div class="panel-label">Guide Workspace</div>
+                    <h1 class="panel-title">A product assistant workspace for faster procurement decisions</h1>
+                    <p class="panel-copy">Ask product-use questions, reopen recent answers, and jump directly into the right part of the app without guessing where to go next.</p>
+                </div>
+                <div class="guide-workspace-hero-actions">
+                    <div class="result-chip">{% if rows %}Analysis context available{% else %}Works with or without analysis{% endif %}</div>
+                </div>
+            </section>
+
+            <section class="guide-workspace-grid">
+                <aside class="guide-sidebar">
+                    <section class="guide-surface guide-overview-card">
+                        <div class="guide-card-kicker">Workspace Guide</div>
+                        <h2 class="guide-card-title">Quick direction</h2>
+                        <p class="guide-card-copy">
+                            {% if rows %}
+                            You already have analysis available. Use Guide to move from findings into the right next workspace quickly.
+                            {% else %}
+                            Start with a product-help question or use the beginner shortcuts below to follow the tool step by step.
+                            {% endif %}
+                        </p>
+                        <div class="guide-overview-actions">
+                            <a class="secondary-btn" href="/#uploadPanel">Upload & Analyze</a>
+                            <a class="secondary-btn" href="/#topInsightsPanel">Top Insights</a>
+                            <a class="secondary-btn" href="/quote-compare">Quote Compare</a>
+                        </div>
+                    </section>
+
+                    <section class="guide-surface">
+                        <div class="guide-card-kicker">Beginner Flow</div>
+                        <h2 class="guide-card-title">Common starting points</h2>
+                        <div class="guide-topic-list">
+                            <button type="button" class="guide-topic-button" data-guide-question="What do I do first?" data-guide-topic="beginner-start">What do I do first?</button>
+                            <button type="button" class="guide-topic-button" data-guide-question="How do I upload a file?" data-guide-topic="upload-flow">How do I upload a file?</button>
+                            <button type="button" class="guide-topic-button" data-guide-question="How do I find overpay rows?" data-guide-topic="overpay-flow">How do I find overpay rows?</button>
+                            <button type="button" class="guide-topic-button" data-guide-question="How do I compare suppliers?" data-guide-topic="supplier-flow">How do I compare suppliers?</button>
+                        </div>
+                    </section>
+
+                    <section class="guide-surface">
+                        <div class="guide-card-kicker">Suggested Topics</div>
+                        <h2 class="guide-card-title">Product-aware shortcuts</h2>
+                        <div class="guide-topic-list">
+                            <button type="button" class="guide-topic-button" data-guide-question="How do I review supplier pricing?" data-guide-topic="supplier-pricing">Review supplier pricing</button>
+                            <button type="button" class="guide-topic-button" data-guide-question="Where are the savings opportunities?" data-guide-topic="savings-opportunities">Find savings opportunities</button>
+                            <button type="button" class="guide-topic-button" data-guide-question="How do I use filters?" data-guide-topic="filters">Use filters</button>
+                            <button type="button" class="guide-topic-button" data-guide-question="How do I use Ask Your Data?" data-guide-topic="ask-your-data">Use Ask Your Data</button>
+                            <button type="button" class="guide-topic-button" data-guide-question="How do I use Quote Compare?" data-guide-topic="quote-compare">Use Quote Compare</button>
+                        </div>
+                    </section>
+
+                    <section class="guide-surface">
+                        <div class="guide-section-head">
+                            <div>
+                                <div class="guide-card-kicker">Recent Questions</div>
+                                <h2 class="guide-card-title">Saved history</h2>
+                            </div>
+                            <button type="button" class="secondary-btn guide-history-clear" id="guideHistoryClearButton">Clear all</button>
+                        </div>
+                        <div class="guide-history-list" id="guideHistoryList"></div>
+                        <div class="guide-history-empty" id="guideHistoryEmpty">Ask a question once and it will stay here for quick reopening during this session.</div>
+                    </section>
+                </aside>
+
+                <section class="guide-main">
+                    <section class="guide-surface guide-assistant-shell">
+                        <div class="guide-assistant-head">
+                            <div>
+                                <div class="guide-card-kicker">Ask Guide</div>
+                                <h2 class="guide-card-title">Ask a product-use question</h2>
+                                <p class="guide-card-copy">Guide answers only from built-in product knowledge and the currently available analysis context.</p>
+                            </div>
+                        </div>
+
+                        <form class="guide-ask-form guide-ask-form-workspace" id="guideAskForm">
+                            <label class="guide-ask-label" for="guideAskInput">Question</label>
+                            <div class="guide-ask-row">
+                                <input
+                                    id="guideAskInput"
+                                    class="guide-ask-input"
+                                    type="text"
+                                    autocomplete="off"
+                                    placeholder="How can I analyse the suppliers?"
+                                    maxlength="180"
+                                >
+                                <button type="submit" class="action-btn guide-ask-button" id="guideAskButton">Ask Guide</button>
+                            </div>
+                        </form>
+
+                        <section class="guide-answer-stage" id="guideAskAnswer" hidden>
+                            <div class="guide-answer-stage-head">
+                                <div class="guide-ask-answer-label">Guide Answer</div>
+                                <div class="guide-answer-context-chip" id="guideAskContextChip" hidden>Analysis-aware</div>
+                            </div>
+                            <h3 class="guide-answer-title" id="guideAskAnswerTitle">Guide Answer</h3>
+                            <div class="guide-ask-answer-text" id="guideAskAnswerText"></div>
+                            <div class="guide-answer-context" id="guideAskContextNote" hidden></div>
+                            <div class="guide-answer-flow" id="guideAskWorkflowBlock" hidden>
+                                <div class="guide-answer-subtitle">Suggested workflow</div>
+                                <div class="guide-answer-steps" id="guideAskWorkflow"></div>
+                            </div>
+                            <div class="guide-ask-answer-meta" id="guideAskAnswerMeta" hidden>
+                                <div class="guide-ask-answer-line" id="guideAskRelatedSection"></div>
+                                <div class="guide-ask-answer-line" id="guideAskNextStep"></div>
+                            </div>
+                            <div class="guide-answer-actions" id="guideAskActions" hidden></div>
+                        </section>
+
+                        <section class="guide-answer-empty" id="guideAskEmptyState">
+                            <div class="guide-card-kicker">Assistant Ready</div>
+                            <h3 class="guide-card-title">Use Guide like a decision-support workspace</h3>
+                            <p class="guide-card-copy">Ask what to do first, how to compare suppliers, where to find overpay, or which workspace to open next.</p>
+                        </section>
+                    </section>
+                </section>
+            </section>
+        </section>
+        {% endif %}
+
         {% if active_view == 'recipes' %}
         <section class="app-view app-view-recipes" id="recipesWorkspaceView">
             <section class="recipes-view-hero">
@@ -669,18 +765,15 @@
                     <h1 class="panel-title">Recipe Cost Calculator</h1>
                     <p class="panel-copy">Price recipes from your analyzed Etsy purchase data with a visible pricing mode, reusable saved recipes, and a private-advisor workflow built for fast decisions.</p>
                 </div>
-                <div class="recipes-view-hero-actions">
-                    <a class="secondary-btn" id="recipesToAnalyzerButton" href="/">Back to Analyzer</a>
-                </div>
             </section>
 
             <section class="recipes-empty-shell" id="recipesNeedsAnalysis" {% if rows %}hidden{% endif %}>
                 <div class="recipes-empty-card">
                     <div class="panel-label">Pricing Data Needed</div>
                     <h2 class="panel-title">Analyze purchase data before pricing recipes</h2>
-                    <p class="panel-copy">Recipe pricing uses your analyzed purchase history as the source for product names, units, and pricing modes. Start in Analyzer, review your file, and come back when the pricing dataset is ready.</p>
+                    <p class="panel-copy">Recipes uses analyzed purchasing data to supply product names, units, and pricing inputs. Run Analyzer first, then come back to build recipe costs from real purchase history instead of manual estimates.</p>
                     <div class="recipes-empty-actions">
-                        <a class="action-btn" id="recipesEmptyGoToAnalyzerButton" href="/">Go to Analyzer</a>
+                        <a class="action-btn" id="recipesEmptyGoToAnalyzerButton" href="/">Analyze Purchasing Data</a>
                     </div>
                 </div>
             </section>
@@ -814,254 +907,18 @@
                 </div>
             </section>
 
-            <section class="quote-compare-empty-shell" id="quoteCompareEmptyState" hidden>
-                <div class="quote-compare-empty-card">
-                    <div class="panel-label">Supplier Decision Support</div>
-                    <h2 class="panel-title">Start your first quote comparison</h2>
-                    <p class="panel-copy">Create a sourcing scenario manually or import supplier offers from a file, then let the workspace highlight the cheapest supplier by product with helpful delivery and payment context.</p>
-                </div>
-            </section>
-
-            <section class="quote-compare-shell" id="quoteCompareShell">
-                <div class="quote-compare-layout">
-                    <aside class="quote-compare-sidebar">
-                        <div class="quote-compare-panel-head">
-                            <div>
-                                <div class="panel-label">Saved Comparisons</div>
-                                <h2 class="panel-title">Your saved work</h2>
-                                <p class="panel-copy">Reopen a saved comparison whenever you want to continue from a previous sourcing round.</p>
-                            </div>
-                            <div class="quote-sidebar-actions">
-                                <button type="button" class="secondary-btn" id="newQuoteComparisonButton">New Comparison</button>
-                                <button type="button" class="secondary-btn quote-sidebar-toggle" id="quoteSidebarToggleButton" aria-expanded="false" aria-controls="quoteSidebarBody">Show Saved</button>
-                            </div>
+            <section class="quote-compare-shell quote-compare-shell-fresh" id="quoteCompareShell">
+                <div class="quote-compare-main">
+                    <div class="quote-compare-editor-head">
+                        <div>
+                            <div class="panel-label">Quote Compare</div>
+                            <h3 class="quote-compare-editor-title">Buyer Quote Workflow</h3>
+                            <p class="quote-results-copy">Move cleanly from upload or manual entry into mapping review and a sourcing-ready analysis summary.</p>
                         </div>
-                        <div class="quote-sidebar-body" id="quoteSidebarBody" hidden>
-                            <div class="quote-compare-list" id="quoteComparisonList"></div>
-                            <div class="quote-compare-list-empty" id="quoteComparisonEmpty">Save a sourcing scenario to build your own quote comparison library.</div>
-                        </div>
-                    </aside>
-
-                    <div class="quote-compare-main">
-                        <section class="quote-compare-summary-card" id="quoteCompareSummaryCard" hidden>
-                            <div class="quote-compare-summary-head">
-                                <div>
-                                    <div class="panel-label">Step 3</div>
-                                    <h3 class="quote-compare-summary-title">Review best offers</h3>
-                                </div>
-                                <div class="result-chip" id="quoteCompareRecommendationChip">Awaiting supplier bids</div>
-                            </div>
-                            <div class="quote-compare-summary-grid">
-                                <article class="summary-card">
-                                    <div class="summary-card-title">Lowest Price Supplier</div>
-                                    <div class="summary-card-value compact" id="quoteCompareLowestPriceSupplier">No bids yet</div>
-                                    <div class="summary-card-insight" id="quoteCompareLowestPriceCopy">The most competitive total price will appear here.</div>
-                                </article>
-                                <article class="summary-card">
-                                    <div class="summary-card-title">Fastest Delivery</div>
-                                    <div class="summary-card-value compact" id="quoteCompareFastestDeliverySupplier">No bids yet</div>
-                                    <div class="summary-card-insight" id="quoteCompareFastestDeliveryCopy">The quickest delivery option will appear here.</div>
-                                </article>
-                                <article class="summary-card">
-                                    <div class="summary-card-title">Best Payment Terms</div>
-                                    <div class="summary-card-value compact" id="quoteCompareBestPaymentSupplier">No bids yet</div>
-                                    <div class="summary-card-insight" id="quoteCompareBestPaymentCopy">The strongest payment position will appear here.</div>
-                                </article>
-                                <article class="summary-card">
-                                    <div class="summary-card-title">Recommended Supplier</div>
-                                    <div class="summary-card-value compact" id="quoteCompareRecommendedSupplier">No recommendation yet</div>
-                                    <div class="summary-card-insight" id="quoteCompareRecommendedCopy">A practical recommendation will appear once supplier bids are entered.</div>
-                                </article>
-                            </div>
-                            <div class="decision-list" id="quoteCompareInsightsList">
-                                <div class="decision-list-empty">Add supplier bids to generate a recommendation summary.</div>
-                            </div>
-                        </section>
-
-                        <section class="quote-compare-editor-card">
-                            <div class="quote-compare-editor-head">
-                                <div>
-                                    <div class="panel-label">Guided Builder</div>
-                                    <h3 class="quote-compare-editor-title" id="quoteComparisonEditorTitle">Start a quote comparison</h3>
-                                </div>
-                                <div class="quote-compare-editor-actions" id="quoteComparisonPrimaryActions" hidden>
-                                    <button type="button" class="secondary-btn" id="recalculateQuoteComparisonButton">Recalculate</button>
-                                    <button type="button" class="secondary-btn" id="deleteQuoteComparisonButton" hidden>Delete Comparison</button>
-                                    <button type="button" class="action-btn" id="saveQuoteComparisonButton">Save Comparison</button>
-                                </div>
-                            </div>
-
-                            <div class="quote-compare-save-shell" id="quoteComparisonMetaShell" hidden>
-                                <div class="panel-label">Step 4</div>
-                                <h4 class="quote-compare-save-title">Save this comparison</h4>
-                                <div class="quote-bids-copy quote-bids-copy-compact">Add a clear name once you have built something worth keeping.</div>
-                            <div class="quote-compare-form-grid" id="quoteComparisonMetaSection" hidden>
-                                <label class="recipe-field">
-                                    <span class="recipe-field-label">Comparison Name</span>
-                                    <input type="text" class="recipe-input" id="quoteComparisonNameInput" placeholder="Example: Glass Jar Supplier Round 1">
-                                </label>
-                                <label class="recipe-field">
-                                    <span class="recipe-field-label">Sourcing Need</span>
-                                    <input type="text" class="recipe-input" id="quoteComparisonNeedInput" placeholder="Example: 8 oz amber glass jars">
-                                </label>
-                            </div>
-                            </div>
-
-                            <section class="quote-import-card">
-                                <div class="quote-import-head">
-                                    <div>
-                                        <div class="panel-label">Step 1</div>
-                                        <div class="quote-bids-copy quote-bids-copy-compact">Choose how you want to start this comparison.</div>
-                                    </div>
-                                </div>
-                                <div class="quote-intake-toggle" role="tablist" aria-label="Offer intake method">
-                                    <button type="button" class="secondary-btn quote-intake-tab is-active" id="quoteImportModeButton" data-quote-mode="import" aria-selected="true">Import File</button>
-                                    <button type="button" class="secondary-btn quote-intake-tab" id="quoteManualModeButton" data-quote-mode="manual" aria-selected="false">Manual Entry</button>
-                                </div>
-                                <div class="quote-intake-panel" id="quoteImportPanel">
-                                    <form id="quoteCompareUploadForm" class="quote-upload-form">
-                                        <div class="upload-step">Import Supplier Offers</div>
-                                        <div class="quote-import-fields">
-                                            <div class="quote-import-fields-group">
-                                                <div class="quote-import-fields-title">Required fields</div>
-                                                <div class="quote-import-fields-copy">These fields are needed to compare supplier offers correctly.</div>
-                                                <div class="quote-import-field-chips">
-                                                    <span class="result-chip">Supplier Name</span>
-                                                    <span class="result-chip">Product Name</span>
-                                                    <span class="result-chip">Unit</span>
-                                                    <span class="result-chip">Quantity</span>
-                                                    <span class="result-chip">Unit Price</span>
-                                                </div>
-                                            </div>
-                                            <div class="quote-import-fields-group">
-                                                <div class="quote-import-fields-title">Optional fields</div>
-                                                <div class="quote-import-fields-copy">These add richer supplier context, but they are not required to continue.</div>
-                                                <div class="quote-import-field-chips">
-                                                    <span class="result-chip">Total Price</span>
-                                                    <span class="result-chip">Currency</span>
-                                                    <span class="result-chip">Delivery Time</span>
-                                                    <span class="result-chip">Payment Term</span>
-                                                    <span class="result-chip">Valid Until</span>
-                                                    <span class="result-chip">Notes</span>
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <div class="quote-upload-shell">
-                                            <div class="quote-upload-copy">
-                                                <div class="quote-upload-title">Upload CSV, XLSX, or XLS</div>
-                                                <div class="quote-upload-note" id="quoteCompareUploadKicker">Import supplier offer sheets and map only the fields needed for quick comparison.</div>
-                                            </div>
-                                            <div class="quote-upload-actions">
-                                                <button type="button" class="secondary-btn" id="quoteCompareSelectFileButton">Choose File</button>
-                                                <button type="button" class="action-btn upload-submit" id="inspectQuoteCompareUploadButton">Review Columns</button>
-                                            </div>
-                                        </div>
-                                        <input id="quoteCompareFileUpload" class="quote-hidden-file-input" type="file" accept=".csv,.xlsx,.xls">
-                                        <div class="quote-upload-fileline">
-                                            <span class="quote-upload-filelabel">Selected file</span>
-                                            <span id="quoteCompareFileName">No file selected yet</span>
-                                        </div>
-                                    </form>
-                                    <div class="quote-import-support">
-                                        <form class="demo-form" id="quoteCompareDemoForm">
-                                            <div class="upload-step">Try Demo Data</div>
-                                            <div class="demo-cta-shell">
-                                                <div>
-                                                    <div class="demo-cta-title">Explore a sample supplier quote set</div>
-                                                    <div class="demo-cta-copy">Load a realistic supplier offer file and walk through comparison results before importing your own.</div>
-                                                </div>
-                                                <div class="demo-cta-actions">
-                                                    <button type="button" class="secondary-btn demo-btn" id="quoteCompareDemoButton">Try Demo Data</button>
-                                                    <span class="demo-note">No setup required</span>
-                                                </div>
-                                            </div>
-                                        </form>
-                                        <div class="sample-links">
-                                            <span class="sample-links-label">Need a template?</span>
-                                            <a href="/quote-compare/download-sample-csv" class="sample-link">Download sample CSV</a>
-                                            <a href="/quote-compare/download-sample-excel" class="sample-link">Download sample Excel</a>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="quote-intake-panel" id="quoteManualPanel" hidden>
-                                    <div class="quote-manual-copy-card">
-                                        <div class="upload-step">Manual Entry</div>
-                                        <div class="quote-manual-copy">Enter supplier offers one by one when you need a quick comparison or a supplier shares pricing outside a spreadsheet.</div>
-                                        <div class="quote-manual-copy subtle">Add offers below, then review the grouped comparison once the list is ready.</div>
-                                    </div>
-                                </div>
-                            </section>
-
-                            <section class="mapping-review-panel" id="quoteCompareMappingPanel" hidden>
-                                <div class="mapping-review-head">
-                                    <div>
-                                        <div class="upload-step">Review Mappings</div>
-                                        <h3 class="mapping-review-title">Review supplier offer column matches</h3>
-                                        <p class="mapping-review-copy" id="quoteCompareMappingIntro">We detected likely quote fields from your upload. Review them before importing the offers.</p>
-                                    </div>
-                                    <div class="mapping-summary-chips" id="quoteCompareMappingSummary"></div>
-                                </div>
-                                <div class="mapping-review-note">
-                                    We only need the quote fields required for comparison. Extra columns can stay in your file.
-                                </div>
-                                <div class="mapping-grid" id="quoteCompareMappingGrid"></div>
-                                <div class="mapping-alert mapping-alert-error" id="quoteCompareMappingMissingAlert" hidden></div>
-                                <div class="mapping-alert mapping-alert-info" id="quoteCompareMappingOptionalAlert" hidden></div>
-                                <div class="mapping-actions">
-                                    <button type="button" class="secondary-btn" id="quoteCompareChangeFileButton">Choose Different File</button>
-                                    <button type="button" class="action-btn" id="confirmQuoteCompareMappingButton">Import Offers</button>
-                                </div>
-                            </section>
-
-                            <section class="quote-bids-card">
-                                <div class="quote-bids-head">
-                                    <div>
-                                        <div class="panel-label">Step 2</div>
-                                        <div class="quote-bids-copy quote-bids-copy-compact">Total price updates automatically from quantity and unit price.</div>
-                                    </div>
-                                    <button type="button" class="secondary-btn" id="addQuoteBidButton">Add Supplier Offer</button>
-                                </div>
-                                <div class="quote-bids-list" id="quoteBidsList"></div>
-                            </section>
-
-                            <div id="quoteDeleteConfirmHost"></div>
-
-                            <div class="recipe-status" id="quoteComparisonStatusMessage" hidden></div>
-                        </section>
-
-                        <section class="quote-compare-table-card" id="quoteCompareResultsCard" hidden>
-                            <div class="quote-compare-table-head">
-                                <div>
-                                    <div class="panel-label">Step 3</div>
-                                    <h3 class="quote-compare-table-title">Product-based supplier comparison</h3>
-                                </div>
-                            </div>
-                            <div class="quote-compare-filters">
-                                <label class="recipe-field">
-                                    <span class="recipe-field-label">Search</span>
-                                    <input type="text" class="recipe-input" id="quoteCompareSearchInput" placeholder="Search product or supplier">
-                                </label>
-                                <label class="recipe-field">
-                                    <span class="recipe-field-label">Product</span>
-                                    <select class="recipe-select" id="quoteCompareProductFilter"></select>
-                                </label>
-                                <label class="recipe-field">
-                                    <span class="recipe-field-label">Supplier</span>
-                                    <select class="recipe-select" id="quoteCompareSupplierFilter"></select>
-                                </label>
-                                <label class="quote-toggle">
-                                    <input type="checkbox" id="quoteCompareBestOnlyToggle">
-                                    <span>Show only best offers</span>
-                                </label>
-                            </div>
-                            <div class="quote-compare-table-wrap" id="quoteCompareTableWrap">
-                                <div class="decision-list-empty">Add supplier offers to compare them side by side.</div>
-                            </div>
-                        </section>
                     </div>
+                    <div id="quoteCompareApp"></div>
                 </div>
             </section>
-        </section>
         {% endif %}
 
         <section class="ai-workspace" id="aiWorkspace" hidden>
@@ -1131,6 +988,7 @@
     <script src="{{ url_for('static', path='/js/charts.js') }}"></script>
     <script src="{{ url_for('static', path='/js/table.js') }}"></script>
     <script src="{{ url_for('static', path='/js/dashboard.js') }}"></script>
+    <script src="{{ url_for('static', path='/js/guide-assistant.js') }}"></script>
     <script src="{{ url_for('static', path='/js/recipes.js') }}"></script>
     <script src="{{ url_for('static', path='/js/quote-compare.js') }}"></script>
     <script src="{{ url_for('static', path='/js/assistant.js') }}"></script>

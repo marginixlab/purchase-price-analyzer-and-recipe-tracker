@@ -129,6 +129,28 @@
         writeCollapsedPreference(storageKey, collapsed);
     }
 
+    function revealSectionFromHash() {
+        const hash = window.location.hash || "";
+        const target = hash ? document.querySelector(hash) : null;
+        if (!target) return;
+
+        const storageKeyByHash = {
+            "#guidedEntryPanel": "guidedEntryCollapsed",
+            "#uploadPanel": "uploadAnalyzeCollapsed",
+            "#topInsightsPanel": "topInsightsCollapsed",
+            "#workspacePanel": "analystWorkspaceCollapsed",
+            "#askDataPanel": "askDataCollapsed"
+        };
+        const storageKey = storageKeyByHash[hash];
+        if (storageKey) {
+            setStoredCollapsibleState(storageKey, false);
+        }
+
+        window.requestAnimationFrame(() => {
+            target.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+    }
+
     function updateStepHeader(panel, step, kicker, title) {
         if (!panel) return;
         const badge = panel.querySelector(".collapsible-step-badge");
@@ -357,6 +379,12 @@
         writeWorkspacePreference(storageKey, isOpen ? "true" : "false");
     }
 
+    function syncSideRailLayout(elements) {
+        if (!elements.appShell) return;
+        const guideOpen = Boolean(elements.guidePanel?.classList.contains("is-open"));
+        elements.appShell.classList.toggle("app-shell-guide-open", guideOpen);
+    }
+
     function flashSavedIndicator(elements) {
         if (!elements.notesSavedIndicator) return;
         elements.notesSavedIndicator.textContent = "Saved";
@@ -387,12 +415,14 @@
 
         setSidePanelState(elements.guidePanel, elements.guidePanelToggle, guideOpen, "guidePanelOpen");
         setSidePanelState(elements.notesPanel, elements.notesPanelToggle, notesOpen, "notesPanelOpen");
+        syncSideRailLayout(elements);
 
         if (elements.guidePanelToggle && elements.guidePanelToggle.dataset.bound !== "true") {
             elements.guidePanelToggle.dataset.bound = "true";
             elements.guidePanelToggle.addEventListener("click", () => {
                 const next = !elements.guidePanel?.classList.contains("is-open");
                 setSidePanelState(elements.guidePanel, elements.guidePanelToggle, next, "guidePanelOpen");
+                syncSideRailLayout(elements);
             });
         }
 
@@ -408,6 +438,7 @@
             elements.closeGuidePanelButton.dataset.bound = "true";
             elements.closeGuidePanelButton.addEventListener("click", () => {
                 setSidePanelState(elements.guidePanel, elements.guidePanelToggle, false, "guidePanelOpen");
+                syncSideRailLayout(elements);
             });
         }
 
@@ -2282,6 +2313,8 @@
         initWorkspaceStructure(elements);
         initCollapsiblePanels();
         initSideWorkspace(elements);
+        revealSectionFromHash();
+        window.addEventListener("hashchange", revealSectionFromHash);
         if (isLocked(elements)) {
             console.log("SORT INIT SKIPPED UNTIL UNLOCK");
         } else {

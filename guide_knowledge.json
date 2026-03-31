@@ -1,0 +1,398 @@
+{
+  "entries": [
+    {
+      "id": "beginner-flow",
+      "title": "Beginner workflow",
+      "related_section": "Guide Workspace",
+      "intents": [
+        "what do i do first",
+        "where should i start",
+        "how do i use this tool",
+        "walk me through the workflow",
+        "beginner guide",
+        "step by step help"
+      ],
+      "keywords": [
+        "start",
+        "beginner",
+        "workflow",
+        "step by step",
+        "first"
+      ],
+      "synonyms": [
+        "getting started",
+        "new user",
+        "how to begin"
+      ],
+      "example_questions": [
+        "What do I do first?",
+        "How do I use this tool step by step?",
+        "Can you walk me through the workflow?"
+      ],
+      "answer": "Use the analyzer in a simple decision flow: upload data first, review the biggest margin leaks next, compare suppliers where price gaps repeat, then finish with an executive-ready summary.",
+      "next_step": "Start in Upload & Analyze if you do not have results yet. If analysis already exists, go straight to Top Insights.",
+      "actions": [
+        "go_upload",
+        "go_top_insights",
+        "go_workspace",
+        "go_ask_data"
+      ]
+    },
+    {
+      "id": "compare-suppliers",
+      "title": "Compare suppliers",
+      "related_section": "Top Insights",
+      "intents": [
+        "how do i compare suppliers",
+        "how to compare suppliers",
+        "compare supplier pricing",
+        "supplier comparison",
+        "how do i analyze suppliers",
+        "how can i analyse the suppliers",
+        "how can i find supplier differences"
+      ],
+      "intent_groups": [
+        "compare supplier",
+        "analyze supplier",
+        "supplier differences"
+      ],
+      "keywords": [
+        "compare suppliers",
+        "supplier pricing",
+        "supplier",
+        "pricing",
+        "vendor",
+        "supplier differences"
+      ],
+      "synonyms": [
+        "analyze supplier",
+        "compare vendor",
+        "supplier price",
+        "vendor price",
+        "price differences"
+      ],
+      "example_questions": [
+        "How can I analyse the suppliers?",
+        "How do I analyze suppliers?",
+        "How do I compare suppliers?",
+        "How can I find supplier differences?"
+      ],
+      "answer": "Use supplier comparison when you need to rank suppliers against each other for the same product. Focus on unit-price variance, identify the cheapest credible option, and use the gap to support a purchase decision or negotiation.",
+      "next_step": "Open the Workspace Table, isolate one product, then compare each supplier's unit price and savings opportunity side by side.",
+      "actions": [
+        "go_workspace"
+      ],
+      "workflow_steps": [
+        "Choose a product that appears from more than one supplier.",
+        "Open the Workspace Table and review all supplier rows for that product together.",
+        "Rank suppliers by unit price and savings opportunity to see the cheapest position clearly.",
+        "Use the price spread to decide whether to switch suppliers or renegotiate."
+      ]
+    },
+    {
+      "id": "review-supplier-pricing",
+      "title": "Review supplier pricing",
+      "related_section": "Top Insights",
+      "intents": [
+        "how do i review supplier pricing",
+        "how do i review a supplier",
+        "how do i inspect supplier pricing",
+        "how do i evaluate a supplier",
+        "how do i check supplier performance"
+      ],
+      "intent_groups": [
+        "review supplier",
+        "evaluate supplier",
+        "supplier pricing review"
+      ],
+      "keywords": [
+        "review supplier pricing",
+        "supplier review",
+        "supplier performance",
+        "price stability",
+        "consistency"
+      ],
+      "synonyms": [
+        "inspect supplier pricing",
+        "evaluate vendor pricing",
+        "supplier consistency",
+        "overpriced supplier"
+      ],
+      "example_questions": [
+        "How do I review supplier pricing?",
+        "How do I evaluate a supplier's pricing?",
+        "How do I check if one supplier is consistently expensive?"
+      ],
+      "answer": "Use supplier pricing review when you want to diagnose one supplier's overall behavior. Look for repeated overpay patterns, unstable pricing across similar items, and whether that supplier keeps appearing in the highest-risk rows.",
+      "next_step": "Start in Top Insights to see whether one supplier keeps driving margin leakage, then inspect that supplier across the Workspace Table.",
+      "actions": [
+        "go_top_insights",
+        "go_workspace"
+      ],
+      "workflow_steps": [
+        "Start in Top Insights and identify the supplier tied to the largest savings signal or risk pattern.",
+        "Open the Workspace Table and filter to that supplier only.",
+        "Review whether the supplier appears repeatedly in Overpay rows or unstable price ranges.",
+        "Use the pattern to decide whether the issue is isolated or part of a broader supplier performance problem."
+      ]
+    },
+    {
+      "id": "find-overpay-rows",
+      "title": "Find overpay rows",
+      "related_section": "Upload & Analyze",
+      "intents": [
+        "how do i find overpay rows",
+        "how to find overpay rows",
+        "find overpay rows",
+        "overpay rows"
+      ],
+      "keywords": [
+        "overpay",
+        "rows",
+        "status",
+        "savings"
+      ],
+      "synonyms": [
+        "paying too much",
+        "overspend rows",
+        "expensive lines"
+      ],
+      "example_questions": [
+        "How do I find rows where I am paying too much?",
+        "How can I spot overspend rows?"
+      ],
+      "answer": "Analyze a file first, then look for rows marked with an Overpay status and review their savings opportunity to see where current pricing sits above the visible benchmark.",
+      "next_step": "Run the analysis, then scan Top Insights and the Workspace Table for rows flagged as Overpay.",
+      "actions": [
+        "go_upload",
+        "go_top_insights",
+        "go_workspace"
+      ],
+      "workflow_steps": [
+        "Upload a file or open the saved analysis.",
+        "Review Top Insights for the biggest sources of margin leakage.",
+        "Open the Workspace Table and filter to Overpay status.",
+        "Sort by savings opportunity to see the most urgent rows first."
+      ]
+    },
+    {
+      "id": "use-quote-compare",
+      "title": "Use Quote Compare",
+      "related_section": "Quote Compare",
+      "intents": [
+        "how do i use quote compare",
+        "how to use quote compare",
+        "quote compare",
+        "compare quotes"
+      ],
+      "keywords": [
+        "quote compare",
+        "quotes",
+        "supplier offers",
+        "bids"
+      ],
+      "example_questions": [
+        "How do I use quote compare?",
+        "How do I compare supplier bids?"
+      ],
+      "answer": "Use Quote Compare to evaluate supplier offers side by side by product, then review the weighted recommendation based on price, delivery, and payment terms.",
+      "next_step": "Open Quote Compare, import supplier offers or use the demo, then review the recommended supplier by line item.",
+      "actions": [
+        "go_quote_compare"
+      ],
+      "workflow_steps": [
+        "Open Quote Compare and load supplier offers.",
+        "Review the weighted recommendation by product line.",
+        "Inspect delivery and payment terms before deciding.",
+        "Use the recommendation as a structured starting point, not as a blind automatic decision."
+      ]
+    },
+    {
+      "id": "use-recipes",
+      "title": "Use Recipes",
+      "related_section": "Recipes",
+      "intents": [
+        "how can i calculate recipe",
+        "how do i calculate a recipe",
+        "how do i calculate recipe cost",
+        "how do i calculate cost per recipe",
+        "how do i calculate ingredient cost",
+        "how do i calculate menu cost",
+        "recipe cost",
+        "food cost"
+      ],
+      "intent_groups": [
+        "recipe calculate",
+        "recipe cost",
+        "ingredient cost",
+        "menu cost"
+      ],
+      "keywords": [
+        "recipe",
+        "recipe cost",
+        "ingredient cost",
+        "menu cost",
+        "food cost"
+      ],
+      "synonyms": [
+        "calculate recipe",
+        "cost per recipe",
+        "recipe pricing",
+        "ingredient pricing"
+      ],
+      "example_questions": [
+        "How can I calculate recipe?",
+        "How do I calculate recipe cost?",
+        "How do I calculate cost per recipe?",
+        "How do I price ingredients in a recipe?"
+      ],
+      "answer": "Use Recipes to calculate the cost of a finished recipe from your analyzed purchasing data. Add each ingredient, choose the pricing mode, and the tool totals ingredient costs into a reusable recipe-level cost view.",
+      "next_step": "Open Recipes, create a new recipe, add ingredients from the analyzed product list, then review the total and per-ingredient cost breakdown.",
+      "actions": [
+        "go_recipes"
+      ],
+      "workflow_steps": [
+        "Open Recipes after you have analyzed purchasing data.",
+        "Create a new recipe and add each ingredient from the available product catalog.",
+        "Set quantities and choose the pricing mode you want to use.",
+        "Review the total recipe cost and the per-ingredient contribution before saving."
+      ]
+    },
+    {
+      "id": "use-filters",
+      "title": "Use filters",
+      "related_section": "Advanced Filters",
+      "intents": [
+        "how do i use filters",
+        "how to use filters",
+        "advanced filters",
+        "filter results"
+      ],
+      "keywords": [
+        "filters",
+        "advanced filters",
+        "product filter",
+        "supplier filter"
+      ],
+      "example_questions": [
+        "How do I filter the results?",
+        "How do I use supplier filters?"
+      ],
+      "answer": "Use filters after you identify the main cost drivers so you can narrow the view by product, supplier, or status without losing the larger pricing story.",
+      "next_step": "Start in Top Insights, then open the Workspace Table filters to isolate the product or supplier you want to inspect further.",
+      "actions": [
+        "go_top_insights",
+        "go_workspace"
+      ],
+      "workflow_steps": [
+        "Review Top Insights first so you know what you are narrowing toward.",
+        "Open Advanced Filters inside the Workspace Table.",
+        "Filter by product, supplier, or status based on the question you need to answer.",
+        "Reset filters after each drill-down so you keep context."
+      ]
+    },
+    {
+      "id": "ask-your-data",
+      "title": "Use Ask Your Data",
+      "related_section": "Ask Your Data",
+      "intents": [
+        "how do i use ask your data",
+        "how to use ask your data",
+        "ask your data",
+        "executive summary"
+      ],
+      "keywords": [
+        "ask your data",
+        "executive summary",
+        "questions",
+        "insights"
+      ],
+      "example_questions": [
+        "How do I use Ask Your Data?",
+        "Can I get an executive summary from the analysis?"
+      ],
+      "answer": "Ask Your Data is designed for analyzed results only. It turns the current visible dataset into short executive-style answers, recommended actions, and follow-up questions.",
+      "next_step": "Analyze a dataset first, then open Ask Your Data and ask about margin pressure, supplier risk, or renegotiation priorities.",
+      "actions": [
+        "go_ask_data"
+      ],
+      "workflow_steps": [
+        "Complete the analysis first so the assistant has real pricing evidence to summarize.",
+        "Open Ask Your Data after filtering the slice you care about.",
+        "Ask decision-focused questions such as margin pressure, supplier risk, or renegotiation priority.",
+        "Use the summary as an executive briefing layer above the row-level evidence."
+      ]
+    },
+    {
+      "id": "upload-and-mapping",
+      "title": "Upload and map data",
+      "related_section": "Upload & Analyze",
+      "intents": [
+        "how do i upload a file",
+        "how to upload data",
+        "review mappings",
+        "column mappings",
+        "import a file",
+        "add a file"
+      ],
+      "keywords": [
+        "upload",
+        "file",
+        "mappings",
+        "columns",
+        "import"
+      ],
+      "example_questions": [
+        "How do I upload a file?",
+        "How do I confirm the column mappings?",
+        "How do I import purchasing data?"
+      ],
+      "answer": "Upload a CSV or Excel file, review the detected column mappings, and confirm them before analysis so the tool can align your fields to the required purchasing structure.",
+      "next_step": "Use Upload & Analyze, confirm the suggested mappings, then continue into the results view.",
+      "actions": [
+        "go_upload"
+      ],
+      "workflow_steps": [
+        "Open Upload & Analyze and add a CSV or Excel file.",
+        "Review the suggested field matches before running the analysis.",
+        "Confirm the mappings so product, supplier, quantity, unit price, and date fields are correct.",
+        "Continue into the results view once the file is validated."
+      ]
+    },
+    {
+      "id": "savings-opportunities",
+      "title": "Find savings opportunities",
+      "related_section": "Top Insights",
+      "intents": [
+        "how do i find savings opportunities",
+        "how to find savings opportunities",
+        "savings opportunities",
+        "where are the savings"
+      ],
+      "keywords": [
+        "savings",
+        "opportunities",
+        "recoverable spend",
+        "overpay",
+        "margin"
+      ],
+      "example_questions": [
+        "Where are the savings opportunities?",
+        "How do I find the biggest recoverable spend?",
+        "How do I identify margin opportunities?"
+      ],
+      "answer": "Focus on the products and suppliers with the largest visible savings opportunity first because those represent the clearest recoverable spend in the current dataset.",
+      "next_step": "Use Top Insights to identify the highest-value opportunity, then confirm the supporting rows in the Workspace Table.",
+      "actions": [
+        "go_top_insights",
+        "go_workspace"
+      ],
+      "workflow_steps": [
+        "Start with Top Insights to see the largest recoverable spend first.",
+        "Confirm the underlying rows in the Workspace Table.",
+        "Prioritize high-volume items before chasing small isolated price gaps.",
+        "Use the evidence to plan supplier renegotiation or buying decisions."
+      ]
+    }
+  ]
+}
