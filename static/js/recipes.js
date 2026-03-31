@@ -9,6 +9,7 @@
             recipesShell: document.getElementById("recipesShell"),
             recipesList: document.getElementById("recipesList"),
             recipesEmpty: document.getElementById("recipesEmpty"),
+            recipesSidebarActions: document.getElementById("recipesSidebarActions"),
             newRecipeButton: document.getElementById("newRecipeButton"),
             recipeEditorTitle: document.getElementById("recipeEditorTitle"),
             recipeNameInput: document.getElementById("recipeNameInput"),
@@ -143,26 +144,28 @@
                 : '<option value="">Choose unit</option>';
 
             return `
-                <div class="recipe-ingredient-row" data-index="${index}">
-                    <label class="recipe-field">
+                <div class="recipe-ingredient-row recipe-ingredient-grid" data-index="${index}">
+                    <label class="recipe-field recipe-ingredient-cell">
                         <span class="recipe-field-label">Product Name</span>
                         <select class="recipe-select" data-field="product_name" data-index="${index}">
                             <option value="">Choose product</option>
                             ${productOptions}
                         </select>
                     </label>
-                    <label class="recipe-field">
+                    <label class="recipe-field recipe-ingredient-cell">
                         <span class="recipe-field-label">Quantity</span>
                         <input type="number" min="0" step="0.01" class="recipe-input" data-field="quantity" data-index="${index}" value="${escapeHtml(ingredient.quantity)}" placeholder="0.00">
                     </label>
-                    <label class="recipe-field">
+                    <label class="recipe-field recipe-ingredient-cell">
                         <span class="recipe-field-label">Unit</span>
                         <select class="recipe-select" data-field="unit" data-index="${index}" ${ingredient.product_name ? "" : "disabled"}>
                             <option value="">Choose unit</option>
                             ${unitOptions}
                         </select>
                     </label>
-                    <button type="button" class="recipe-remove-btn" data-remove-ingredient="${index}" aria-label="Remove ingredient">Remove</button>
+                    <div class="recipe-ingredient-action">
+                        <button type="button" class="recipe-remove-btn" data-remove-ingredient="${index}" aria-label="Remove ingredient">Remove</button>
+                    </div>
                 </div>
             `;
         }).join("");
@@ -207,6 +210,9 @@
         if (elements.recipeYieldInput) elements.recipeYieldInput.value = state.draft.yield_portions || 1;
         renderPricingModes(elements, state);
         renderIngredients(elements, state);
+        if (elements.recipesSidebarActions) {
+            elements.recipesSidebarActions.hidden = !state.activeRecipeId;
+        }
         if (elements.deleteRecipeButton) {
             elements.deleteRecipeButton.hidden = !state.activeRecipeId;
             elements.deleteRecipeButton.disabled = state.isDeleting;
@@ -445,7 +451,7 @@
             renderRecipeList(elements, state);
             renderEditor(elements, state);
             renderCalculation(elements, state.calculation);
-            setStatus(elements, data.message || "Recipe saved.", "success");
+            setStatus(elements, data.message || "Recipe saved successfully", "success");
         } catch (error) {
             setStatus(elements, error.message, "error");
         }
@@ -466,7 +472,7 @@
             });
             state.recipes = data.recipes || [];
             resetDraftAfterDelete(elements, state);
-            setStatus(elements, data.message || "Recipe deleted.", "success");
+            setStatus(elements, data.message || "Recipe deleted", "danger");
         } catch (error) {
             state.deleteConfirmVisible = true;
             setStatus(elements, error.message, "error");

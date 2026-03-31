@@ -296,6 +296,9 @@
             uploadSubmitButton: document.querySelector("#uploadForm .upload-submit"),
             uploadError: document.getElementById("uploadError"),
             uploadStatusHost: document.getElementById("uploadStatusHost"),
+            clearAnalysisForm: document.getElementById("clearAnalysisForm"),
+            previousAnalysisBadge: document.getElementById("previousAnalysisBadge"),
+            demoDatasetBadge: document.getElementById("demoDatasetBadge"),
             mappingReviewPanel: document.getElementById("mappingReviewPanel"),
             mappingReviewIntro: document.getElementById("mappingReviewIntro"),
             mappingSummaryChips: document.getElementById("mappingSummaryChips"),
@@ -489,7 +492,12 @@
             capabilities: { hasDate: false },
             sort: { field: null, direction: "asc" },
             charts: { topOverpay: null, savings: null, status: null },
-            upload: { isSubmitting: false, hasUploadedAnalysis: false, review: null },
+            upload: {
+                isSubmitting: false,
+                hasUploadedAnalysis: false,
+                review: null,
+                feedback: { error: "", success: "", showReplace: false }
+            },
             filterUi: {
                 openKey: null,
                 activeTrigger: null,
@@ -979,6 +987,191 @@
         }));
     }
 
+    function isValidAnalysisRow(row) {
+        if (!row || typeof row !== "object") {
+            return false;
+        }
+
+        const hasProduct = String(row.productName || "").trim().length > 0;
+        const hasSupplier = String(row.supplier || "").trim().length > 0;
+        const hasUnit = String(row.purchaseUnit || "").trim().length > 0;
+        const hasDate = String(row.date || "").trim().length > 0;
+        const hasNumericSignal = [
+            row.quantity,
+            row.unitPrice,
+            row.price,
+            row.totalAmount,
+            row.averagePrice,
+            row.overpay,
+            row.overpayPct,
+            row.savingsOpportunity
+        ].some((value) => Number.isFinite(Number(value)) && Number(value) !== 0);
+
+        return hasProduct && hasSupplier && hasUnit && hasDate && hasNumericSignal;
+    }
+
+    function hasValidAnalysisRows(rows) {
+        return Array.isArray(rows) && rows.some((row) => isValidAnalysisRow(row));
+    }
+
+    function normalizeAnalysisSource(source) {
+        const normalized = String(source || "").trim().toLowerCase();
+        if (normalized === "upload" || normalized === "uploaded_file") return "uploaded_file";
+        if (normalized === "demo" || normalized === "demo_data") return "demo_data";
+        if (normalized === "restored" || normalized === "restored_analysis") return "restored_analysis";
+        return "empty";
+    }
+
+    function resolveAnalyzerStep2State(elements, state) {
+        const selectedFile = elements.fileInput?.files?.[0] || null;
+        const hasSelectedFile = Boolean(selectedFile);
+        const hasAnalysis = hasValidAnalysisRows(state.allRows);
+        const source = normalizeAnalysisSource(elements.mainDashboardView?.dataset.analysisSource || "empty");
+
+        if (state.upload.review && hasSelectedFile) {
+            return { mode: "uploaded_file", phase: "review", selectedFile, hasAnalysis: false };
+        }
+        if (hasSelectedFile) {
+            return { mode: "uploaded_file", phase: "selected", selectedFile, hasAnalysis: false };
+        }
+        if (hasAnalysis && source !== "empty") {
+            return { mode: source, phase: "active", selectedFile: null, hasAnalysis: true };
+        }
+        return { mode: "empty", phase: "idle", selectedFile: null, hasAnalysis: false };
+    }
+
+    function setAnalysisSourceState(elements, source) {
+        if (!elements.mainDashboardView) {
+            return;
+        }
+
+        const normalizedSource = normalizeAnalysisSource(source || "empty");
+        elements.mainDashboardView.dataset.analysisSource = normalizedSource;
+        const showPrevious = normalizedSource === "restored_analysis";
+        const showDemo = normalizedSource === "demo_data";
+
+        if (elements.clearAnalysisForm) {
+            elements.clearAnalysisForm.hidden = !showPrevious;
+        }
+        if (elements.previousAnalysisBadge) {
+            elements.previousAnalysisBadge.hidden = !showPrevious;
+        }
+        if (elements.demoDatasetBadge) {
+            elements.demoDatasetBadge.hidden = !showDemo;
+        }
+    }
+
+    function getActiveAnalysisLabel(elements, source) {
+        const filename = String(elements.mainDashboardView?.dataset.analysisFilename || "").trim();
+        if (source === "demo_data") {
+            return "Demo dataset ready";
+        }
+        if (source === "restored_analysis") {
+            return filename || "Saved analysis ready";
+        }
+        return filename || "Current analysis ready";
+    }
+
+    function getActiveAnalysisStatusText(elements, source) {
+        const filename = String(elements.mainDashboardView?.dataset.analysisFilename || "").trim();
+        if (source === "demo_data") {
+            return "Analysis ready for demo dataset";
+        }
+        if (filename) {
+            return `Analysis ready for ${filename}`;
+        }
+        if (source === "restored_analysis") {
+            return "Analysis ready for saved analysis";
+        }
+        return "Analysis ready";
+    }
+
+    function renderAnalyzerStep2(elements, state) {
+        const resolvedState = resolveAnalyzerStep2State(elements, state);
+        const feedback = state.upload.feedback || { error: "", success: "", showReplace: false };
+        const dropzone = document.getElementById("uploadDropzone");
+
+        if (elements.uploadError) {
+            elements.uploadError.textContent = feedback.error || "";
+            elements.uploadError.hidden = !feedback.error;
+        }
+
+        if (elements.fileName) {
+            if (resolvedState.mode === "empty") {
+                elements.fileName.textContent = "No file selected yet";
+            } else if (resolvedState.mode === "uploaded_file" && resolvedState.phase !== "active") {
+                elements.fileName.textContent = resolvedState.selectedFile?.name || "No file selected yet";
+            } else {
+                elements.fileName.textContent = getActiveAnalysisLabel(elements, resolvedState.mode);
+            }
+        }
+
+        if (elements.uploadBox) {
+            elements.uploadBox.classList.toggle("has-file", resolvedState.mode !== "empty");
+        }
+        if (dropzone) {
+            dropzone.classList.toggle("has-file", resolvedState.mode !== "empty");
+        }
+
+        if (resolvedState.phase === "active") {
+            renderUploadStatus(elements, {
+                success: feedback.success || getActiveAnalysisStatusText(elements, resolvedState.mode),
+                showReplace: feedback.showReplace !== false
+            });
+            setAnalysisSourceState(elements, resolvedState.mode);
+        } else if (resolvedState.phase === "review" && feedback.success) {
+            renderUploadStatus(elements, {
+                success: feedback.success,
+                showReplace: false
+            });
+            setAnalysisSourceState(elements, "empty");
+        } else {
+            renderUploadStatus(elements, { success: "", showReplace: false });
+            setAnalysisSourceState(elements, "empty");
+        }
+
+        if (elements.uploadSubmitButton) {
+            const shouldEnableSubmit = !state.upload.isSubmitting && resolvedState.mode === "uploaded_file";
+            elements.uploadSubmitButton.disabled = !shouldEnableSubmit;
+        }
+    }
+
+    function validateRestoredAnalysisState(elements, state) {
+        const hasAnalysis = hasValidAnalysisRows(state.allRows);
+        state.upload.hasUploadedAnalysis = hasAnalysis;
+
+        if (!hasAnalysis) {
+            state.allRows = [];
+            state.visibleRows = [];
+            state.metrics = null;
+            state.filters = { ...defaultFilters };
+            state.sort = { field: null, direction: "asc" };
+            resetUploadUi(elements);
+            resetUploadReview(elements, state);
+            state.upload.feedback = { error: "", success: "", showReplace: false };
+            setAnalysisSourceState(elements, "empty");
+            if (elements.mainDashboardView) {
+                elements.mainDashboardView.dataset.hasAnalysis = "false";
+                elements.mainDashboardView.dataset.analysisFilename = "";
+            }
+            renderAnalyzerStep2(elements, state);
+            return false;
+        }
+
+        const source = normalizeAnalysisSource(elements.mainDashboardView?.dataset.analysisSource || "empty");
+        setAnalysisSourceState(elements, source);
+        if (elements.mainDashboardView) {
+            elements.mainDashboardView.dataset.hasAnalysis = "true";
+        }
+        state.upload.feedback = {
+            error: "",
+            success: getActiveAnalysisStatusText(elements, source),
+            showReplace: source !== "demo_data"
+        };
+        renderAnalyzerStep2(elements, state);
+        return true;
+    }
+
     function escapeHtml(value) {
         return String(value ?? "")
             .replace(/&/g, "&amp;")
@@ -1192,6 +1385,12 @@
     }
 
     function setUploadFeedback(elements, { error = "", success = "", showReplace = false } = {}) {
+        const state = window.__priceAnalyzerDashboardState;
+        if (state?.upload) {
+            state.upload.feedback = { error, success, showReplace };
+            renderAnalyzerStep2(elements, state);
+            return;
+        }
         if (elements.uploadError) {
             elements.uploadError.textContent = error;
             elements.uploadError.hidden = !error;
@@ -1202,9 +1401,6 @@
     function resetUploadUi(elements) {
         if (elements.fileInput) {
             elements.fileInput.value = "";
-        }
-        if (elements.fileName) {
-            elements.fileName.textContent = "No file selected yet";
         }
         const uploadBox = document.getElementById("uploadBox");
         const dropzone = document.getElementById("uploadDropzone");
@@ -1218,6 +1414,7 @@
 
     function resetAnalysisState(elements, state) {
         state.upload.hasUploadedAnalysis = false;
+        state.upload.feedback = { error: "", success: "", showReplace: false };
         state.allRows = [];
         state.visibleRows = [];
         state.metrics = null;
@@ -1229,11 +1426,14 @@
         populateSuppliers(elements, state);
         if (elements.mainDashboardView) {
             elements.mainDashboardView.dataset.hasAnalysis = "false";
+            elements.mainDashboardView.dataset.analysisFilename = "";
         }
+        setAnalysisSourceState(elements, "empty");
         syncRecipesAvailability(elements, false);
         if (elements.askDataPanel) {
             elements.askDataPanel.hidden = true;
         }
+        renderAnalyzerStep2(elements, state);
         refresh(elements, state);
     }
 
@@ -1262,15 +1462,20 @@
         populateSuppliers(elements, state);
         if (elements.mainDashboardView) {
             elements.mainDashboardView.dataset.hasAnalysis = state.allRows.length > 0 ? "true" : "false";
+            elements.mainDashboardView.dataset.analysisSource = "uploaded_file";
+            elements.mainDashboardView.dataset.analysisFilename = payload.filename || "";
         }
+        setAnalysisSourceState(elements, state.allRows.length > 0 ? "uploaded_file" : "empty");
         syncRecipesAvailability(elements, state.allRows.length > 0);
         if (elements.askDataPanel) {
             elements.askDataPanel.hidden = state.allRows.length === 0;
         }
-        setUploadFeedback(elements, {
+        state.upload.feedback = {
+            error: "",
             success: payload.filename ? `Analysis ready for ${payload.filename}` : "Analysis ready",
             showReplace: true
-        });
+        };
+        renderAnalyzerStep2(elements, state);
         refresh(elements, state);
         window.requestAnimationFrame(() => {
             setStoredCollapsibleState("guidedEntryCollapsed", true);
@@ -2179,6 +2384,7 @@
             }
             resetUploadReview(elements, state);
             setUploadFeedback(elements, { showReplace: false });
+            renderAnalyzerStep2(elements, state);
         }
 
         function setDraggingState(isDragging) {
@@ -2288,9 +2494,11 @@
         isInitializing = true;
         try {
             const state = createState();
+            window.__priceAnalyzerDashboardState = state;
             Table.loadColumnOrder();
             initFileInput(elements, state);
             state.allRows = Table.extractTableData(elements.tableBody);
+            const hasValidRestoredAnalysis = validateRestoredAnalysisState(elements, state);
             console.log("URL READ ONCE", getUrlState());
             stripInitialSortParams();
             applyUrlState(state, { includeSort: false });
@@ -2298,7 +2506,11 @@
             sanitizeState(state);
             populateProducts(elements, state);
             populateSuppliers(elements, state);
-            syncRecipesAvailability(elements, state.allRows.length > 0);
+            syncRecipesAvailability(elements, hasValidRestoredAnalysis);
+            if (elements.askDataPanel) {
+                elements.askDataPanel.hidden = !hasValidRestoredAnalysis;
+            }
+            renderAnalyzerStep2(elements, state);
             renderTableStructure(elements, state);
             bindEvents(elements, state);
             refresh(elements, state);

@@ -21,6 +21,11 @@
         return (code || "").trim().toUpperCase();
     }
 
+    function finishBoot() {
+        document.documentElement.classList.remove("auth-pending");
+        document.body?.classList.remove("app-booting");
+    }
+
     function showDashboard(elements) {
         console.log("UNLOCKING DASHBOARD");
         if (elements.accessShell) {
@@ -37,20 +42,24 @@
         if (elements.logoutButton) {
             elements.logoutButton.hidden = false;
         }
+        finishBoot();
         document.dispatchEvent(new CustomEvent("price-analyzer:dashboard-unlocked"));
     }
 
     function showAccessScreen(elements) {
         if (elements.accessShell) {
             elements.accessShell.hidden = false;
+            elements.accessShell.style.display = "block";
         }
         if (elements.appShell) {
             elements.appShell.hidden = true;
             elements.appShell.classList.add("app-shell-locked");
+            elements.appShell.style.display = "none";
         }
         if (elements.logoutButton) {
             elements.logoutButton.hidden = true;
         }
+        finishBoot();
     }
 
     function setError(elements, message) {

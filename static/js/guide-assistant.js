@@ -5,10 +5,13 @@
     function getElements() {
         return {
             workspace: document.getElementById("guideWorkspace"),
+            assistantShell: document.querySelector("#guideWorkspaceView .guide-assistant-shell") || document.querySelector("#guideWorkspace .guide-assistant-shell"),
+            resultStage: document.getElementById("guideResultStage"),
             form: document.getElementById("guideAskForm"),
             input: document.getElementById("guideAskInput"),
             button: document.getElementById("guideAskButton"),
             answer: document.getElementById("guideAskAnswer"),
+            answerBody: document.getElementById("guideAskAnswerBody"),
             emptyState: document.getElementById("guideAskEmptyState"),
             answerTitle: document.getElementById("guideAskAnswerTitle"),
             answerText: document.getElementById("guideAskAnswerText"),
@@ -44,6 +47,40 @@
     function writeState(state) {
         try {
             window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        } catch (error) {
+            return;
+        }
+    }
+
+    function setAnswerState(elements, hasAnswer) {
+        if (!elements.assistantShell) return;
+        elements.assistantShell.classList.toggle("has-answer", Boolean(hasAnswer));
+        elements.assistantShell.classList.toggle("is-empty", !hasAnswer);
+    }
+
+    function setResultState(elements, hasGuideAnswer, hasWorkflow) {
+        if (elements.resultStage) {
+            elements.resultStage.classList.toggle("guide-result-ready", Boolean(hasGuideAnswer));
+            elements.resultStage.classList.toggle("guide-result-empty", !hasGuideAnswer);
+        }
+        if (elements.answer) {
+            elements.answer.hidden = !hasGuideAnswer;
+        }
+        if (elements.answerBody) {
+            elements.answerBody.hidden = !hasGuideAnswer;
+        }
+        if (elements.emptyState) {
+            elements.emptyState.hidden = hasGuideAnswer;
+        }
+        if (elements.workflowBlock) {
+            elements.workflowBlock.hidden = !(hasGuideAnswer && hasWorkflow);
+        }
+        setAnswerState(elements, hasGuideAnswer);
+    }
+
+    function clearGuideState() {
+        try {
+            window.localStorage.removeItem(STORAGE_KEY);
         } catch (error) {
             return;
         }
@@ -99,6 +136,11 @@
 
     function renderAnswer(elements, payload) {
         if (!elements.answer || !elements.answerText) return;
+        const answerText = String(payload?.answer || "").trim();
+        if (!answerText) {
+            renderEmptyState(elements);
+            return;
+        }
 
         elements.answer.hidden = false;
         if (elements.emptyState) {
@@ -108,7 +150,7 @@
         if (elements.answerTitle) {
             elements.answerTitle.textContent = payload.title || "Guide Answer";
         }
-        elements.answerText.textContent = payload.answer || "I couldn't find that feature in this tool yet.";
+        elements.answerText.textContent = answerText;
 
         const relatedSection = payload.related_section ? `Related section: ${payload.related_section}` : "";
         const nextStep = payload.next_step ? `Next step: ${payload.next_step}` : "";
@@ -139,15 +181,35 @@
 
         renderWorkflow(elements, payload.workflow_steps);
         renderActions(elements, payload.actions);
+        const hasWorkflow = Boolean(elements.workflow?.textContent?.trim());
+        setResultState(elements, true, hasWorkflow);
     }
 
     function renderEmptyState(elements) {
-        if (elements.answer) {
-            elements.answer.hidden = true;
+        if (elements.workflowBlock) {
+            elements.workflowBlock.hidden = true;
         }
-        if (elements.emptyState) {
-            elements.emptyState.hidden = false;
+        if (elements.actions) {
+            elements.actions.hidden = true;
+            elements.actions.innerHTML = "";
         }
+        if (elements.answerMeta) {
+            elements.answerMeta.hidden = true;
+        }
+        if (elements.contextNote) {
+            elements.contextNote.hidden = true;
+            elements.contextNote.textContent = "";
+        }
+        if (elements.contextChip) {
+            elements.contextChip.hidden = true;
+        }
+        if (elements.workflow) {
+            elements.workflow.innerHTML = "";
+        }
+        if (elements.answerText) {
+            elements.answerText.textContent = "";
+        }
+        setResultState(elements, false, false);
     }
 
     function renderHistory(elements, state) {
@@ -354,6 +416,17 @@
         return;
     }
 
-    hydrateFromStorage(elements);
+    const hardResetRequested = Boolean(window.PriceAnalyzerBootGuard?.didHardReset?.());
+    if (hardResetRequested) {
+        clearGuideState();
+        if (elements.input) {
+            elements.input.value = "";
+        }
+        setActiveTopic(elements, "");
+        renderHistory(elements, { currentQuestion: "", currentAnswer: null, selectedTopic: "", history: [] });
+        renderEmptyState(elements);
+    } else {
+        hydrateFromStorage(elements);
+    }
     bindEvents(elements);
 })();

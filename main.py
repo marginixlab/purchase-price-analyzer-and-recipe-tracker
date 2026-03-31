@@ -1,3 +1,5 @@
+print("RUNNING MAIN FROM:", __file__)
+
 import io
 import json
 import logging
@@ -682,12 +684,61 @@ def read_uploaded_dataframe(file: UploadFile) -> pd.DataFrame:
         raise ValueError("The uploaded file is empty.")
 
     try:
+        logger.info(
+            "[upload debug] reading uploaded file: filename=%s extension=%s",
+            filename,
+            extension
+        )
         if extension == ".csv":
-            dataframe = pd.read_csv(file.file)
+            file.file.seek(0)
+            dataframe = pd.read_csv(file.file, dtype=object)
         elif extension == ".xlsx":
-            dataframe = pd.read_excel(file.file, engine="openpyxl")
+            try:
+                file.file.seek(0)
+                dataframe = pd.read_excel(file.file, engine="openpyxl", dtype=object)
+                logger.info(
+                    "[upload debug] parsed .xlsx with engine=openpyxl: filename=%s",
+                    filename
+                )
+            except ImportError:
+                raise
+            except Exception as openpyxl_exc:
+                logger.warning(
+                    "[upload debug] openpyxl parse failed for filename=%s extension=%s error=%s",
+                    filename,
+                    extension,
+                    openpyxl_exc
+                )
+                try:
+                    file.file.seek(0)
+                    dataframe = pd.read_excel(file.file, engine="calamine", dtype=object)
+                    logger.info(
+                        "[upload debug] parsed .xlsx with fallback engine=calamine: filename=%s",
+                        filename
+                    )
+                except ImportError as calamine_exc:
+                    logger.warning(
+                        "[upload debug] calamine unavailable for filename=%s extension=%s error=%s",
+                        filename,
+                        extension,
+                        calamine_exc
+                    )
+                    raise ValueError(
+                        "This Excel workbook could not be parsed with openpyxl. Install python-calamine for broader Excel compatibility, or re-save the workbook as a new .xlsx file and try again."
+                    ) from openpyxl_exc
+                except Exception as calamine_exc:
+                    logger.warning(
+                        "[upload debug] calamine parse failed for filename=%s extension=%s error=%s",
+                        filename,
+                        extension,
+                        calamine_exc
+                    )
+                    raise ValueError(
+                        "This Excel workbook could not be parsed. Please re-save the workbook as a new .xlsx file and try again."
+                    ) from calamine_exc
         elif extension == ".xls":
-            dataframe = pd.read_excel(file.file, engine="xlrd")
+            file.file.seek(0)
+            dataframe = pd.read_excel(file.file, dtype=object)
         else:
             raise ValueError("Unsupported file type. Please upload a CSV or Excel file (.csv, .xlsx, or .xls).")
     except ImportError as exc:
@@ -1021,16 +1072,113 @@ def coalesce_number(primary: Any, fallback: Any = 0) -> float:
     return 0.0
 
 
-def normalize_request_value(value: Any) -> Any:
+def parse_bool_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes", "on"}:
+        return True
+    if text in {"false", "0", "no", "off", ""}:
+        return False
+    return False
+
+
+def safe_int(value: Any, default: int = 0) -> int:
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in {"true", "false", ""}:
+        return default
+    try:
+        return int(float(text))
+    except (TypeError, ValueError):
+        return default
+
+
+def normalize_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if value is pd.NA:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        pass
+
+    if isinstance(value, bool):
+        return value
+
+    if hasattr(value, "item") and not isinstance(value, (str, bytes)):
+        try:
+            normalized_item = value.item()
+        except (TypeError, ValueError):
+            normalized_item = value
+        if normalized_item is not value:
+            return normalize_value(normalized_item)
+
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+
     if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered == "true":
-            return True
-        if lowered == "false":
-            return False
-        if value.isdigit():
-            return int(value)
+        stripped = value.strip()
+        lowered = stripped.lower()
+        if lowered in {"true", "false"}:
+            return stripped
+        if re.fullmatch(r"[+-]?\d+", stripped):
+            return safe_int(stripped)
+        return stripped
+
     return value
+
+
+def normalize_request_value(value: Any) -> Any:
+    return normalize_value(value)
+
+
+def coerce_numeric_value(value: Any, *, field_name: str, context: str) -> float:
+    normalized_value = normalize_value(value)
+    if normalized_value is None or normalized_value == "":
+        return 0.0
+    if isinstance(normalized_value, bool):
+        logger.info(
+            "[quote compare upload] preserving boolean-like value for %s (%s): %r",
+            field_name,
+            context,
+            normalized_value
+        )
+        return 0.0
+    if isinstance(normalized_value, str) and normalized_value.lower() in {"true", "false"}:
+        logger.info(
+            "[quote compare upload] preserving boolean-like string for %s (%s): %r",
+            field_name,
+            context,
+            normalized_value
+        )
+        return 0.0
+
+    try:
+        return float(normalized_value)
+    except (TypeError, ValueError):
+        logger.warning(
+            "[quote compare upload] failed numeric coercion for %s (%s): type=%s value=%r",
+            field_name,
+            context,
+            type(normalized_value).__name__,
+            normalized_value
+        )
+        return 0.0
+
+
+def normalize_text_value(value: Any) -> str:
+    normalized_value = normalize_value(value)
+    if normalized_value is None:
+        return ""
+    if isinstance(normalized_value, bool):
+        return str(normalized_value)
+    return str(normalized_value).strip()
 
 
 def ensure_recipes_file() -> None:
@@ -1070,15 +1218,89 @@ def load_quote_comparisons_store() -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"Invalid quote comparisons file: {QUOTE_COMPARISONS_PATH}") from exc
 
+    changed = False
     comparisons = store.get("comparisons")
     if not isinstance(comparisons, list):
         store["comparisons"] = []
+        changed = True
+    active_sessions = store.get("active_sessions")
+    if not isinstance(active_sessions, dict):
+        store["active_sessions"] = {}
+        changed = True
+    if changed:
         save_quote_comparisons_store(store)
     return store
 
 
 def save_quote_comparisons_store(store: dict[str, Any]) -> None:
     QUOTE_COMPARISONS_PATH.write_text(json.dumps(store, indent=2), encoding="utf-8")
+
+
+def serialize_dataframe_records(dataframe: pd.DataFrame) -> list[dict[str, Any]]:
+    serializable = dataframe.astype(object).where(pd.notna(dataframe), None)
+    records: list[dict[str, Any]] = []
+    for row in serializable.to_dict(orient="records"):
+        records.append({
+            str(key): normalize_value(value)
+            for key, value in row.items()
+        })
+    return records
+
+
+def hydrate_dataframe_from_session(columns: list[str], records: list[dict[str, Any]]) -> pd.DataFrame:
+    if not isinstance(columns, list):
+        columns = []
+    if not isinstance(records, list):
+        records = []
+    dataframe = pd.DataFrame(records)
+    if columns:
+        dataframe = dataframe.reindex(columns=columns)
+    return dataframe
+
+
+def save_quote_compare_active_session(session_id: str, payload: dict[str, Any]) -> None:
+    store = load_quote_comparisons_store()
+    active_sessions = store.get("active_sessions", {})
+    active_sessions[session_id] = payload
+    store["active_sessions"] = active_sessions
+    save_quote_comparisons_store(store)
+
+
+def load_quote_compare_active_session(session_id: str | None) -> dict[str, Any] | None:
+    if not session_id:
+        return None
+    return load_quote_comparisons_store().get("active_sessions", {}).get(session_id)
+
+
+def validate_quote_compare_active_session(session_payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(session_payload, dict):
+        return None
+
+    session_id = str(session_payload.get("session_id") or "").strip()
+    step = str(session_payload.get("step") or "").strip().lower()
+    dataframe = session_payload.get("dataframe") or {}
+    headers = session_payload.get("headers")
+    dataframe_columns = dataframe.get("columns") if isinstance(dataframe, dict) else None
+    dataframe_records = dataframe.get("records") if isinstance(dataframe, dict) else None
+
+    if not session_id or step not in {"review", "analyze"}:
+        return None
+    if not isinstance(headers, list) or not headers:
+        return None
+    if not isinstance(dataframe_columns, list) or not dataframe_columns:
+        return None
+    if not isinstance(dataframe_records, list):
+        return None
+
+    if step == "review":
+        return session_payload
+
+    comparison = session_payload.get("comparison")
+    evaluation = session_payload.get("evaluation")
+    if not isinstance(comparison, dict) or not isinstance(evaluation, dict):
+        return None
+
+    return session_payload
 
 
 GUIDE_ASSISTANT_FALLBACK = "I couldn't find that feature in this tool yet."
@@ -1430,7 +1652,7 @@ def parse_days_from_text(value: str | None) -> int | None:
     match = re.search(r"(\d+(?:\.\d+)?)", text)
     if not match:
         return None
-    return max(int(float(match.group(1))), 0)
+    return max(safe_int(match.group(1)), 0)
 
 
 def parse_payment_term_days(value: str | None) -> int | None:
@@ -1446,10 +1668,26 @@ def normalize_quote_weighting(weighting: dict[str, Any] | None = None) -> dict[s
     normalized = {}
     source = weighting or {}
     for key, default_value in QUOTE_COMPARE_DEFAULT_WEIGHTS.items():
-        raw_value = normalize_request_value(source.get(key, default_value))
+        raw_value = normalize_value(source.get(key, default_value))
+        if isinstance(raw_value, bool) or (
+            isinstance(raw_value, str) and raw_value.lower() in {"true", "false", ""}
+        ) or raw_value is None:
+            logger.info(
+                "[quote compare upload] preserving non-numeric weighting for %s: %r",
+                key,
+                raw_value
+            )
+            normalized[key] = default_value
+            continue
         try:
             normalized[key] = max(float(raw_value), 0.0)
         except (TypeError, ValueError):
+            logger.warning(
+                "[quote compare upload] failed numeric coercion for %s (quote weighting): type=%s value=%r",
+                key,
+                type(raw_value).__name__,
+                raw_value
+            )
             normalized[key] = default_value
 
     total_weight = sum(normalized.values())
@@ -1464,29 +1702,33 @@ def normalize_quote_weighting(weighting: dict[str, Any] | None = None) -> dict[s
 
 def normalize_quote_comparison_payload(payload: dict[str, Any]) -> dict[str, Any]:
     normalized_bids: list[dict[str, Any]] = []
-    for bid in payload.get("bids", []):
-        supplier_name = str(bid.get("supplier_name", "")).strip()
-        product_name = str(bid.get("product_name", "")).strip()
-        unit = str(bid.get("unit", "")).strip()
-        quote_date = str(bid.get("quote_date", bid.get("date", ""))).strip()
-        currency = str(bid.get("currency", "")).strip().upper()
-        delivery_time = str(bid.get("delivery_time", "")).strip()
-        payment_term = str(bid.get("payment_term", "")).strip()
-        valid_until = str(bid.get("valid_until", "")).strip()
-        notes = str(bid.get("notes", "")).strip()
+    for index, bid in enumerate(payload.get("bids", []), start=1):
+        row_context = f"normalized payload row {index}"
+        supplier_name = normalize_text_value(bid.get("supplier_name", ""))
+        product_name = normalize_text_value(bid.get("product_name", ""))
+        unit = normalize_text_value(bid.get("unit", ""))
+        quote_date = normalize_text_value(bid.get("quote_date", bid.get("date", "")))
+        currency = normalize_text_value(bid.get("currency", "")).upper()
+        delivery_time = normalize_text_value(bid.get("delivery_time", ""))
+        payment_term = normalize_text_value(bid.get("payment_term", ""))
+        valid_until = normalize_text_value(bid.get("valid_until", ""))
+        notes = normalize_text_value(bid.get("notes", ""))
 
-        try:
-            quantity = float(normalize_request_value(bid.get("quantity", 0)) or 0)
-        except (TypeError, ValueError):
-            quantity = 0.0
-        try:
-            unit_price = float(normalize_request_value(bid.get("unit_price", 0)) or 0)
-        except (TypeError, ValueError):
-            unit_price = 0.0
-        try:
-            total_price = float(normalize_request_value(bid.get("total_price", 0)) or 0)
-        except (TypeError, ValueError):
-            total_price = 0.0
+        quantity = coerce_numeric_value(
+            bid.get("quantity", 0),
+            field_name="quantity",
+            context=row_context
+        )
+        unit_price = coerce_numeric_value(
+            bid.get("unit_price", 0),
+            field_name="unit_price",
+            context=row_context
+        )
+        total_price = coerce_numeric_value(
+            bid.get("total_price", 0),
+            field_name="total_price",
+            context=row_context
+        )
 
         if not supplier_name and not product_name and quantity <= 0 and unit_price <= 0 and total_price <= 0:
             continue
@@ -1508,12 +1750,12 @@ def normalize_quote_comparison_payload(payload: dict[str, Any]) -> dict[str, Any
         })
 
     return {
-        "comparison_id": str(payload.get("comparison_id") or "").strip() or None,
-        "name": str(payload.get("name", "")).strip(),
-        "sourcing_need": str(payload.get("sourcing_need", "")).strip(),
+        "comparison_id": normalize_text_value(payload.get("comparison_id", "")) or None,
+        "name": normalize_text_value(payload.get("name", "")),
+        "sourcing_need": normalize_text_value(payload.get("sourcing_need", "")),
         "weighting": normalize_quote_weighting(payload.get("weighting")),
-        "source_type": str(payload.get("source_type", "")).strip() or "manual",
-        "mode": str(payload.get("mode", "")).strip() or "compare",
+        "source_type": normalize_text_value(payload.get("source_type", "")) or "manual",
+        "mode": normalize_text_value(payload.get("mode", "")) or "compare",
         "bids": normalized_bids
     }
 
@@ -1539,23 +1781,32 @@ def build_quote_bids_from_dataframe(dataframe: pd.DataFrame) -> list[dict[str, A
     bids: list[dict[str, Any]] = []
     optional_fields = set(QUOTE_COMPARE_OPTIONAL_FIELDS)
 
-    for _, row in dataframe.iterrows():
-        supplier_name = str(row.get("Supplier", row.get("Supplier Name", ""))).strip()
-        product_name = str(row.get("Product Name", "")).strip()
-        unit = str(row.get("Unit", "")).strip()
+    for index, row in enumerate(dataframe.iterrows(), start=1):
+        _, row_values = row
+        row_context = f"uploaded dataframe row {index}"
+        supplier_name = normalize_text_value(row_values.get("Supplier", row_values.get("Supplier Name", "")))
+        product_name = normalize_text_value(row_values.get("Product Name", ""))
+        unit = normalize_text_value(row_values.get("Unit", ""))
 
-        try:
-            quantity = float(normalize_request_value(row.get("Quantity", 0)) or 0)
-        except (TypeError, ValueError):
-            quantity = 0.0
-        try:
-            unit_price = float(normalize_request_value(row.get("Unit Price", 0)) or 0)
-        except (TypeError, ValueError):
-            unit_price = 0.0
-        try:
-            total_price = float(normalize_request_value(row.get("Total Price", 0)) or 0) if "Total Price" in optional_fields and "Total Price" in dataframe.columns else 0.0
-        except (TypeError, ValueError):
-            total_price = 0.0
+        quantity = coerce_numeric_value(
+            row_values.get("Quantity", 0),
+            field_name="Quantity",
+            context=row_context
+        )
+        unit_price = coerce_numeric_value(
+            row_values.get("Unit Price", 0),
+            field_name="Unit Price",
+            context=row_context
+        )
+        total_price = (
+            coerce_numeric_value(
+                row_values.get("Total Price", 0),
+                field_name="Total Price",
+                context=row_context
+            )
+            if "Total Price" in optional_fields and "Total Price" in dataframe.columns
+            else 0.0
+        )
 
         if not supplier_name and not product_name and quantity <= 0 and unit_price <= 0 and total_price <= 0:
             continue
@@ -1568,12 +1819,12 @@ def build_quote_bids_from_dataframe(dataframe: pd.DataFrame) -> list[dict[str, A
             "quantity": round(quantity, 4),
             "unit_price": round(unit_price, 4),
             "total_price": round(resolved_total, 4),
-            "quote_date": str(row.get("Date", "")).strip(),
-            "currency": str(row.get("Currency", "")).strip().upper() or "USD",
-            "delivery_time": str(row.get("Delivery Time", "")).strip(),
-            "payment_term": str(row.get("Payment Terms", "")).strip(),
-            "valid_until": str(row.get("Valid Until", "")).strip(),
-            "notes": str(row.get("Notes", "")).strip()
+            "quote_date": normalize_text_value(row_values.get("Date", "")),
+            "currency": normalize_text_value(row_values.get("Currency", "")).upper() or "USD",
+            "delivery_time": normalize_text_value(row_values.get("Delivery Time", "")),
+            "payment_term": normalize_text_value(row_values.get("Payment Terms", "")),
+            "valid_until": normalize_text_value(row_values.get("Valid Until", "")),
+            "notes": normalize_text_value(row_values.get("Notes", ""))
         })
 
     return bids
@@ -2504,7 +2755,7 @@ def build_page_context(
     context: dict[str, Any] = {"request": request, "active_view": active_view}
     error = request.query_params.get("error")
     source_name = request.query_params.get("filename")
-    demo_mode = request.query_params.get("demo_mode") == "1"
+    demo_mode = parse_bool_flag(request.query_params.get("demo_mode"))
 
     if error:
         context["error"] = error
@@ -2986,11 +3237,14 @@ def create_app() -> FastAPI:
         })
 
     @app.get("/quote-compare/bootstrap")
-    def quote_compare_bootstrap():
-        comparisons = load_quote_comparisons_store().get("comparisons", [])
+    def quote_compare_bootstrap(session_id: str | None = None):
+        store = load_quote_comparisons_store()
+        comparisons = store.get("comparisons", [])
+        active_session = validate_quote_compare_active_session(load_quote_compare_active_session(session_id))
         return JSONResponse({
             "success": True,
-            "comparisons": comparisons
+            "comparisons": comparisons,
+            "active_session": active_session
         })
 
     @app.post("/quote-compare/demo-data")
@@ -3053,6 +3307,7 @@ def create_app() -> FastAPI:
             optional_reviews.append(review)
 
         payload = {
+            "session_id": str(uuid.uuid4()),
             "filename": filename,
             "required_fields": QUOTE_COMPARE_REQUIRED_FIELDS,
             "optional_fields": QUOTE_COMPARE_OPTIONAL_FIELDS,
@@ -3072,12 +3327,36 @@ def create_app() -> FastAPI:
             "headers": columns
         }
 
+        save_quote_compare_active_session(
+            payload["session_id"],
+            {
+                "session_id": payload["session_id"],
+                "step": "review",
+                "filename": filename,
+                "headers": columns,
+                "mapping": payload["mapping"],
+                "field_reviews": payload["field_reviews"],
+                "required_fields": QUOTE_COMPARE_REQUIRED_FIELDS,
+                "optional_fields": QUOTE_COMPARE_OPTIONAL_FIELDS,
+                "matched_fields": payload["matched_fields"],
+                "missing_fields": payload["missing_fields"],
+                "optional_columns": payload["optional_columns"],
+                "review_message": payload["review_message"],
+                "message": payload["message"],
+                "dataframe": {
+                    "columns": columns,
+                    "records": serialize_dataframe_records(df)
+                }
+            }
+        )
+
         return JSONResponse({"success": True, **payload})
 
     @app.post("/quote-compare/upload/confirm")
     async def confirm_quote_compare_upload(
-        file: UploadFile = File(...),
-        mappings: str = Form(...)
+        file: UploadFile | None = File(None),
+        mappings: str = Form(...),
+        session_id: str | None = Form(None)
     ):
         filename = file.filename or ""
 
@@ -3095,7 +3374,17 @@ def create_app() -> FastAPI:
             )
 
         try:
-            df = read_uploaded_dataframe(file)
+            session_payload = validate_quote_compare_active_session(load_quote_compare_active_session(session_id))
+            if file is not None and (file.filename or ""):
+                df = read_uploaded_dataframe(file)
+            elif session_payload and session_payload.get("dataframe"):
+                df = hydrate_dataframe_from_session(
+                    session_payload["dataframe"].get("columns", []),
+                    session_payload["dataframe"].get("records", [])
+                )
+                filename = session_payload.get("filename", filename)
+            else:
+                raise ValueError("The uploaded supplier file is no longer available. Please upload it again.")
             full_mapping = {
                 field_name: parsed_mapping.get(field_name)
                 for field_name in [*QUOTE_COMPARE_REQUIRED_FIELDS, *QUOTE_COMPARE_OPTIONAL_FIELDS]
@@ -3112,6 +3401,19 @@ def create_app() -> FastAPI:
                 "bids": build_quote_bids_from_dataframe(mapped_df)
             })
             evaluation = calculate_quote_comparison(normalized_comparison)
+            if session_id:
+                save_quote_compare_active_session(
+                    session_id,
+                    {
+                        **(session_payload or {}),
+                        "session_id": session_id,
+                        "step": "analyze",
+                        "filename": filename,
+                        "mapping": parsed_mapping,
+                        "comparison": normalized_comparison,
+                        "evaluation": evaluation
+                    }
+                )
         except ValueError as exc:
             return JSONResponse({"success": False, "message": str(exc)}, status_code=400)
         except Exception:
@@ -3126,6 +3428,7 @@ def create_app() -> FastAPI:
 
         return JSONResponse({
             "success": True,
+            "session_id": session_id,
             "comparison": normalized_comparison,
             "evaluation": evaluation,
             "message": f"Imported supplier offers from {filename}"

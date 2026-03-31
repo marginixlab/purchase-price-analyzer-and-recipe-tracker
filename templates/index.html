@@ -4,11 +4,19 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Purchase Price Analyzer</title>
+    <script>
+        document.documentElement.classList.add("auth-pending");
+    </script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link rel="stylesheet" href="{{ url_for('static', path='/css/styles.css') }}">
+    <style>
+        #quoteCompareWorkspaceView[data-qc-ready="false"] #quoteCompareApp {
+            visibility: hidden;
+        }
+    </style>
 </head>
-<body>
-    <section class="access-shell" id="accessShell">
+<body data-active-view="{{ active_view }}" class="app-booting">
+    <section class="access-shell" id="accessShell" hidden>
         <div class="access-card">
             <div class="panel-label">Secure Access</div>
             <h1 class="access-title">Enter Access Code</h1>
@@ -63,7 +71,12 @@
         </aside>
 
         {% if active_view == 'analyzer' %}
-        <div id="mainDashboardView" data-has-analysis="{{ 'true' if rows else 'false' }}">
+        <div
+            id="mainDashboardView"
+            data-has-analysis="{{ 'true' if rows else 'false' }}"
+            data-analysis-source="{% if demo_mode and rows %}demo_data{% elif persisted_analysis and rows %}restored_analysis{% elif rows %}uploaded_file{% else %}empty{% endif %}"
+            data-analysis-filename="{{ filename or '' }}"
+        >
         <section class="collapsible-panel collapsible-panel-hero is-expanded" id="guidedEntryPanel" data-collapsible data-storage-key="guidedEntryCollapsed">
             <button type="button" class="collapsible-toggle collapsible-toggle-hero" data-collapsible-toggle aria-expanded="true" aria-controls="guidedEntryBody">
                 <span class="collapsible-toggle-copy">
@@ -128,6 +141,7 @@
             </button>
             <div class="collapsible-body" id="uploadPanelBody" data-collapsible-body>
                 <div class="collapsible-body-inner">
+                    {% set has_analysis_rows = rows and (rows|length > 0) %}
                     <section class="upload-box" id="uploadBox">
                         <div class="upload-header">
                             <div>
@@ -135,7 +149,7 @@
                                 <p class="upload-subtitle">Drop in a file to surface overpay, savings potential, and supplier leverage in one decision-ready view. If you want to explore first, launch the demo instantly.</p>
                             </div>
                             {% if persisted_analysis %}
-                                <form action="/clear" method="post" class="clear-analysis-form">
+                                <form action="/clear" method="post" class="clear-analysis-form" id="clearAnalysisForm" hidden>
                                     <button type="submit" class="secondary-btn" id="clearAnalysisButton">Clear Analysis</button>
                                 </form>
                             {% endif %}
@@ -153,7 +167,7 @@
                                 <input id="file-upload" type="file" name="file" accept=".csv,.xlsx,.xls" required>
                                 <div class="upload-row">
                                     <span id="file-name">No file selected yet</span>
-                                    <button type="submit" class="action-btn upload-submit" formaction="/upload" formmethod="post" formenctype="multipart/form-data">Review Columns</button>
+                                    <button type="submit" class="action-btn upload-submit" formaction="/upload" formmethod="post" formenctype="multipart/form-data" disabled>Review Columns</button>
                                 </div>
                             </div>
                         </form>
@@ -173,7 +187,7 @@
                             <div class="mapping-grid" id="mappingGrid"></div>
                             <div class="mapping-alert mapping-alert-error" id="mappingMissingAlert" hidden></div>
                             <div class="mapping-alert mapping-alert-info" id="mappingOptionalAlert" hidden></div>
-                            <div class="mapping-actions">
+                            <div class="mapping-actions mapping-actions-bar">
                                 <button type="button" class="secondary-btn" id="changeUploadFileButton">Choose Different File</button>
                                 <button type="button" class="action-btn" id="confirmMappingButton">Confirm & Analyze</button>
                             </div>
@@ -221,22 +235,11 @@
                         {% endif %}
                         <div class="error-box" id="uploadError" hidden></div>
 
-                        <div id="uploadStatusHost">
-                            {% if filename and not demo_mode %}
-                                <div class="success-text upload-success-row">
-                                    <span>Analysis ready for {{ filename }}</span>
-                                    <button type="button" class="secondary-btn upload-success-action" id="replaceFileButton">Replace File</button>
-                                </div>
-                            {% endif %}
-                        </div>
+                        <div id="uploadStatusHost"></div>
 
-                        {% if persisted_analysis %}
-                            <div class="demo-badge">Viewing previous analysis</div>
-                        {% endif %}
+                        <div class="demo-badge" id="previousAnalysisBadge" hidden>Viewing previous analysis</div>
 
-                        {% if demo_mode %}
-                            <div class="demo-badge">Viewing demo dataset</div>
-                        {% endif %}
+                        <div class="demo-badge" id="demoDatasetBadge" hidden>Viewing demo dataset</div>
                     </section>
                 </div>
             </div>
@@ -635,6 +638,7 @@
         {% endif %}
 
         {% if active_view == 'guide' %}
+        <div id="guideWorkspaceView">
         <section class="guide-workspace" id="guideWorkspace" data-has-analysis="{{ 'true' if rows else 'false' }}">
             <section class="guide-workspace-hero">
                 <div>
@@ -647,9 +651,9 @@
                 </div>
             </section>
 
-            <section class="guide-workspace-grid">
+            <section class="guide-workspace-grid guide-layout">
                 <aside class="guide-sidebar">
-                    <section class="guide-surface guide-overview-card">
+                    <section class="guide-surface guide-overview-card guide-action-card">
                         <div class="guide-card-kicker">Workspace Guide</div>
                         <h2 class="guide-card-title">Quick direction</h2>
                         <p class="guide-card-copy">
@@ -659,33 +663,33 @@
                             Start with a product-help question or use the beginner shortcuts below to follow the tool step by step.
                             {% endif %}
                         </p>
-                        <div class="guide-overview-actions">
-                            <a class="secondary-btn" href="/#uploadPanel">Upload & Analyze</a>
-                            <a class="secondary-btn" href="/#topInsightsPanel">Top Insights</a>
-                            <a class="secondary-btn" href="/quote-compare">Quote Compare</a>
+                        <div class="guide-overview-actions guide-action-list">
+                            <a class="secondary-btn guide-action-button" href="/#uploadPanel">Upload & Analyze</a>
+                            <a class="secondary-btn guide-action-button" href="/#topInsightsPanel">Top Insights</a>
+                            <a class="secondary-btn guide-action-button" href="/quote-compare">Quote Compare</a>
                         </div>
                     </section>
 
-                    <section class="guide-surface">
+                    <section class="guide-surface guide-action-card">
                         <div class="guide-card-kicker">Beginner Flow</div>
                         <h2 class="guide-card-title">Common starting points</h2>
-                        <div class="guide-topic-list">
-                            <button type="button" class="guide-topic-button" data-guide-question="What do I do first?" data-guide-topic="beginner-start">What do I do first?</button>
-                            <button type="button" class="guide-topic-button" data-guide-question="How do I upload a file?" data-guide-topic="upload-flow">How do I upload a file?</button>
-                            <button type="button" class="guide-topic-button" data-guide-question="How do I find overpay rows?" data-guide-topic="overpay-flow">How do I find overpay rows?</button>
-                            <button type="button" class="guide-topic-button" data-guide-question="How do I compare suppliers?" data-guide-topic="supplier-flow">How do I compare suppliers?</button>
+                        <div class="guide-topic-list guide-action-list">
+                            <button type="button" class="guide-topic-button guide-action-button" data-guide-question="What do I do first?" data-guide-topic="beginner-start">What do I do first?</button>
+                            <button type="button" class="guide-topic-button guide-action-button" data-guide-question="How do I upload a file?" data-guide-topic="upload-flow">How do I upload a file?</button>
+                            <button type="button" class="guide-topic-button guide-action-button" data-guide-question="How do I find overpay rows?" data-guide-topic="overpay-flow">How do I find overpay rows?</button>
+                            <button type="button" class="guide-topic-button guide-action-button" data-guide-question="How do I compare suppliers?" data-guide-topic="supplier-flow">How do I compare suppliers?</button>
                         </div>
                     </section>
 
-                    <section class="guide-surface">
+                    <section class="guide-surface guide-action-card">
                         <div class="guide-card-kicker">Suggested Topics</div>
                         <h2 class="guide-card-title">Product-aware shortcuts</h2>
-                        <div class="guide-topic-list">
-                            <button type="button" class="guide-topic-button" data-guide-question="How do I review supplier pricing?" data-guide-topic="supplier-pricing">Review supplier pricing</button>
-                            <button type="button" class="guide-topic-button" data-guide-question="Where are the savings opportunities?" data-guide-topic="savings-opportunities">Find savings opportunities</button>
-                            <button type="button" class="guide-topic-button" data-guide-question="How do I use filters?" data-guide-topic="filters">Use filters</button>
-                            <button type="button" class="guide-topic-button" data-guide-question="How do I use Ask Your Data?" data-guide-topic="ask-your-data">Use Ask Your Data</button>
-                            <button type="button" class="guide-topic-button" data-guide-question="How do I use Quote Compare?" data-guide-topic="quote-compare">Use Quote Compare</button>
+                        <div class="guide-topic-list guide-action-list">
+                            <button type="button" class="guide-topic-button guide-action-button" data-guide-question="How do I review supplier pricing?" data-guide-topic="supplier-pricing">Review supplier pricing</button>
+                            <button type="button" class="guide-topic-button guide-action-button" data-guide-question="Where are the savings opportunities?" data-guide-topic="savings-opportunities">Find savings opportunities</button>
+                            <button type="button" class="guide-topic-button guide-action-button" data-guide-question="How do I use filters?" data-guide-topic="filters">Use filters</button>
+                            <button type="button" class="guide-topic-button guide-action-button" data-guide-question="How do I use Ask Your Data?" data-guide-topic="ask-your-data">Use Ask Your Data</button>
+                            <button type="button" class="guide-topic-button guide-action-button" data-guide-question="How do I use Quote Compare?" data-guide-topic="quote-compare">Use Quote Compare</button>
                         </div>
                     </section>
 
@@ -727,34 +731,39 @@
                             </div>
                         </form>
 
-                        <section class="guide-answer-stage" id="guideAskAnswer" hidden>
-                            <div class="guide-answer-stage-head">
-                                <div class="guide-ask-answer-label">Guide Answer</div>
-                                <div class="guide-answer-context-chip" id="guideAskContextChip" hidden>Analysis-aware</div>
-                            </div>
-                            <h3 class="guide-answer-title" id="guideAskAnswerTitle">Guide Answer</h3>
-                            <div class="guide-ask-answer-text" id="guideAskAnswerText"></div>
-                            <div class="guide-answer-context" id="guideAskContextNote" hidden></div>
-                            <div class="guide-answer-flow" id="guideAskWorkflowBlock" hidden>
-                                <div class="guide-answer-subtitle">Suggested workflow</div>
-                                <div class="guide-answer-steps" id="guideAskWorkflow"></div>
-                            </div>
-                            <div class="guide-ask-answer-meta" id="guideAskAnswerMeta" hidden>
-                                <div class="guide-ask-answer-line" id="guideAskRelatedSection"></div>
-                                <div class="guide-ask-answer-line" id="guideAskNextStep"></div>
-                            </div>
-                            <div class="guide-answer-actions" id="guideAskActions" hidden></div>
-                        </section>
+                        <div class="guide-result-stage guide-result-empty" id="guideResultStage" data-guide-result>
+                            <section class="guide-answer-stage" id="guideAskAnswer" hidden>
+                                <div class="guide-answer-stage-head">
+                                    <div class="guide-ask-answer-label">Guide Answer</div>
+                                    <div class="guide-answer-context-chip" id="guideAskContextChip" hidden>Analysis-aware</div>
+                                </div>
+                                <div class="guide-answer-body" id="guideAskAnswerBody">
+                                    <h3 class="guide-answer-title" id="guideAskAnswerTitle">Guide Answer</h3>
+                                    <div class="guide-ask-answer-text" id="guideAskAnswerText"></div>
+                                    <div class="guide-answer-context" id="guideAskContextNote" hidden></div>
+                                    <div class="guide-answer-flow" id="guideAskWorkflowBlock" hidden>
+                                        <div class="guide-answer-subtitle">Suggested workflow</div>
+                                        <div class="guide-answer-steps" id="guideAskWorkflow"></div>
+                                    </div>
+                                    <div class="guide-ask-answer-meta" id="guideAskAnswerMeta" hidden>
+                                        <div class="guide-ask-answer-line" id="guideAskRelatedSection"></div>
+                                        <div class="guide-ask-answer-line" id="guideAskNextStep"></div>
+                                    </div>
+                                    <div class="guide-answer-actions" id="guideAskActions" hidden></div>
+                                </div>
+                            </section>
 
-                        <section class="guide-answer-empty" id="guideAskEmptyState">
-                            <div class="guide-card-kicker">Assistant Ready</div>
-                            <h3 class="guide-card-title">Use Guide like a decision-support workspace</h3>
-                            <p class="guide-card-copy">Ask what to do first, how to compare suppliers, where to find overpay, or which workspace to open next.</p>
-                        </section>
+                            <section class="guide-answer-empty" id="guideAskEmptyState">
+                                <div class="guide-card-kicker">Assistant Ready</div>
+                                <h3 class="guide-card-title">Ask a question to generate a guided answer.</h3>
+                                <p class="guide-card-copy">You&rsquo;ll see recommendations and workflow steps here.</p>
+                            </section>
+                        </div>
                     </section>
                 </section>
             </section>
         </section>
+        </div>
         {% endif %}
 
         {% if active_view == 'recipes' %}
@@ -793,6 +802,19 @@
                             </div>
                             <div class="recipes-list" id="recipesList"></div>
                             <div class="recipes-empty" id="recipesEmpty">Save a recipe to build your own reusable cost library.</div>
+                            <div class="recipes-sidebar-actions" id="recipesSidebarActions" hidden>
+                                <button type="button" class="secondary-btn" id="deleteRecipeButton" hidden>Delete Recipe</button>
+                            </div>
+                            <div class="recipe-delete-confirm recipe-delete-confirm-sidebar" id="recipeDeleteConfirm" hidden>
+                                <div class="recipe-delete-confirm-copy">
+                                    <strong>Are you sure you want to delete this recipe?</strong>
+                                    <span>This action cannot be undone.</span>
+                                </div>
+                                <div class="recipe-delete-confirm-actions">
+                                    <button type="button" class="secondary-btn" id="cancelDeleteRecipeButton">Cancel</button>
+                                    <button type="button" class="action-btn" id="confirmDeleteRecipeButton">Delete</button>
+                                </div>
+                            </div>
                         </aside>
 
                         <div class="recipes-main">
@@ -804,7 +826,6 @@
                                     </div>
                                     <div class="recipes-editor-actions">
                                         <button type="button" class="secondary-btn" id="recalculateRecipeButton">Recalculate</button>
-                                        <button type="button" class="secondary-btn" id="deleteRecipeButton" hidden>Delete Recipe</button>
                                         <button type="button" class="action-btn" id="saveRecipeButton">Save Recipe</button>
                                     </div>
                                 </div>
@@ -826,24 +847,19 @@
 
                                 <div class="recipe-ingredients-card">
                                     <div class="recipe-ingredients-head">
-                                        <div>
+                                        <div class="recipe-ingredients-head-copy">
                                             <div class="panel-label">Ingredients</div>
                                             <div class="recipe-ingredients-copy">Choose products from the analyzed purchase dataset and set the quantity and unit manually.</div>
                                         </div>
                                         <button type="button" class="secondary-btn" id="addRecipeIngredientButton">Add Ingredient</button>
                                     </div>
+                                    <div class="recipe-ingredients-table-head recipe-ingredient-grid" aria-hidden="true">
+                                        <div class="recipe-ingredient-head-cell">Product Name</div>
+                                        <div class="recipe-ingredient-head-cell">Quantity</div>
+                                        <div class="recipe-ingredient-head-cell">Unit</div>
+                                        <div class="recipe-ingredient-head-cell recipe-ingredient-head-cell-action">Remove</div>
+                                    </div>
                                     <div class="recipe-ingredients-list" id="recipeIngredientsList"></div>
-                                </div>
-
-                                <div class="recipe-delete-confirm" id="recipeDeleteConfirm" hidden>
-                                    <div class="recipe-delete-confirm-copy">
-                                        <strong>Are you sure you want to delete this recipe?</strong>
-                                        <span>This action cannot be undone.</span>
-                                    </div>
-                                    <div class="recipe-delete-confirm-actions">
-                                        <button type="button" class="secondary-btn" id="cancelDeleteRecipeButton">Cancel</button>
-                                        <button type="button" class="action-btn" id="confirmDeleteRecipeButton">Delete</button>
-                                    </div>
                                 </div>
 
                                 <div class="recipe-status" id="recipeStatusMessage" hidden></div>
@@ -869,7 +885,7 @@
 
                             <section class="recipe-breakdown-card">
                                 <div class="recipe-breakdown-head">
-                                    <div>
+                                    <div class="recipe-breakdown-head-copy">
                                         <div class="panel-label">Ingredient Breakdown</div>
                                         <h3 class="recipe-breakdown-title">How the current recipe cost is built</h3>
                                     </div>
@@ -887,8 +903,8 @@
         </section>
         {% endif %}
 
-        {% if active_view == 'quote_compare' %}
-        <section class="app-view app-view-quote-compare" id="quoteCompareWorkspaceView">
+             {% if active_view == 'quote_compare' %}
+        <section class="app-view app-view-quote-compare" id="quoteCompareWorkspaceView" data-qc-ready="false">
             <section class="quote-compare-hero">
                 <div>
                     <div class="panel-label">Supplier Bid Evaluation</div>
@@ -919,8 +935,8 @@
                     <div id="quoteCompareApp"></div>
                 </div>
             </section>
+        </section>
         {% endif %}
-
         <section class="ai-workspace" id="aiWorkspace" hidden>
             <div class="ai-workspace-header">
                 <div>
@@ -984,6 +1000,185 @@
         </section>
     </div>
 
+    <script>
+        (function () {
+            const HARD_RESET_FLAG_KEY = "app_hard_reset_intent";
+            const HARD_RESET_TTL_MS = 15000;
+            const UI_STATE_REGISTRY = {
+                analyzer: {
+                    localStorage: [
+                        "guidedEntryCollapsed",
+                        "uploadAnalyzeCollapsed",
+                        "topInsightsCollapsed",
+                        "advancedFiltersCollapsed",
+                        "visualInsightsCollapsed",
+                        "analystWorkspaceCollapsed",
+                        "recipesCollapsed",
+                        "askDataCollapsed",
+                        "guidePanelOpen",
+                        "notesPanelOpen",
+                        "workspaceNotes",
+                        "priceAnalyzer.columnOrder.v1"
+                    ],
+                    sessionStorage: []
+                },
+                guide: {
+                    localStorage: [
+                        "priceAnalyzerGuideWorkspace"
+                    ],
+                    sessionStorage: []
+                },
+                recipes: {
+                    localStorage: [],
+                    sessionStorage: []
+                },
+                quote_compare: {
+                    localStorage: [],
+                    sessionStorage: [
+                        "quote_compare_active_session_v1",
+                        "quote_compare_state_v1",
+                        "quote_compare_scroll_v1"
+                    ]
+                }
+            };
+            window.__APP_HARD_RESET_DONE__ = false;
+
+            function getActiveModuleName() {
+                return String(document.body?.dataset.activeView || "").trim();
+            }
+
+            function isReloadNavigation() {
+                try {
+                    const navigationEntry = performance.getEntriesByType("navigation")[0];
+                    if (navigationEntry?.type === "reload") {
+                        return true;
+                    }
+                } catch (error) {
+                    // Ignore Navigation Timing errors.
+                }
+
+                try {
+                    return performance.navigation?.type === 1;
+                } catch (error) {
+                    return false;
+                }
+            }
+
+            function setHardResetIntent() {
+                try {
+                    sessionStorage.setItem(HARD_RESET_FLAG_KEY, JSON.stringify({
+                        at: Date.now()
+                    }));
+                } catch (error) {
+                    // Ignore storage failures.
+                }
+            }
+
+            function clearHardResetIntent() {
+                try {
+                    sessionStorage.removeItem(HARD_RESET_FLAG_KEY);
+                } catch (error) {
+                    // Ignore storage failures.
+                }
+            }
+
+            function clearKeys(storage, keys) {
+                if (!storage || !Array.isArray(keys)) {
+                    return;
+                }
+                keys.forEach((key) => {
+                    try {
+                        storage.removeItem(key);
+                    } catch (error) {
+                        // Ignore storage failures.
+                    }
+                });
+            }
+
+            function resetModuleState(moduleName) {
+                const config = UI_STATE_REGISTRY[moduleName];
+                if (!config) {
+                    return;
+                }
+                clearKeys(window.localStorage, config.localStorage);
+                clearKeys(window.sessionStorage, config.sessionStorage);
+            }
+
+            function resetAllUiState() {
+                Object.keys(UI_STATE_REGISTRY).forEach((moduleName) => {
+                    resetModuleState(moduleName);
+                });
+            }
+
+            function consumeHardResetIntent() {
+                if (!isReloadNavigation()) {
+                    clearHardResetIntent();
+                    return false;
+                }
+
+                try {
+                    const rawValue = sessionStorage.getItem(HARD_RESET_FLAG_KEY);
+                    clearHardResetIntent();
+                    if (!rawValue) {
+                        return false;
+                    }
+
+                    const parsed = JSON.parse(rawValue);
+                    const requestedAt = Number(parsed?.at || 0);
+                    return requestedAt > 0
+                        && (Date.now() - requestedAt) <= HARD_RESET_TTL_MS;
+                } catch (error) {
+                    clearHardResetIntent();
+                    return false;
+                }
+            }
+
+            function installHardResetTracking() {
+                if (window.__priceAnalyzerHardResetTrackingBound) {
+                    return;
+                }
+                window.__priceAnalyzerHardResetTrackingBound = true;
+
+                window.addEventListener("keydown", (event) => {
+                    const key = String(event.key || "").toLowerCase();
+                    const modifierKey = event.ctrlKey || event.metaKey;
+                    const isHardReload =
+                        (key === "f5" && (modifierKey || event.shiftKey))
+                        || (modifierKey && event.shiftKey && key === "r");
+
+                    if (isHardReload) {
+                        setHardResetIntent();
+                        return;
+                    }
+
+                    const isNormalReload = key === "f5" || (modifierKey && key === "r");
+                    if (isNormalReload) {
+                        clearHardResetIntent();
+                    }
+                }, true);
+            }
+
+            installHardResetTracking();
+            const hardResetTriggered = consumeHardResetIntent();
+            if (hardResetTriggered) {
+                resetAllUiState();
+                window.__APP_HARD_RESET_DONE__ = true;
+            }
+            window.PriceAnalyzerBootGuard = {
+                setHardResetIntent,
+                consumeHardResetIntent,
+                resetAllUiState,
+                resetModuleState,
+                didHardReset() {
+                    return Boolean(window.__APP_HARD_RESET_DONE__);
+                },
+                getUiStateRegistry() {
+                    return JSON.parse(JSON.stringify(UI_STATE_REGISTRY));
+                },
+                getActiveModuleName
+            };
+        })();
+    </script>
     <script src="{{ url_for('static', path='/js/access-code.js') }}"></script>
     <script src="{{ url_for('static', path='/js/charts.js') }}"></script>
     <script src="{{ url_for('static', path='/js/table.js') }}"></script>
