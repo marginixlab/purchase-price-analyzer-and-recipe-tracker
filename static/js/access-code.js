@@ -21,6 +21,77 @@
         return (code || "").trim().toUpperCase();
     }
 
+    function bindMouseLightEffect(elements) {
+        const accessShell = elements.accessShell;
+        if (!accessShell) {
+            return;
+        }
+
+        const supportsFinePointer = window.matchMedia("(pointer: fine)").matches;
+        const isSmallScreen = window.matchMedia("(max-width: 720px)").matches;
+        const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+        if (!supportsFinePointer || isSmallScreen || prefersReducedMotion) {
+            accessShell.style.setProperty("--access-mouse-opacity", "0");
+            return;
+        }
+
+        let currentX = window.innerWidth * 0.5;
+        let currentY = window.innerHeight * 0.36;
+        let targetX = currentX;
+        let targetY = currentY;
+        let frameId = null;
+
+        function paint() {
+            currentX += (targetX - currentX) * 0.12;
+            currentY += (targetY - currentY) * 0.12;
+
+            const rect = accessShell.getBoundingClientRect();
+            const relativeX = ((currentX - rect.left) / rect.width) * 100;
+            const relativeY = ((currentY - rect.top) / rect.height) * 100;
+
+            accessShell.style.setProperty("--access-mouse-x", `${Math.max(0, Math.min(100, relativeX))}%`);
+            accessShell.style.setProperty("--access-mouse-y", `${Math.max(0, Math.min(100, relativeY))}%`);
+
+            const stillMoving =
+                Math.abs(targetX - currentX) > 0.4 ||
+                Math.abs(targetY - currentY) > 0.4;
+
+            if (stillMoving) {
+                frameId = window.requestAnimationFrame(paint);
+                return;
+            }
+
+            frameId = null;
+        }
+
+        function queuePaint() {
+            if (frameId !== null) {
+                return;
+            }
+            frameId = window.requestAnimationFrame(paint);
+        }
+
+        accessShell.addEventListener("mouseenter", () => {
+            accessShell.style.setProperty("--access-mouse-opacity", "1");
+        });
+
+        accessShell.addEventListener("mousemove", (event) => {
+            targetX = event.clientX;
+            targetY = event.clientY;
+            accessShell.style.setProperty("--access-mouse-opacity", "1");
+            queuePaint();
+        }, { passive: true });
+
+        accessShell.addEventListener("mouseleave", () => {
+            const rect = accessShell.getBoundingClientRect();
+            targetX = rect.left + rect.width * 0.5;
+            targetY = rect.top + rect.height * 0.36;
+            accessShell.style.setProperty("--access-mouse-opacity", "0");
+            queuePaint();
+        });
+    }
+
     function finishBoot() {
         document.documentElement.classList.remove("auth-pending");
         document.body?.classList.remove("app-booting");
@@ -49,7 +120,7 @@
     function showAccessScreen(elements) {
         if (elements.accessShell) {
             elements.accessShell.hidden = false;
-            elements.accessShell.style.display = "block";
+            elements.accessShell.style.display = "";
         }
         if (elements.appShell) {
             elements.appShell.hidden = true;
@@ -266,6 +337,7 @@
             console.log("INPUT ENABLED");
         }
         setSubmitButtonDisabled(elements, false);
+        bindMouseLightEffect(elements);
         bindEvents(elements);
         await restoreStoredAccess(elements);
     }

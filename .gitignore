@@ -4,3 +4,7 @@ __pycache__/
 .env
 *.log
 latest_results.csv
+.quote_compare_sessions/
+.quote_compare_uploads/
+quote_comparisons.json
+codes.json

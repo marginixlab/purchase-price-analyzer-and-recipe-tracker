@@ -1,6 +1,6 @@
 (function () {
     const REQUIRED_FIELDS = ["Product Name", "Supplier", "Unit", "Quantity", "Unit Price", "Date"];
-    const OPTIONAL_FIELDS = ["Total Price", "Currency", "Delivery Time", "Payment Terms", "Valid Until", "Notes"];
+    const OPTIONAL_FIELDS = ["Currency", "Delivery Time", "Payment Terms", "Valid Until", "Notes"];
     const FIELD_HELP = {
         "Product Name": "Choose the product, item, material, or description column.",
         "Supplier": "Choose the supplier, vendor, company, or seller column.",
@@ -8,7 +8,6 @@
         "Quantity": "Choose the quoted quantity, qty, amount, or ordered quantity column.",
         "Unit Price": "Choose the unit price, price, cost, or rate column.",
         "Date": "Choose the quote, purchase, invoice, or transaction date column.",
-        "Total Price": "Optional. Use this when the file already includes a line total.",
         "Currency": "Optional. Use this when the file includes a currency code like USD or EUR.",
         "Delivery Time": "Optional. Use this for lead time or delivery timing.",
         "Payment Terms": "Optional. Use this for Net 30, Net 45, or similar terms.",
@@ -139,6 +138,32 @@
         window.scrollTo({ top: nextTop, behavior: "auto" });
     }
 
+    function getAnchorOffset(elements, selector) {
+        if (!selector || !elements.app) return null;
+        const anchor = elements.app.querySelector(selector);
+        if (!anchor) return null;
+        const context = getScrollContext(elements);
+        if (context.type === "element") {
+            const containerTop = context.target.getBoundingClientRect().top;
+            return anchor.getBoundingClientRect().top - containerTop;
+        }
+        return anchor.getBoundingClientRect().top;
+    }
+
+    function restoreAnchorOffset(elements, selector, previousOffset) {
+        if (!selector || previousOffset == null || !elements.app) return;
+        const anchor = elements.app.querySelector(selector);
+        if (!anchor) return;
+        const context = getScrollContext(elements);
+        const currentOffset = context.type === "element"
+            ? anchor.getBoundingClientRect().top - context.target.getBoundingClientRect().top
+            : anchor.getBoundingClientRect().top;
+        const delta = currentOffset - previousOffset;
+        if (Math.abs(delta) < 1) return;
+        const currentTop = readScrollPosition(elements);
+        writeScrollPosition(elements, currentTop + delta);
+    }
+
     function buildPersistedState(state) {
         return {
             currentScreen: state.currentScreen,
@@ -155,6 +180,10 @@
             historyFilters: state.historyFilters,
             savedComparisons: state.savedComparisons,
             collapsedDecisionCards: state.collapsedDecisionCards,
+            analysisTableFilter: state.analysisTableFilter,
+            analysisTableSearch: state.analysisTableSearch,
+            activeAnalyzeTab: state.activeAnalyzeTab,
+            showOpportunitySection: state.showOpportunitySection,
             showFullComparison: state.showFullComparison,
             showOptimizedSummary: state.showOptimizedSummary,
             manualRows: state.manualRows,
@@ -218,6 +247,10 @@
         state.historyFilters = { ...state.historyFilters, ...(snapshot.historyFilters || {}) };
         state.savedComparisons = Array.isArray(snapshot.savedComparisons) ? snapshot.savedComparisons : state.savedComparisons;
         state.collapsedDecisionCards = snapshot.collapsedDecisionCards || state.collapsedDecisionCards;
+        state.analysisTableFilter = snapshot.analysisTableFilter || state.analysisTableFilter;
+        state.analysisTableSearch = snapshot.analysisTableSearch || state.analysisTableSearch;
+        state.activeAnalyzeTab = snapshot.activeAnalyzeTab || state.activeAnalyzeTab;
+        state.showOpportunitySection = snapshot.showOpportunitySection !== false;
         state.showFullComparison = Boolean(snapshot.showFullComparison);
         state.showOptimizedSummary = Boolean(snapshot.showOptimizedSummary);
         state.manualRows = Array.isArray(snapshot.manualRows) && snapshot.manualRows.length ? snapshot.manualRows : state.manualRows;
@@ -257,14 +290,19 @@
     }
 
     function isValidRestorableReviewSession(activeSession) {
+        const dataframe = activeSession?.dataframe;
+        const hasHydratedDataframe = Boolean(
+            dataframe
+            && Array.isArray(dataframe.columns)
+            && dataframe.columns.length
+            && Array.isArray(dataframe.records)
+        );
+        const hasCachedUpload = Boolean(String(activeSession?.cached_upload_path || activeSession?.file_path || "").trim());
         return Boolean(
             activeSession
             && Array.isArray(activeSession.headers)
             && activeSession.headers.length
-            && activeSession.dataframe
-            && Array.isArray(activeSession.dataframe.columns)
-            && activeSession.dataframe.columns.length
-            && Array.isArray(activeSession.dataframe.records)
+            && (hasHydratedDataframe || hasCachedUpload)
         );
     }
 
@@ -275,6 +313,28 @@
             && activeSession.comparison
             && activeSession.evaluation
         );
+    }
+
+    function hasRestorableReviewContext(state) {
+        return Boolean(
+            state
+            && Array.isArray(state.headers)
+            && state.headers.length
+            && state.uploadReview
+        );
+    }
+
+    function hasRestorableAnalyzeContext(state) {
+        return Boolean(
+            hasRestorableReviewContext(state)
+            && state.analysisResult
+            && state.analysisResult.comparison
+            && state.analysisResult.evaluation
+        );
+    }
+
+    function hasRestorableQuoteCompareContext(state) {
+        return hasRestorableAnalyzeContext(state) || hasRestorableReviewContext(state);
     }
 
     async function fetchActiveQuoteCompareSession(sessionId) {
@@ -324,10 +384,34 @@
         return `${Number(value || 0).toFixed(1)}%`;
     }
 
-    function parseDateValue(value) {
+    function parseDateValue(value, options = {}) {
         if (!value) return null;
-        const parsed = new Date(value);
-        return Number.isNaN(parsed.getTime()) ? null : parsed;
+        const normalizedValue = value instanceof Date ? value : String(value).trim();
+        if (!normalizedValue) return null;
+        if (normalizedValue instanceof Date) {
+            const parsedDate = new Date(normalizedValue.getTime());
+            if (options.endOfDay) parsedDate.setHours(23, 59, 59, 999);
+            if (options.startOfDay) parsedDate.setHours(0, 0, 0, 0);
+            return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
+        }
+
+        const dateOnlyMatch = normalizedValue.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (dateOnlyMatch) {
+            const [, yearText, monthText, dayText] = dateOnlyMatch;
+            const year = Number(yearText);
+            const monthIndex = Number(monthText) - 1;
+            const day = Number(dayText);
+            const parsedDate = options.endOfDay
+                ? new Date(year, monthIndex, day, 23, 59, 59, 999)
+                : new Date(year, monthIndex, day, 0, 0, 0, 0);
+            return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
+        }
+
+        const parsed = new Date(normalizedValue);
+        if (Number.isNaN(parsed.getTime())) return null;
+        if (options.endOfDay) parsed.setHours(23, 59, 59, 999);
+        if (options.startOfDay) parsed.setHours(0, 0, 0, 0);
+        return parsed;
     }
 
     function formatDate(value) {
@@ -377,9 +461,15 @@
             isParsing: false,
             isSubmitting: false,
             isSaving: false,
+            isHistoryLoading: false,
             manualRows: [createEmptyManualRow()],
             savedComparisons: [],
+            hasLoadedSavedComparisons: false,
             collapsedDecisionCards: {},
+            analysisTableFilter: "all",
+            analysisTableSearch: "",
+            activeAnalyzeTab: "savings",
+            showOpportunitySection: true,
             showFullComparison: false,
             showOptimizedSummary: false,
             historyFilters: {
@@ -392,6 +482,11 @@
     }
 
     async function fetchJson(url, options = {}) {
+        const fetchStartedAt = performance.now();
+        console.info("[quote compare fetch start]", {
+            url,
+            method: options.method || "GET"
+        });
         const response = await fetch(url, {
             method: options.method || "GET",
             headers: {
@@ -410,6 +505,11 @@
         if (!response.ok || data.success === false) {
             throw new Error(data.message || "Request failed.");
         }
+        console.info("[quote compare fetch end]", {
+            url,
+            method: options.method || "GET",
+            durationMs: Number((performance.now() - fetchStartedAt).toFixed(1))
+        });
         return data;
     }
 
@@ -497,23 +597,49 @@
             setStatus(state, "Choose a supplier file before reviewing mappings.", "error");
             return false;
         }
+        const inspectStartedAt = performance.now();
         state.isParsing = true;
         state.parseError = "";
         setStatus(state, "Parsing uploaded headers and detecting likely matches.", "info");
         const formData = new FormData();
         formData.append("file", state.file);
         try {
-            const data = await fetchJson("/quote-compare/upload/inspect", {
+            const fetchStartedAt = performance.now();
+            const response = await fetch("/quote-compare/upload/inspect", {
                 method: "POST",
+                headers: {
+                    Accept: "application/json"
+                },
                 body: formData
             });
+            const fetchFinishedAt = performance.now();
+            let data = {};
+            try {
+                data = await response.json();
+            } catch (error) {
+                data = {};
+            }
+            const jsonFinishedAt = performance.now();
+            if (!response.ok || data.success === false) {
+                throw new Error(data.message || "Request failed.");
+            }
             initializeReviewState(state, data);
+            const reviewInitializedAt = performance.now();
             state.activeSessionId = data.session_id || "";
             if (state.activeSessionId) {
                 sessionStorage.setItem(QUOTE_COMPARE_ACTIVE_SESSION_KEY, state.activeSessionId);
             }
             state.isParsing = false;
             setStatus(state, `Headers detected for ${state.file.name}.`, "success");
+            console.info("[quote compare inspect timing]", {
+                fileName: state.file.name,
+                fetchMs: Number((fetchFinishedAt - fetchStartedAt).toFixed(1)),
+                jsonParseMs: Number((jsonFinishedAt - fetchFinishedAt).toFixed(1)),
+                initializeReviewMs: Number((reviewInitializedAt - jsonFinishedAt).toFixed(1)),
+                totalInspectMs: Number((reviewInitializedAt - inspectStartedAt).toFixed(1)),
+                headerCount: Array.isArray(data.headers) ? data.headers.length : 0,
+                fieldReviewCount: Array.isArray(data.field_reviews) ? data.field_reviews.length : 0
+            });
             return true;
         } catch (error) {
             state.isParsing = false;
@@ -578,6 +704,31 @@
         };
     }
 
+    function getSupplierKey(value) {
+        return String(value || "").trim().toLowerCase();
+    }
+
+    function compareOffersByRecency(left, right) {
+        const leftDate = parseDateValue(left.quote_date);
+        const rightDate = parseDateValue(right.quote_date);
+        if (leftDate && rightDate && leftDate.getTime() !== rightDate.getTime()) return rightDate - leftDate;
+        if (leftDate) return -1;
+        if (rightDate) return 1;
+        return (right._sourceIndex || 0) - (left._sourceIndex || 0);
+    }
+
+    function compareOffersByPrice(left, right) {
+        if (left.total_price !== right.total_price) return left.total_price - right.total_price;
+        if (left.unit_price !== right.unit_price) return left.unit_price - right.unit_price;
+        return compareOffersByRecency(left, right);
+    }
+
+    function compareOffersByUnitPrice(left, right) {
+        if (left.unit_price !== right.unit_price) return left.unit_price - right.unit_price;
+        if (left.total_price !== right.total_price) return left.total_price - right.total_price;
+        return compareOffersByRecency(left, right);
+    }
+
     function buildDecisionCards(comparison) {
         const bids = comparison?.bids || [];
         const grouped = new Map();
@@ -599,29 +750,69 @@
 
         return Array.from(grouped.values())
             .map((offers) => {
-                const sortedOffers = [...offers].sort((left, right) => {
-                    if (left.total_price !== right.total_price) return left.total_price - right.total_price;
-                    if (left.unit_price !== right.unit_price) return left.unit_price - right.unit_price;
-                    return String(left.supplier_name || "").localeCompare(String(right.supplier_name || ""));
+                const offersByRecency = [...offers].sort(compareOffersByRecency);
+                const supplierGroups = new Map();
+                offers.forEach((offer) => {
+                    const supplierKey = getSupplierKey(offer.supplier_name) || `__missing__${offer._sourceIndex}`;
+                    if (!supplierGroups.has(supplierKey)) supplierGroups.set(supplierKey, []);
+                    supplierGroups.get(supplierKey).push(offer);
                 });
-                const bestOffer = sortedOffers[0];
 
-                const currentOffer = [...offers].sort((left, right) => {
-                    const leftDate = parseDateValue(left.quote_date);
-                    const rightDate = parseDateValue(right.quote_date);
-                    if (leftDate && rightDate) return rightDate - leftDate;
-                    if (leftDate) return -1;
-                    if (rightDate) return 1;
-                    return left._sourceIndex - right._sourceIndex;
-                })[0];
+                const supplierRepresentatives = Array.from(supplierGroups.values()).map((supplierOffers) => {
+                    const latestOffer = [...supplierOffers].sort(compareOffersByRecency)[0];
+                    const lowestUnitOffer = [...supplierOffers].sort(compareOffersByUnitPrice)[0];
+                    return {
+                        supplierKey: getSupplierKey(latestOffer?.supplier_name),
+                        supplierName: String(latestOffer?.supplier_name || "").trim(),
+                        latestOffer,
+                        lowestUnitOffer,
+                        offers: supplierOffers
+                    };
+                });
 
-                const savingsAmount = Math.max((currentOffer?.total_price || 0) - (bestOffer?.total_price || 0), 0);
-                const savingsPercent = currentOffer?.total_price ? (savingsAmount / currentOffer.total_price) * 100 : 0;
-                const isCurrentBest = Boolean(currentOffer && bestOffer) && (
-                    currentOffer.supplier_name === bestOffer.supplier_name &&
-                    currentOffer.total_price === bestOffer.total_price &&
-                    currentOffer.unit_price === bestOffer.unit_price
+                const currentRepresentative = [...supplierRepresentatives].sort((left, right) => compareOffersByRecency(left.latestOffer, right.latestOffer))[0] || null;
+                const currentOffer = currentRepresentative?.latestOffer || offersByRecency[0] || null;
+                const currentSupplierKey = getSupplierKey(currentOffer?.supplier_name);
+                const comparableAlternatives = supplierRepresentatives
+                    .filter((representative) => representative.latestOffer)
+                    .filter((representative) => representative.supplierKey)
+                    .filter((representative) => representative.supplierKey !== currentSupplierKey)
+                    .filter((representative) => !currentOffer?.currency || !representative.latestOffer?.currency || representative.latestOffer.currency === currentOffer.currency);
+                const recommendedRepresentative = [...comparableAlternatives].sort((left, right) => compareOffersByUnitPrice(left.latestOffer, right.latestOffer))[0] || null;
+                const recommendedOffer = recommendedRepresentative?.latestOffer || null;
+                const currentUnitPrice = Number(currentOffer?.unit_price || 0);
+                const recommendedUnitPrice = Number(recommendedOffer?.unit_price || 0);
+                const unitPriceAdvantage = Math.max(currentUnitPrice - recommendedUnitPrice, 0);
+                const quantityBasis = Number(currentOffer?.quantity || 0);
+                const hasValidAlternative = Boolean(
+                    currentOffer &&
+                    recommendedOffer &&
+                    currentSupplierKey &&
+                    recommendedRepresentative?.supplierKey &&
+                    recommendedRepresentative.supplierKey !== currentSupplierKey &&
+                    unitPriceAdvantage > 0
                 );
+                const bestOffer = hasValidAlternative ? recommendedOffer : currentOffer;
+                const savingsAmount = hasValidAlternative
+                    ? unitPriceAdvantage * quantityBasis
+                    : 0;
+                const savingsPercent = hasValidAlternative && currentUnitPrice
+                    ? (unitPriceAdvantage / currentUnitPrice) * 100
+                    : 0;
+                const isCurrentBest = !hasValidAlternative;
+                const sameSupplierPriceVariation = Boolean(
+                    currentRepresentative?.lowestUnitOffer &&
+                    currentOffer &&
+                    currentRepresentative.lowestUnitOffer !== currentOffer &&
+                    Number(currentRepresentative.lowestUnitOffer.unit_price || 0) < currentUnitPrice
+                );
+                const decisionSentence = hasValidAlternative
+                    ? `A valid supplier switch is visible. Move from ${currentOffer?.supplier_name || "the current supplier"} at ${formatCurrency(currentUnitPrice, currentOffer?.currency)} per unit to ${recommendedOffer?.supplier_name || "the recommended supplier"} at ${formatCurrency(recommendedUnitPrice, recommendedOffer?.currency)} per unit. Estimated savings on the current quantity: ${formatCurrency(savingsAmount, currentOffer?.currency)} (${formatPercent(savingsPercent)} lower unit price).`
+                    : sameSupplierPriceVariation
+                        ? `${currentOffer?.supplier_name || "The current supplier"} has other visible unit prices for this product, but they do not support a clean supplier-switch recommendation. Review date, quantity, and quote context before interpreting the difference.`
+                        : comparableAlternatives.length
+                            ? `Alternative supplier quotes are visible, but there is no lower per-unit supplier offer to recommend from the current quote context.`
+                            : `Only one supplier context is visible for this product, so no supplier-switch recommendation is being made.`;
 
                 return {
                     productName: currentOffer?.product_name || bestOffer?.product_name || "",
@@ -631,13 +822,16 @@
                     currency: currentOffer?.currency || bestOffer?.currency || "USD",
                     currentOffer,
                     bestOffer,
-                    offers: sortedOffers,
+                    offers: [...offers].sort(compareOffersByPrice),
                     savingsAmount,
                     savingsPercent,
                     isCurrentBest,
-                    decisionSentence: isCurrentBest
-                        ? `Best current offer. ${currentOffer?.supplier_name || "Current supplier"} is already the strongest offer for this product.`
-                        : `You were quoted by ${currentOffer?.supplier_name || "the current supplier"} at ${formatCurrency(currentOffer?.total_price || 0, currentOffer?.currency)}, but the best offer is ${bestOffer?.supplier_name || "the best supplier"} at ${formatCurrency(bestOffer?.total_price || 0, bestOffer?.currency)}. Potential savings: ${formatCurrency(savingsAmount, currentOffer?.currency)} (${formatPercent(savingsPercent)}).`
+                    hasValidAlternative,
+                    comparableAlternativeCount: comparableAlternatives.length,
+                    sameSupplierPriceVariation,
+                    decisionSentence,
+                    statusLabel: hasValidAlternative ? "Savings available" : comparableAlternatives.length ? "No unit advantage" : "Already best",
+                    statusTone: hasValidAlternative ? "opportunity" : comparableAlternatives.length ? "neutral" : "best"
                 };
             })
             .sort((left, right) => left.productName.localeCompare(right.productName));
@@ -649,8 +843,8 @@
         const suppliers = new Set();
         const products = new Set();
         const decisionCards = buildDecisionCards(comparison);
-        const productsWithSavings = decisionCards.filter((card) => !card.isCurrentBest && card.savingsAmount > 0).length;
-        const totalVisibleSavings = decisionCards.reduce((sum, card) => sum + (card.isCurrentBest ? 0 : card.savingsAmount), 0);
+        const productsWithSavings = decisionCards.filter((card) => card.hasValidAlternative && card.savingsAmount > 0).length;
+        const totalVisibleSavings = decisionCards.reduce((sum, card) => sum + (card.hasValidAlternative ? card.savingsAmount : 0), 0);
         const currentSpend = decisionCards.reduce((sum, card) => sum + Number(card.currentOffer?.total_price || 0), 0);
         const optimizedSpend = decisionCards.reduce((sum, card) => sum + Number(card.bestOffer?.total_price || 0), 0);
         const optimizedSavings = Math.max(currentSpend - optimizedSpend, 0);
@@ -737,14 +931,29 @@
         }).filter((row) => row.productName);
     }
 
-    function syncHistoryFilterDefaults(state) {
+    function getHistoryFilterOptions(state, key) {
         const historyRows = flattenHistoryRows(state);
-        const productOptions = Array.from(new Set(historyRows.map((row) => row.productName))).sort((left, right) => left.localeCompare(right));
-        if (!state.historyFilters.product && productOptions.length) {
-            state.historyFilters.product = productOptions[0];
+        if (key === "product") {
+            return Array.from(new Set(historyRows.map((row) => row.productName)))
+                .sort((left, right) => left.localeCompare(right));
         }
-        const selectedProductRows = historyRows.filter((row) => !state.historyFilters.product || row.productName === state.historyFilters.product);
-        const supplierOptions = Array.from(new Set(selectedProductRows.map((row) => row.supplier).filter(Boolean))).sort((left, right) => left.localeCompare(right));
+        if (key === "supplier") {
+            return Array.from(new Set(
+                historyRows
+                    .filter((row) => !state.historyFilters.product || row.productName === state.historyFilters.product)
+                    .map((row) => row.supplier)
+                    .filter(Boolean)
+            )).sort((left, right) => left.localeCompare(right));
+        }
+        return [];
+    }
+
+    function syncHistoryFilterDefaults(state) {
+        const productOptions = getHistoryFilterOptions(state, "product");
+        if (state.historyFilters.product && !productOptions.includes(state.historyFilters.product)) {
+            state.historyFilters.product = "";
+        }
+        const supplierOptions = getHistoryFilterOptions(state, "supplier");
         if (state.historyFilters.supplier && !supplierOptions.includes(state.historyFilters.supplier)) {
             state.historyFilters.supplier = "";
         }
@@ -753,8 +962,11 @@
     function getFilteredHistoryRows(state) {
         syncHistoryFilterDefaults(state);
         const { product, supplier, dateFrom, dateTo } = state.historyFilters;
-        const startDate = parseDateValue(dateFrom);
-        const endDate = parseDateValue(dateTo);
+        if (!product) {
+            return [];
+        }
+        const startDate = parseDateValue(dateFrom, { startOfDay: true });
+        const endDate = parseDateValue(dateTo, { endOfDay: true });
 
         return flattenHistoryRows(state)
             .filter((row) => !product || row.productName === product)
@@ -765,9 +977,7 @@
             })
             .filter((row) => {
                 if (!endDate || !row.effectiveDate) return true;
-                const inclusiveEnd = new Date(endDate);
-                inclusiveEnd.setHours(23, 59, 59, 999);
-                return row.effectiveDate <= inclusiveEnd;
+                return row.effectiveDate <= endDate;
             })
             .sort((left, right) => {
                 if (left.effectiveTimestamp !== right.effectiveTimestamp) return left.effectiveTimestamp - right.effectiveTimestamp;
@@ -821,10 +1031,13 @@
 
     function hydrateComparisons(state, comparisons) {
         state.savedComparisons = Array.isArray(comparisons) ? comparisons : [];
+        state.hasLoadedSavedComparisons = true;
         initializeHistoryFilters(state);
     }
 
-    async function loadSavedComparisons(state) {
+    async function loadSavedComparisons(state, { includeComparisons = false } = {}) {
+        const loadStartedAt = performance.now();
+        const hasExistingActiveContext = hasRestorableQuoteCompareContext(state);
         try {
             const activeSessionId = state.activeSessionId || sessionStorage.getItem(QUOTE_COMPARE_ACTIVE_SESSION_KEY) || "";
             const persistedSelectedMappings = { ...(state.selectedMappings || {}) };
@@ -832,19 +1045,32 @@
             if (activeSessionId) {
                 state.activeSessionId = activeSessionId;
             }
-            const query = activeSessionId ? `?session_id=${encodeURIComponent(activeSessionId)}` : "";
+            const params = new URLSearchParams();
+            if (activeSessionId) {
+                params.set("session_id", activeSessionId);
+            }
+            if (includeComparisons) {
+                params.set("include_comparisons", "true");
+            }
+            const query = params.toString() ? `?${params.toString()}` : "";
             const data = await fetchJson(`/quote-compare/bootstrap${query}`);
-            hydrateComparisons(state, data.comparisons || []);
+            if (includeComparisons) {
+                hydrateComparisons(state, data.comparisons || []);
+            }
             if (activeSessionId && !data.active_session) {
-                resetQuoteCompareUploadState(
-                    state,
-                    "Your last upload session could not be recovered. Please upload the file again."
-                );
+                if (!includeComparisons || !hasExistingActiveContext) {
+                    resetQuoteCompareUploadState(
+                        state,
+                        "Your last upload session could not be recovered. Please upload the file again."
+                    );
+                }
                 return;
             }
             if (!data.active_session) {
                 if (["review", "analyze", "history"].includes(persistedCurrentScreen)) {
-                    resetQuoteCompareUploadState(state);
+                    if (!includeComparisons || !hasExistingActiveContext) {
+                        resetQuoteCompareUploadState(state);
+                    }
                 }
                 return;
             }
@@ -853,10 +1079,12 @@
             const canRestoreAnalyze = isValidRestorableAnalyzeSession(activeSession);
             const canRestoreReview = activeSession.step === "review" && isValidRestorableReviewSession(activeSession);
             if (!canRestoreReview && !canRestoreAnalyze) {
-                resetQuoteCompareUploadState(
-                    state,
-                    "Your last upload session is incomplete. Please upload the file again."
-                );
+                if (!includeComparisons || !hasExistingActiveContext) {
+                    resetQuoteCompareUploadState(
+                        state,
+                        "Your last upload session is incomplete. Please upload the file again."
+                    );
+                }
                 return;
             }
 
@@ -903,11 +1131,35 @@
             state.analysisResult = null;
             state.rows = [];
             state.currentScreen = "review";
+            console.info("[quote compare bootstrap timing]", {
+                includeComparisons,
+                durationMs: Number((performance.now() - loadStartedAt).toFixed(1)),
+                currentScreen: state.currentScreen
+            });
         } catch (error) {
-            resetQuoteCompareUploadState(
-                state,
-                "Your last upload session could not be restored. Please upload the file again."
-            );
+            if (!includeComparisons || !hasExistingActiveContext) {
+                resetQuoteCompareUploadState(
+                    state,
+                    "Your last upload session could not be restored. Please upload the file again."
+                );
+            }
+        }
+    }
+
+    async function ensureHistoryComparisonsLoaded(state) {
+        if (state.hasLoadedSavedComparisons || state.isHistoryLoading) {
+            return;
+        }
+        state.isHistoryLoading = true;
+        const startedAt = performance.now();
+        try {
+            await loadSavedComparisons(state, { includeComparisons: true });
+            console.info("[quote compare history bootstrap timing]", {
+                durationMs: Number((performance.now() - startedAt).toFixed(1)),
+                comparisons: state.savedComparisons.length
+            });
+        } finally {
+            state.isHistoryLoading = false;
         }
     }
 
@@ -1133,7 +1385,7 @@
                         <div class="mapping-section-head">
                             <div>
                                 <div class="mapping-section-title">Optional context</div>
-                                <div class="mapping-section-copy">Use these only when totals, payment terms, delivery timing, or notes should influence the sourcing decision.</div>
+                                <div class="mapping-section-copy">Use these only when payment terms, delivery timing, currency, or notes should add context to the sourcing decision.</div>
                             </div>
                         </div>
                         <div class="mapping-grid">
@@ -1155,6 +1407,129 @@
         return `${card.productName}__${card.unit}__${card.currentOffer?.supplier_name || ""}__${card.bestOffer?.supplier_name || ""}`;
     }
 
+    function getScopedDecisionCardKey(scope, baseKey) {
+        return `${scope}::${baseKey}`;
+    }
+
+    function clearDecisionCardsForScope(collapsedDecisionCards, scope) {
+        const prefix = `${scope}::`;
+        return Object.fromEntries(
+            Object.entries(collapsedDecisionCards || {}).filter(([key]) => !key.startsWith(prefix))
+        );
+    }
+
+    function cssEscape(value) {
+        if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+            return CSS.escape(String(value || ""));
+        }
+        return String(value || "").replace(/["\\]/g, "\\$&");
+    }
+
+    function setDecisionButtonLabel(button, isExpanded) {
+        if (!button) return;
+        const cardKey = button.dataset.cardKey || "";
+        const scope = getDecisionCardScope(cardKey);
+        button.textContent = scope === "spotlight"
+            ? (isExpanded ? "Hide table" : "Show table")
+            : (isExpanded ? "Close table" : "Open table");
+        button.setAttribute("aria-expanded", isExpanded ? "true" : "false");
+    }
+
+    function toggleSpotlightCardInPlace(elements, state, cardKey) {
+        if (!elements.app || !cardKey) return false;
+        const targetCard = elements.app.querySelector(`[data-qc-card-key="${cssEscape(cardKey)}"]`);
+        if (!targetCard) return false;
+        const panelScroll = targetCard.closest(".qc2-spotlight-panel-scroll");
+        const anchorTopBefore = panelScroll
+            ? targetCard.getBoundingClientRect().top - panelScroll.getBoundingClientRect().top
+            : targetCard.getBoundingClientRect().top;
+        const panelScrollTopBefore = panelScroll ? panelScroll.scrollTop : 0;
+        const pageScrollTopBefore = panelScroll ? 0 : readScrollPosition(elements);
+        const nextExpanded = !state.collapsedDecisionCards[cardKey];
+        const spotlightCards = Array.from(elements.app.querySelectorAll("[data-qc-card-key]"));
+        spotlightCards.forEach((card) => {
+            const isTarget = card.dataset.qcCardKey === cardKey;
+            const shouldExpand = nextExpanded && isTarget;
+            card.classList.toggle("is-expanded", shouldExpand);
+            setDecisionButtonLabel(card.querySelector('[data-qc-action="toggle-decision-card"]'), shouldExpand);
+        });
+        const anchorTopAfter = panelScroll
+            ? targetCard.getBoundingClientRect().top - panelScroll.getBoundingClientRect().top
+            : targetCard.getBoundingClientRect().top;
+        const anchorDelta = anchorTopAfter - anchorTopBefore;
+        if (panelScroll && Math.abs(anchorDelta) > 1) {
+            panelScroll.scrollTop = panelScrollTopBefore + anchorDelta;
+        } else if (Math.abs(anchorDelta) > 1) {
+            writeScrollPosition(elements, pageScrollTopBefore + anchorDelta);
+        }
+        state.collapsedDecisionCards = clearDecisionCardsForScope(state.collapsedDecisionCards, "spotlight");
+        if (nextExpanded) {
+            state.collapsedDecisionCards[cardKey] = true;
+        }
+        persistQuoteCompareSession(state, elements);
+        return true;
+    }
+
+    function getAnalysisFilterResultValue(card) {
+        if (card.hasValidAlternative && card.savingsAmount > 0) return "savings-available";
+        if (card.statusTone === "best") return "already-best";
+        return "no-unit-advantage";
+    }
+
+    function getDecisionCardScope(cardKey) {
+        if (typeof cardKey !== "string") return "";
+        const separatorIndex = cardKey.indexOf("::");
+        return separatorIndex === -1 ? "" : cardKey.slice(0, separatorIndex);
+    }
+
+    function renderAnalysisFilterBar(state, cards) {
+        const counts = cards.reduce((summary, card) => {
+            const resultKey = getAnalysisFilterResultValue(card);
+            summary.all += 1;
+            summary[resultKey] += 1;
+            return summary;
+        }, {
+            all: 0,
+            "savings-available": 0,
+            "already-best": 0,
+            "no-unit-advantage": 0
+        });
+        const activeFilter = state.analysisTableFilter || "all";
+        const filters = [
+            { value: "all", label: "All results" },
+            { value: "savings-available", label: "Savings available" },
+            { value: "already-best", label: "Already best" },
+            { value: "no-unit-advantage", label: "No unit advantage" }
+        ];
+        return `
+            <div class="qc2-analysis-filterbar" data-qc-analysis-filterbar>
+                <div class="qc2-analysis-filterbar-actions">
+                    ${filters.map((filter) => `
+                        <button
+                            type="button"
+                            class="secondary-btn qc2-analysis-filter-btn ${activeFilter === filter.value ? "is-active" : ""}"
+                            data-qc-action="set-analysis-filter"
+                            data-filter-value="${escapeHtml(filter.value)}"
+                            aria-pressed="${activeFilter === filter.value ? "true" : "false"}"
+                        >
+                            ${escapeHtml(filter.label)} <span class="qc2-analysis-filter-count">${counts[filter.value]}</span>
+                        </button>
+                    `).join("")}
+                </div>
+                <label class="search-input-shell qc2-analysis-search-shell" aria-label="Search products or suppliers">
+                    <input
+                        type="search"
+                        class="search-input qc2-analysis-search-input"
+                        data-qc-analysis-search
+                        value="${escapeHtml(state.analysisTableSearch || "")}"
+                        placeholder="Search product or supplier"
+                        autocomplete="off"
+                    >
+                </label>
+            </div>
+        `;
+    }
+
     function getOpportunityCardTheme(index) {
         return OPPORTUNITY_CARD_PALETTE[index % OPPORTUNITY_CARD_PALETTE.length];
     }
@@ -1169,11 +1544,12 @@
                     <div class="qc2-spotlight-grid">
                 ${cards.map((card, index) => {
                     const theme = getOpportunityCardTheme(index);
-                    const cardKey = getDecisionCardKey(card);
+                    const cardKey = getScopedDecisionCardKey("spotlight", getDecisionCardKey(card));
                     const isExpanded = Boolean(state.collapsedDecisionCards[cardKey]);
                     return `
                         <article
                             class="qc2-spotlight-card ${isExpanded ? "is-expanded" : ""}"
+                            data-qc-card-key="${escapeHtml(cardKey)}"
                             style="
                                 --qc2-card-border:${theme.border};
                                 --qc2-card-glow:${theme.glow};
@@ -1209,26 +1585,71 @@
                             <div class="qc2-spotlight-savings-row">
                                 <div>
                                     <div class="qc2-spotlight-savings-value">${escapeHtml(formatCurrency(card.savingsAmount, card.currency))}</div>
-                                    <div class="qc2-spotlight-savings-copy">${escapeHtml(formatPercent(card.savingsPercent))} lower total</div>
+                                    <div class="qc2-spotlight-savings-copy">${escapeHtml(formatPercent(card.savingsPercent))} lower unit price</div>
                                 </div>
                                 <button type="button" class="secondary-btn qc2-collapse-btn" data-qc-action="toggle-decision-card" data-card-key="${escapeHtml(cardKey)}" aria-expanded="${isExpanded ? "true" : "false"}">
-                                    ${isExpanded ? "Hide details" : "View details"}
+                                    ${isExpanded ? "Hide table" : "Show table"}
                                 </button>
                             </div>
-                            <div class="qc2-spotlight-decision">Switch from ${escapeHtml(card.currentOffer?.supplier_name || "the current supplier")} to ${escapeHtml(card.bestOffer?.supplier_name || "the recommended supplier")} to save ${escapeHtml(formatCurrency(card.savingsAmount, card.currency))}.</div>
+                            <div class="qc2-spotlight-decision ${card.statusTone === "neutral" ? "is-neutral" : ""}">${escapeHtml(card.decisionSentence)}</div>
                             <div class="qc2-spotlight-detail">
-                                <div class="qc2-analysis-detail-grid">
-                                    <div class="qc2-analysis-detail-item">
-                                        <span class="qc2-analysis-detail-label">Current Offer</span>
-                                        <span class="qc2-analysis-detail-value">${escapeHtml(card.currentOffer?.supplier_name || "Supplier missing")} | ${escapeHtml(formatCurrency(card.currentOffer?.unit_price || 0, card.currency))} unit | ${escapeHtml(formatDate(card.quoteDate))}</span>
-                                    </div>
-                                    <div class="qc2-analysis-detail-item is-highlighted">
-                                        <span class="qc2-analysis-detail-label">Recommended Offer</span>
-                                        <span class="qc2-analysis-detail-value">${escapeHtml(card.bestOffer?.supplier_name || "Supplier missing")} | ${escapeHtml(formatCurrency(card.bestOffer?.unit_price || 0, card.currency))} unit | ${escapeHtml(formatDate(card.bestOffer?.quote_date || card.quoteDate))}</span>
-                                    </div>
-                                    <div class="qc2-analysis-detail-item">
-                                        <span class="qc2-analysis-detail-label">Decision Guidance</span>
-                                        <span class="qc2-analysis-detail-value">${escapeHtml(card.decisionSentence)}</span>
+                                <div class="qc2-spotlight-detail-shell">
+                                    <div class="qc2-spotlight-detail-grid">
+                                        <section class="qc2-spotlight-detail-group" aria-label="Current offer detail">
+                                            <div class="qc2-spotlight-detail-group-title">Current Offer</div>
+                                            <div class="qc2-spotlight-detail-table">
+                                                <div class="qc2-spotlight-detail-row">
+                                                    <span class="qc2-spotlight-detail-label">Supplier</span>
+                                                    <span class="qc2-spotlight-detail-value">${escapeHtml(card.currentOffer?.supplier_name || "Supplier missing")}</span>
+                                                </div>
+                                                <div class="qc2-spotlight-detail-row">
+                                                    <span class="qc2-spotlight-detail-label">Unit price</span>
+                                                    <span class="qc2-spotlight-detail-value">${escapeHtml(formatCurrency(card.currentOffer?.unit_price || 0, card.currency))}</span>
+                                                </div>
+                                                <div class="qc2-spotlight-detail-row">
+                                                    <span class="qc2-spotlight-detail-label">Quote date</span>
+                                                    <span class="qc2-spotlight-detail-value">${escapeHtml(formatDate(card.quoteDate))}</span>
+                                                </div>
+                                            </div>
+                                        </section>
+                                        <section class="qc2-spotlight-detail-group is-highlighted" aria-label="Recommended offer detail">
+                                            <div class="qc2-spotlight-detail-group-title">Recommended Offer</div>
+                                            <div class="qc2-spotlight-detail-table">
+                                                <div class="qc2-spotlight-detail-row">
+                                                    <span class="qc2-spotlight-detail-label">Supplier</span>
+                                                    <span class="qc2-spotlight-detail-value">${escapeHtml(card.bestOffer?.supplier_name || "Supplier missing")}</span>
+                                                </div>
+                                                <div class="qc2-spotlight-detail-row">
+                                                    <span class="qc2-spotlight-detail-label">Unit price</span>
+                                                    <span class="qc2-spotlight-detail-value">${escapeHtml(formatCurrency(card.bestOffer?.unit_price || 0, card.currency))}</span>
+                                                </div>
+                                                <div class="qc2-spotlight-detail-row">
+                                                    <span class="qc2-spotlight-detail-label">Quote date</span>
+                                                    <span class="qc2-spotlight-detail-value">${escapeHtml(formatDate(card.bestOffer?.quote_date || card.quoteDate))}</span>
+                                                </div>
+                                            </div>
+                                        </section>
+                                        <section class="qc2-spotlight-detail-group" aria-label="Savings and impact detail">
+                                            <div class="qc2-spotlight-detail-group-title">Savings / Impact</div>
+                                            <div class="qc2-spotlight-detail-table">
+                                                <div class="qc2-spotlight-detail-row">
+                                                    <span class="qc2-spotlight-detail-label">Total savings</span>
+                                                    <span class="qc2-spotlight-detail-value">${escapeHtml(formatCurrency(card.savingsAmount, card.currency))}</span>
+                                                </div>
+                                                <div class="qc2-spotlight-detail-row">
+                                                    <span class="qc2-spotlight-detail-label">Variance</span>
+                                                    <span class="qc2-spotlight-detail-value">${escapeHtml(formatPercent(card.savingsPercent))} lower unit price</span>
+                                                </div>
+                                                <div class="qc2-spotlight-detail-row">
+                                                    <span class="qc2-spotlight-detail-label">Quantity</span>
+                                                    <span class="qc2-spotlight-detail-value">${escapeHtml(String(card.quantity || 0))} ${escapeHtml(card.unit || "")}</span>
+                                                </div>
+                                            </div>
+                                        </section>
+                                        <section class="qc2-spotlight-detail-group qc2-spotlight-detail-group-notes" aria-label="Decision guidance detail">
+                                            <div class="qc2-spotlight-detail-group-title">Decision Guidance</div>
+                                            <div class="qc2-spotlight-detail-note">${escapeHtml(card.decisionSentence)}</div>
+                                        </section>
                                     </div>
                                 </div>
                             </div>
@@ -1258,10 +1679,16 @@
                     <span class="qc2-analysis-expand-col">Details</span>
                 </div>
                 ${cards.map((card) => {
-                    const cardKey = getDecisionCardKey(card);
+                    const cardKey = getScopedDecisionCardKey("analysis", getDecisionCardKey(card));
                     const isExpanded = Boolean(state.collapsedDecisionCards[cardKey]);
+                    const resultValue = getAnalysisFilterResultValue(card);
+                    const searchText = [
+                        card.productName,
+                        card.currentOffer?.supplier_name,
+                        card.bestOffer?.supplier_name
+                    ].filter(Boolean).join(" ").toLowerCase();
                     return `
-                    <article class="qc2-analysis-row ${isExpanded ? "is-expanded" : ""}">
+                    <article class="qc2-analysis-row ${isExpanded ? "is-expanded" : ""}" data-qc-analysis-row data-result="${escapeHtml(resultValue)}" data-search-text="${escapeHtml(searchText)}">
                         <div class="qc2-analysis-row-main">
                             <div class="qc2-analysis-cell">
                                 <div class="qc2-analysis-product">${escapeHtml(card.productName)}</div>
@@ -1284,15 +1711,15 @@
                                 <div class="qc2-analysis-sub">${escapeHtml(formatCurrency(card.bestOffer?.unit_price || 0, card.currency))} unit</div>
                             </div>
                             <div class="qc2-analysis-cell">
-                                <div class="qc2-analysis-savings ${card.isCurrentBest ? "is-neutral" : ""}">${card.isCurrentBest ? "Best current offer" : escapeHtml(formatCurrency(card.savingsAmount, card.currency))}</div>
-                                <div class="qc2-analysis-sub">${card.isCurrentBest ? "No lower offer visible" : escapeHtml(formatPercent(card.savingsPercent))}</div>
+                                <div class="qc2-analysis-savings ${!card.hasValidAlternative ? "is-neutral" : ""}">${card.hasValidAlternative ? escapeHtml(formatCurrency(card.savingsAmount, card.currency)) : card.statusLabel}</div>
+                                <div class="qc2-analysis-sub">${card.hasValidAlternative ? escapeHtml(formatPercent(card.savingsPercent)) : escapeHtml(card.sameSupplierPriceVariation ? "Historical quote difference" : "No valid supplier switch")}</div>
                             </div>
                             <div class="qc2-analysis-cell">
-                                <span class="qc2-analysis-result ${card.isCurrentBest ? "is-best" : "is-opportunity"}">${card.isCurrentBest ? "Already best" : "Savings available"}</span>
+                                <span class="qc2-analysis-result ${card.statusTone === "best" ? "is-best" : card.statusTone === "neutral" ? "is-neutral" : "is-opportunity"}">${escapeHtml(card.statusLabel)}</span>
                             </div>
                             <div class="qc2-analysis-cell qc2-analysis-cell-expand">
                                 <button type="button" class="secondary-btn qc2-collapse-btn" data-qc-action="toggle-decision-card" data-card-key="${escapeHtml(cardKey)}" aria-expanded="${isExpanded ? "true" : "false"}">
-                                    ${isExpanded ? "Hide" : "View"}
+                                    ${isExpanded ? "Close table" : "Open table"}
                                 </button>
                             </div>
                         </div>
@@ -1316,6 +1743,7 @@
                     </article>
                 `;
                 }).join("")}
+                <div class="qc2-analysis-filter-empty" data-qc-analysis-empty hidden>No comparison rows match the selected filter.</div>
             </div>
         `;
     }
@@ -1337,7 +1765,7 @@
                     <span class="qc2-analysis-expand-col">Details</span>
                 </div>
                 ${rows.map((row) => {
-                    const rowKey = `${row.productName}__${row.unit}__${row.selectedSupplier}`;
+                    const rowKey = getScopedDecisionCardKey("optimize", `${row.productName}__${row.unit}__${row.selectedSupplier}`);
                     const isExpanded = Boolean(state.collapsedDecisionCards[rowKey]);
                     return `
                     <article class="qc2-analysis-row ${isExpanded ? "is-expanded" : ""}">
@@ -1367,7 +1795,7 @@
                             </div>
                             <div class="qc2-analysis-cell qc2-analysis-cell-expand">
                                 <button type="button" class="secondary-btn qc2-collapse-btn" data-qc-action="toggle-decision-card" data-card-key="${escapeHtml(rowKey)}" aria-expanded="${isExpanded ? "true" : "false"}">
-                                    ${isExpanded ? "Hide" : "View"}
+                                    ${isExpanded ? "Close table" : "Open table"}
                                 </button>
                             </div>
                         </div>
@@ -1393,11 +1821,13 @@
         const summary = result.summary || buildAnalyzeSummary(result);
         const decisionCards = summary.decisionCards || [];
         const opportunityCards = decisionCards
-            .filter((card) => !card.isCurrentBest && card.savingsAmount > 0)
+            .filter((card) => card.hasValidAlternative && card.savingsAmount > 0)
             .sort((left, right) => right.savingsAmount - left.savingsAmount)
             .slice(0, 12);
-        const alreadyBestCards = decisionCards.filter((card) => card.isCurrentBest || card.savingsAmount <= 0);
+        const expandedOpportunityCards = opportunityCards.filter((card) => Boolean(state.collapsedDecisionCards[getScopedDecisionCardKey("spotlight", getDecisionCardKey(card))]));
         const comparisonCurrency = result.comparison?.bids?.[0]?.currency || "USD";
+        const isOpportunitySectionVisible = state.showOpportunitySection !== false;
+        const activeAnalyzeTab = state.activeAnalyzeTab || "savings";
         return `
             <section class="qc2-screen qc2-screen-analyze" id="qc2AnalysisTop">
                 <div class="qc2-card qc2-analyze-card">
@@ -1410,8 +1840,13 @@
                             </div>
                         </div>
                     </div>
-                    <div class="qc2-analyze-toolbar">
-                        <div class="qc2-mode-pill" aria-label="Analyze mode">Compare Mode</div>
+                    <div class="qc2-analyze-tabs" role="tablist" aria-label="Analysis views">
+                        <button type="button" class="secondary-btn qc2-analyze-tab ${activeAnalyzeTab === "savings" ? "active-tab" : ""}" data-qc-action="set-analyze-tab" data-tab="savings" role="tab" aria-selected="${activeAnalyzeTab === "savings" ? "true" : "false"}">
+                            Top Savings
+                        </button>
+                        <button type="button" class="secondary-btn qc2-analyze-tab ${activeAnalyzeTab === "full-table" ? "active-tab" : ""}" data-qc-action="set-analyze-tab" data-tab="full-table" role="tab" aria-selected="${activeAnalyzeTab === "full-table" ? "true" : "false"}">
+                            Full Table
+                        </button>
                     </div>
                     <div class="qc2-summary-grid qc2-summary-grid-compact qc2-summary-grid-hero">
                         <article class="summary-card qc2-summary-card-compact"><div class="summary-card-title">Products analyzed</div><div class="summary-card-value compact">${summary.productCount}</div><div class="summary-card-insight">Visible product groups in this analysis.</div></article>
@@ -1419,60 +1854,56 @@
                         <article class="summary-card qc2-summary-card-compact"><div class="summary-card-title">Savings opportunities</div><div class="summary-card-value compact">${summary.productsWithSavings}</div><div class="summary-card-insight">Products where a better supplier is visible.</div></article>
                         <article class="summary-card qc2-summary-card-compact is-savings"><div class="summary-card-title">Total potential savings</div><div class="summary-card-value compact">${escapeHtml(formatCurrency(summary.totalVisibleSavings || 0, comparisonCurrency))}</div><div class="summary-card-insight">Immediate savings visible in the imported quotes.</div></article>
                     </div>
-                    <section class="qc2-analysis-block qc2-analysis-block-primary">
-                        <div class="mapping-section-head">
-                            <div>
-                                <div class="mapping-section-title">Top savings opportunities</div>
-                                <div class="mapping-section-copy">Review the supplier switches with the biggest savings impact first.</div>
-                            </div>
+                    <div class="qc2-analyze-tab-panels">
+                        <div id="qcTabSavings" class="qc2-analyze-tab-panel ${activeAnalyzeTab === "savings" ? "active-tab" : ""}" role="tabpanel" aria-hidden="${activeAnalyzeTab === "savings" ? "false" : "true"}">
+                            <section class="qc2-analysis-block qc2-analysis-block-primary ${isOpportunitySectionVisible ? "" : "is-collapsed"}" data-qc-anchor="opportunity-section">
+                                ${isOpportunitySectionVisible ? `
+                                    <div class="mapping-section-head">
+                                        <div>
+                                            <div class="mapping-section-title">Top savings opportunities</div>
+                                            <div class="mapping-section-copy">Review the supplier switches with the biggest savings impact first.</div>
+                                        </div>
+                                        <div class="qc2-analysis-section-actions">
+                                            <button type="button" class="secondary-btn qc2-section-action-btn" data-qc-action="collapse-all-opportunity-tables">Collapse all tables</button>
+                                            <button type="button" class="secondary-btn qc2-section-action-btn" data-qc-action="hide-opportunity-section">Hide section</button>
+                                        </div>
+                                    </div>
+                                    ${renderDecisionSpotlightCards(opportunityCards, state)}
+                                ` : `
+                                    <button type="button" class="qc2-collapsible-summary qc2-section-summary-btn" data-qc-action="toggle-opportunity-section" aria-expanded="false">
+                                        <span>
+                                            <span class="mapping-section-title">Top savings opportunities</span>
+                                            <span class="qc2-collapsible-summary-copy">Top supplier-switch opportunities are hidden from view.</span>
+                                        </span>
+                                        <span class="qc2-collapsible-summary-action">Show section</span>
+                                    </button>
+                                `}
+                            </section>
                         </div>
-                        ${renderDecisionSpotlightCards(opportunityCards, state)}
-                    </section>
-                    <section class="qc2-analysis-block qc2-analysis-block-secondary">
-                        <button type="button" class="qc2-collapsible-summary" data-qc-action="toggle-optimized-summary" aria-expanded="${state.showOptimizedSummary ? "true" : "false"}">
-                            <span class="qc2-collapsible-summary-copy">${alreadyBestCards.length} products already best-priced</span>
-                            <span class="qc2-collapsible-summary-action">${state.showOptimizedSummary ? "Hide" : "View"}</span>
-                        </button>
-                        ${state.showOptimizedSummary ? `
-                            <div class="qc2-best-panel">
-                                <div class="qc2-best-panel-scroll">
-                                    <div class="qc2-best-grid">
-                                ${alreadyBestCards.slice(0, 24).map((card, index) => {
-                                    const theme = getOpportunityCardTheme(index);
-                                    return `
-                                    <article
-                                        class="qc2-best-card"
-                                        style="
-                                            --qc2-best-card-border:${theme.border};
-                                            --qc2-best-card-glow:${theme.glow};
-                                            --qc2-best-card-accent:${theme.badgeBg};
-                                            --qc2-best-card-text:${theme.badgeText};
-                                        "
-                                    >
-                                        <div class="qc2-best-title">${escapeHtml(card.productName)}</div>
-                                        <div class="qc2-best-copy">${escapeHtml(card.currentOffer?.supplier_name || "Supplier missing")} is already the best visible offer at ${escapeHtml(formatCurrency(card.currentOffer?.total_price || 0, card.currency))}.</div>
-                                    </article>
-                                `;
-                                }).join("")}
+                        <div id="qcTabFullTable" class="qc2-analyze-tab-panel ${activeAnalyzeTab === "full-table" ? "active-tab" : ""}" role="tabpanel" aria-hidden="${activeAnalyzeTab === "full-table" ? "false" : "true"}">
+                            <section class="qc2-analysis-block qc2-analysis-block-advanced" data-qc-anchor="full-comparison-section">
+                                <div class="mapping-section-head qc2-analysis-table-headbar">
+                                    <div>
+                                        <div class="mapping-section-title">Full comparison table</div>
+                                        <div class="mapping-section-copy">Structured all-products savings view across the complete quote set.</div>
+                                    </div>
+                                    <div class="qc2-analysis-section-actions">
+                                        <button type="button" class="secondary-btn qc2-section-action-btn" data-qc-action="toggle-full-comparison" aria-expanded="${state.showFullComparison ? "true" : "false"}">
+                                            ${state.showFullComparison ? "Hide table" : "Open table"}
+                                        </button>
                                     </div>
                                 </div>
-                            </div>
-                        ` : ""}
-                    </section>
-                    <section class="qc2-analysis-block qc2-analysis-block-advanced">
-                        <button type="button" class="qc2-collapsible-summary" data-qc-action="toggle-full-comparison" aria-expanded="${state.showFullComparison ? "true" : "false"}">
-                            <span class="qc2-collapsible-summary-copy">View full comparison</span>
-                            <span class="qc2-collapsible-summary-action">${state.showFullComparison ? "Hide table" : "Open table"}</span>
-                        </button>
-                        ${state.showFullComparison ? `
-                            <div class="mapping-section-head"><div><div class="mapping-section-title">Full comparison table</div><div class="mapping-section-copy">Complete product comparison with all visible rows and detail toggles.</div></div></div>
-                            <div class="qc2-analysis-table-frame">
-                                <div class="qc2-analysis-table-scroll">
-                                    ${renderAnalyzeRows(summary.decisionCards, state)}
-                                </div>
-                            </div>
-                        ` : ""}
-                    </section>
+                                ${state.showFullComparison ? `
+                                    ${renderAnalysisFilterBar(state, summary.decisionCards)}
+                                    <div class="qc2-analysis-table-frame">
+                                        <div class="qc2-analysis-table-scroll">
+                                            ${renderAnalyzeRows(summary.decisionCards, state)}
+                                        </div>
+                                    </div>
+                                ` : ""}
+                            </section>
+                        </div>
+                    </div>
                     ${renderStatus(state)}
                     <div class="qc2-actions qc2-analyze-actions" id="qc2AnalysisLower">
                         <div class="qc2-analyze-actions-slot is-left">
@@ -1490,8 +1921,11 @@
         `;
     }
 
-    function renderHistoryTrend(rows) {
+    function renderHistoryTrend(rows, { hasHistoryContext = false, hasProductSelected = false } = {}) {
         if (!rows.length) {
+            if (hasHistoryContext && !hasProductSelected) {
+                return '<div class="decision-list-empty">Select a product to see unit-price movement over time for the active quote set.</div>';
+            }
             return '<div class="decision-list-empty">Save supplier quotes to start building product history.</div>';
         }
         const prices = rows.map((row) => row.unitPrice);
@@ -1526,23 +1960,62 @@
         `;
     }
 
+    function renderHistoryCombobox(key, label, placeholder, selectedValue, options) {
+        const emptyLabel = key === "product" ? "Clear product" : "All suppliers";
+        return `
+            <label class="recipe-field">
+                <span class="recipe-field-label">${label}</span>
+                <div class="qc2-history-combobox" data-qc-history-combobox="${key}">
+                    <button
+                        type="button"
+                        class="mapping-select qc2-history-combobox-trigger ${selectedValue ? "has-value" : ""}"
+                        data-qc-history-combobox-toggle="${key}"
+                        aria-expanded="false"
+                        aria-haspopup="listbox"
+                    >
+                        <span class="qc2-history-combobox-value ${selectedValue ? "" : "is-placeholder"}">${escapeHtml(selectedValue || placeholder)}</span>
+                        <span class="qc2-history-combobox-caret" aria-hidden="true"></span>
+                    </button>
+                    <div class="qc2-history-combobox-panel" hidden>
+                        <div class="qc2-history-combobox-search-shell">
+                            <input
+                                type="text"
+                                class="qc2-history-combobox-search"
+                                data-qc-history-filter-search="${key}"
+                                value=""
+                                placeholder="${escapeHtml(placeholder)}"
+                                autocomplete="off"
+                                spellcheck="false"
+                                aria-label="${escapeHtml(`Search ${label.toLowerCase()}`)}"
+                            >
+                        </div>
+                        <div class="qc2-history-combobox-options" role="listbox">
+                            <button type="button" class="qc2-history-combobox-option is-clear" data-qc-history-filter-option="${key}" data-value="">
+                                ${emptyLabel}
+                            </button>
+                            ${options.map((option) => `
+                                <button
+                                    type="button"
+                                    class="qc2-history-combobox-option${option === selectedValue ? " is-selected" : ""}"
+                                    data-qc-history-filter-option="${key}"
+                                    data-value="${escapeHtml(option)}"
+                                >
+                                    ${escapeHtml(option)}
+                                </button>
+                            `).join("")}
+                            <div class="qc2-history-combobox-empty" data-qc-history-filter-empty hidden>No matches found.</div>
+                        </div>
+                    </div>
+                </div>
+            </label>
+        `;
+    }
+
     function renderHistoryFilters(state, productOptions, supplierOptions) {
         return `
             <div class="qc2-history-filters">
-                <label class="recipe-field">
-                    <span class="recipe-field-label">Product</span>
-                    <select class="mapping-select" data-qc-history-filter="product">
-                        <option value="">Choose a product</option>
-                        ${productOptions.map((product) => `<option value="${escapeHtml(product)}" ${product === state.historyFilters.product ? "selected" : ""}>${escapeHtml(product)}</option>`).join("")}
-                    </select>
-                </label>
-                <label class="recipe-field">
-                    <span class="recipe-field-label">Supplier</span>
-                    <select class="mapping-select" data-qc-history-filter="supplier">
-                        <option value="">All suppliers</option>
-                        ${supplierOptions.map((supplier) => `<option value="${escapeHtml(supplier)}" ${supplier === state.historyFilters.supplier ? "selected" : ""}>${escapeHtml(supplier)}</option>`).join("")}
-                    </select>
-                </label>
+                ${renderHistoryCombobox("product", "Product", "Search product", state.historyFilters.product || "", productOptions)}
+                ${renderHistoryCombobox("supplier", "Supplier", "Search supplier", state.historyFilters.supplier || "", supplierOptions)}
                 <div class="recipe-field">
                     <span class="recipe-field-label">Start Date</span>
                     <label class="date-input-inline qc2-history-date-shell ${state.historyFilters.dateFrom ? "has-value" : ""}" data-date-shell>
@@ -1563,8 +2036,81 @@
         `;
     }
 
-    function renderHistoryTable(rows) {
+    function applyHistoryFilterValue(state, key, value) {
+        if (!["product", "supplier"].includes(key)) return false;
+        const normalizedValue = String(value || "").trim();
+        const optionSource = getHistoryFilterOptions(state, key);
+        const matchedValue = optionSource.find((option) => option.toLowerCase() === normalizedValue.toLowerCase()) || "";
+        state.historyFilters[key] = matchedValue;
+        if (key === "product") {
+            state.historyFilters.supplier = "";
+        }
+        return true;
+    }
+
+    function filterHistoryComboboxOptions(combobox, searchTerm) {
+        if (!combobox) return;
+        const normalizedSearch = String(searchTerm || "").trim().toLowerCase();
+        let visibleCount = 0;
+        combobox.querySelectorAll("[data-qc-history-filter-option]").forEach((option) => {
+            if (option.dataset.value === "") {
+                option.hidden = false;
+                return;
+            }
+            const matches = !normalizedSearch || option.dataset.value.toLowerCase().includes(normalizedSearch);
+            option.hidden = !matches;
+            if (matches) {
+                visibleCount += 1;
+            }
+        });
+        const emptyState = combobox.querySelector("[data-qc-history-filter-empty]");
+        if (emptyState) {
+            emptyState.hidden = visibleCount > 0;
+        }
+    }
+
+    function closeHistoryComboboxes(elements) {
+        if (!elements.app) return;
+        elements.app.querySelectorAll("[data-qc-history-combobox]").forEach((combobox) => {
+            combobox.classList.remove("is-open");
+            const trigger = combobox.querySelector("[data-qc-history-combobox-toggle]");
+            const panel = combobox.querySelector(".qc2-history-combobox-panel");
+            if (trigger) {
+                trigger.setAttribute("aria-expanded", "false");
+            }
+            if (panel) {
+                panel.hidden = true;
+            }
+        });
+    }
+
+    function openHistoryCombobox(elements, key) {
+        if (!elements.app) return;
+        closeHistoryComboboxes(elements);
+        const combobox = elements.app.querySelector(`[data-qc-history-combobox="${key}"]`);
+        if (!combobox) return;
+        const trigger = combobox.querySelector("[data-qc-history-combobox-toggle]");
+        const panel = combobox.querySelector(".qc2-history-combobox-panel");
+        const searchInput = combobox.querySelector("[data-qc-history-filter-search]");
+        combobox.classList.add("is-open");
+        if (trigger) {
+            trigger.setAttribute("aria-expanded", "true");
+        }
+        if (panel) {
+            panel.hidden = false;
+        }
+        if (searchInput) {
+            searchInput.value = "";
+            filterHistoryComboboxOptions(combobox, "");
+            searchInput.focus({ preventScroll: true });
+        }
+    }
+
+    function renderHistoryTable(rows, { hasHistoryContext = false, hasProductSelected = false } = {}) {
         if (!rows.length) {
+            if (hasHistoryContext && !hasProductSelected) {
+                return '<div class="decision-list-empty">Uploaded quote history is ready. Select a product to view supplier history, KPIs, and the trend table.</div>';
+            }
             return '<div class="decision-list-empty">No saved quotes match the selected product and filters.</div>';
         }
         return `
@@ -1609,13 +2155,10 @@
 
     function renderQcHistory(state) {
         const historyRows = flattenHistoryRows(state);
-        const productOptions = Array.from(new Set(historyRows.map((row) => row.productName))).sort((left, right) => left.localeCompare(right));
-        const supplierOptions = Array.from(new Set(
-            historyRows
-                .filter((row) => !state.historyFilters.product || row.productName === state.historyFilters.product)
-                .map((row) => row.supplier)
-                .filter(Boolean)
-        )).sort((left, right) => left.localeCompare(right));
+        const hasHistoryContext = historyRows.length > 0;
+        const hasProductSelected = Boolean(state.historyFilters.product);
+        const productOptions = getHistoryFilterOptions(state, "product");
+        const supplierOptions = getHistoryFilterOptions(state, "supplier");
         const filteredRows = getFilteredHistoryRows(state);
         const summary = getHistorySummary(filteredRows);
         const currency = filteredRows[filteredRows.length - 1]?.currency || "USD";
@@ -1635,6 +2178,7 @@
                     <div class="qc2-history-controls">
                         ${renderHistoryFilters(state, productOptions, supplierOptions)}
                     </div>
+                    ${hasHistoryContext && !hasProductSelected ? '<div class="decision-list-empty qc2-history-empty-state">Choose a product to activate Product History for the current uploaded quote set.</div>' : ""}
                     <div class="qc2-summary-grid qc2-history-summary-grid">
                         <article class="summary-card"><div class="summary-card-title">Latest price</div><div class="summary-card-value compact">${summary.latestPrice == null ? "--" : escapeHtml(formatCurrency(summary.latestPrice, currency))}</div><div class="summary-card-insight">Most recent unit price in the selected range.</div></article>
                         <article class="summary-card"><div class="summary-card-title">Oldest price</div><div class="summary-card-value compact">${summary.oldestPrice == null ? "--" : escapeHtml(formatCurrency(summary.oldestPrice, currency))}</div><div class="summary-card-insight">Starting unit price in the selected range.</div></article>
@@ -1643,11 +2187,11 @@
                     </div>
                     <section class="qc2-history-block qc2-history-table-block">
                         <div class="mapping-section-head"><div><div class="mapping-section-title">Price history table</div><div class="mapping-section-copy">Review each saved supplier quote, including change versus the previous visible quote.</div></div></div>
-                        ${renderHistoryTable(filteredRows)}
+                        ${renderHistoryTable(filteredRows, { hasHistoryContext, hasProductSelected })}
                     </section>
                     <section class="qc2-history-block qc2-history-trend-block">
                         <div class="mapping-section-head"><div><div class="mapping-section-title">Simple trend</div><div class="mapping-section-copy">Unit price over time for the currently selected product and filters.</div></div></div>
-                        ${renderHistoryTrend(filteredRows)}
+                        ${renderHistoryTrend(filteredRows, { hasHistoryContext, hasProductSelected })}
                     </section>
                     ${renderStatus(state)}
                     <div class="qc2-actions">
@@ -1658,7 +2202,11 @@
         `;
     }
 
-    function renderApp(elements, state) {
+    function renderApp(elements, state, options = {}) {
+        const renderStartedAt = performance.now();
+        const preserveScrollTop = options.preserveScroll ? readScrollPosition(elements) : null;
+        const anchorSelector = options.anchorSelector || "";
+        const anchorOffset = anchorSelector ? getAnchorOffset(elements, anchorSelector) : null;
         if (!elements.app) return;
         const screenMap = {
             start: renderQcStart(state),
@@ -1669,10 +2217,44 @@
             history: renderQcHistory(state)
         };
         elements.app.innerHTML = screenMap[state.currentScreen] || renderQcStart(state);
+        applyAnalysisTableFilter(elements, state);
+        if (preserveScrollTop != null) {
+            writeScrollPosition(elements, preserveScrollTop);
+        }
+        restoreAnchorOffset(elements, anchorSelector, anchorOffset);
         persistQuoteCompareSession(state, elements);
+        console.info("[quote compare render timing]", {
+            screen: state.currentScreen,
+            durationMs: Number((performance.now() - renderStartedAt).toFixed(1))
+        });
+    }
+
+    function applyAnalysisTableFilter(elements, state) {
+        if (!elements.app) return;
+        const activeFilter = state.analysisTableFilter || "all";
+        const searchTerm = String(state.analysisTableSearch || "").trim().toLowerCase();
+        const rows = Array.from(elements.app.querySelectorAll("[data-qc-analysis-row]"));
+        let visibleCount = 0;
+        rows.forEach((row) => {
+            const matchesFilter = activeFilter === "all" || row.dataset.result === activeFilter;
+            const matchesSearch = !searchTerm || String(row.dataset.searchText || "").includes(searchTerm);
+            const matches = matchesFilter && matchesSearch;
+            row.classList.toggle("is-filter-hidden", !matches);
+            if (matches) visibleCount += 1;
+        });
+        elements.app.querySelectorAll("[data-qc-action=\"set-analysis-filter\"]").forEach((button) => {
+            const isActive = button.dataset.filterValue === activeFilter;
+            button.classList.toggle("is-active", isActive);
+            button.setAttribute("aria-pressed", isActive ? "true" : "false");
+        });
+        const emptyState = elements.app.querySelector("[data-qc-analysis-empty]");
+        if (emptyState) {
+            emptyState.hidden = visibleCount > 0;
+        }
     }
 
     async function parseSelectedFile(state, file) {
+        const parseSelectedStartedAt = performance.now();
         state.file = file || null;
         state.uploadReview = null;
         state.headers = [];
@@ -1689,6 +2271,10 @@
             return;
         }
         await inspectUpload(state);
+        console.info("[quote compare file selection timing]", {
+            fileName: file.name,
+            totalFileSelectionMs: Number((performance.now() - parseSelectedStartedAt).toFixed(1))
+        });
     }
 
     async function startUploadAnalysis(state) {
@@ -1768,6 +2354,10 @@
                 summary: buildAnalyzeSummary({ comparison: { ...data.comparison, source_type: "upload" } })
             };
             state.rows = data.comparison?.bids || [];
+            state.activeAnalyzeTab = "savings";
+            state.showOpportunitySection = true;
+            state.showFullComparison = false;
+            state.collapsedDecisionCards = clearDecisionCardsForScope(state.collapsedDecisionCards, "spotlight");
             state.lastFlowScreen = "review";
             state.currentScreen = "analyze";
             state.isSubmitting = false;
@@ -1809,6 +2399,10 @@
                 "Unit Price": "Manual Entry",
                 "Date": "Manual Entry"
             };
+            state.activeAnalyzeTab = "savings";
+            state.showOpportunitySection = true;
+            state.showFullComparison = false;
+            state.collapsedDecisionCards = clearDecisionCardsForScope(state.collapsedDecisionCards, "spotlight");
             state.lastFlowScreen = "manual";
             state.currentScreen = "analyze";
             setStatus(state, "Manual quote analysis is ready.", "success");
@@ -1954,7 +2548,7 @@
                 const started = await startUploadAnalysis(state);
                 renderApp(elements, state);
                 if (started) {
-                    document.getElementById("qc2AnalysisTop")?.scrollIntoView({ behavior: "smooth", block: "start" });
+                    writeScrollPosition(elements, 0);
                 }
                 return;
             }
@@ -1987,23 +2581,70 @@
             if (action === "toggle-decision-card") {
                 const cardKey = actionTarget.dataset.cardKey || "";
                 if (cardKey) {
-                    state.collapsedDecisionCards[cardKey] = !state.collapsedDecisionCards[cardKey];
-                    renderApp(elements, state);
+                    const cardScope = getDecisionCardScope(cardKey);
+                    if (cardScope === "spotlight") {
+                        toggleSpotlightCardInPlace(elements, state, cardKey);
+                        return;
+                    }
+                    const shouldOpen = !state.collapsedDecisionCards[cardKey];
+                    state.collapsedDecisionCards = shouldOpen ? { [cardKey]: true } : {};
+                    const anchorSelector = `[data-qc-card-key="${cssEscape(cardKey)}"], [data-card-key="${cssEscape(cardKey)}"]`;
+                    renderApp(elements, state, { preserveScroll: true, anchorSelector });
                 }
+                return;
+            }
+            if (action === "set-analyze-tab") {
+                const nextTab = actionTarget.dataset.tab === "full-table" ? "full-table" : "savings";
+                state.activeAnalyzeTab = nextTab;
+                renderApp(elements, state, { preserveScroll: true, anchorSelector: '[data-qc-anchor="opportunity-section"], [data-qc-anchor="full-comparison-section"]' });
+                return;
+            }
+            if (action === "collapse-all-opportunity-tables") {
+                state.collapsedDecisionCards = clearDecisionCardsForScope(state.collapsedDecisionCards, "spotlight");
+                renderApp(elements, state, { preserveScroll: true, anchorSelector: '[data-qc-anchor="opportunity-section"]' });
+                return;
+            }
+            if (action === "hide-opportunity-section") {
+                state.showOpportunitySection = false;
+                state.collapsedDecisionCards = clearDecisionCardsForScope(state.collapsedDecisionCards, "spotlight");
+                renderApp(elements, state, { preserveScroll: true, anchorSelector: '[data-qc-anchor="opportunity-section"]' });
+                return;
+            }
+            if (action === "toggle-opportunity-section") {
+                state.showOpportunitySection = !state.showOpportunitySection;
+                if (!state.showOpportunitySection) {
+                    state.collapsedDecisionCards = clearDecisionCardsForScope(state.collapsedDecisionCards, "spotlight");
+                }
+                renderApp(elements, state, { preserveScroll: true, anchorSelector: '[data-qc-anchor="opportunity-section"]' });
+                return;
+            }
+            if (action === "hide-all-details") {
+                state.collapsedDecisionCards = {};
+                state.showFullComparison = false;
+                renderApp(elements, state, { preserveScroll: true, anchorSelector: '[data-qc-anchor="full-comparison-section"]' });
                 return;
             }
             if (action === "toggle-full-comparison") {
                 state.showFullComparison = !state.showFullComparison;
-                renderApp(elements, state);
+                state.activeAnalyzeTab = "full-table";
+                renderApp(elements, state, { preserveScroll: true, anchorSelector: '[data-qc-anchor="full-comparison-section"]' });
+                return;
+            }
+            if (action === "set-analysis-filter") {
+                state.analysisTableFilter = actionTarget.dataset.filterValue || "all";
+                applyAnalysisTableFilter(elements, state);
+                persistQuoteCompareSession(state, elements);
                 return;
             }
             if (action === "toggle-optimized-summary") {
                 state.showOptimizedSummary = !state.showOptimizedSummary;
-                renderApp(elements, state);
+                renderApp(elements, state, { preserveScroll: true });
                 return;
             }
             if (action === "go-history") {
                 initializeHistoryFilters(state);
+                setStatus(state, "Loading saved product history.", "info");
+                await ensureHistoryComparisonsLoaded(state);
                 state.currentScreen = "history";
                 renderApp(elements, state);
                 return;
@@ -2015,33 +2656,64 @@
         });
 
         elements.app.addEventListener("click", (event) => {
-            const dateShell = event.target.closest("[data-date-shell]");
-            if (!dateShell || !elements.app.contains(dateShell)) return;
-
-            const input = dateShell.querySelector('.date-input[type="date"]');
-            if (!input) return;
-
-            if (event.target === input) {
-                input.focus({ preventScroll: true });
+            const historyComboboxToggle = event.target.closest("[data-qc-history-combobox-toggle]");
+            if (historyComboboxToggle) {
+                const key = historyComboboxToggle.dataset.qcHistoryComboboxToggle;
+                const combobox = historyComboboxToggle.closest("[data-qc-history-combobox]");
+                const isOpen = combobox?.classList.contains("is-open");
+                if (isOpen) {
+                    closeHistoryComboboxes(elements);
+                } else {
+                    openHistoryCombobox(elements, key);
+                }
                 return;
             }
 
-            if (event.target.closest(".qc2-history-date-trigger")) {
-                event.preventDefault();
-                event.stopPropagation();
+            const historyOption = event.target.closest("[data-qc-history-filter-option]");
+            if (historyOption) {
+                const key = historyOption.dataset.qcHistoryFilterOption;
+                applyHistoryFilterValue(state, key, historyOption.dataset.value || "");
+                renderApp(elements, state);
+                return;
+            }
+
+            const dateShell = event.target.closest("[data-date-shell]");
+            if (dateShell && elements.app.contains(dateShell)) {
+                const input = dateShell.querySelector('.date-input[type="date"]');
+                if (!input) return;
+
+                if (event.target === input) {
+                    input.focus({ preventScroll: true });
+                    return;
+                }
+
+                if (event.target.closest(".qc2-history-date-trigger")) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openDateInputPicker(input);
+                    return;
+                }
+
                 openDateInputPicker(input);
                 return;
             }
 
-            openDateInputPicker(input);
+            if (!event.target.closest("[data-qc-history-combobox]")) {
+                closeHistoryComboboxes(elements);
+            }
         });
 
         elements.app.addEventListener("change", async (event) => {
             const fileInput = event.target.closest("#qc2FileInput");
             if (fileInput) {
+                const renderStartedAt = performance.now();
                 const file = fileInput.files?.[0] || null;
                 await parseSelectedFile(state, file);
                 renderApp(elements, state);
+                console.info("[quote compare upload render timing]", {
+                    fileName: file?.name || "",
+                    renderAfterInspectMs: Number((performance.now() - renderStartedAt).toFixed(1))
+                });
                 return;
             }
 
@@ -2074,12 +2746,52 @@
         });
 
         elements.app.addEventListener("input", (event) => {
+            const historySearchInput = event.target.closest("[data-qc-history-filter-search]");
+            if (historySearchInput) {
+                const combobox = historySearchInput.closest("[data-qc-history-combobox]");
+                filterHistoryComboboxOptions(combobox, historySearchInput.value || "");
+                return;
+            }
+
+            const searchInput = event.target.closest("[data-qc-analysis-search]");
+            if (searchInput) {
+                state.analysisTableSearch = searchInput.value || "";
+                applyAnalysisTableFilter(elements, state);
+                persistQuoteCompareSession(state, elements);
+                return;
+            }
             const manualField = event.target.closest("[data-manual-field]");
             if (!manualField) return;
             const index = Number(manualField.dataset.index || -1);
             const field = manualField.dataset.manualField || "";
             if (index >= 0 && state.manualRows[index] && field) {
                 state.manualRows[index][field] = manualField.value;
+            }
+        });
+
+        elements.app.addEventListener("keydown", (event) => {
+            const historySearchInput = event.target.closest("[data-qc-history-filter-search]");
+            if (!historySearchInput) return;
+            const combobox = historySearchInput.closest("[data-qc-history-combobox]");
+            if (!combobox) return;
+
+            if (event.key === "Escape") {
+                closeHistoryComboboxes(elements);
+                combobox.querySelector("[data-qc-history-combobox-toggle]")?.focus({ preventScroll: true });
+                return;
+            }
+
+            if (event.key === "Enter") {
+                event.preventDefault();
+                const firstVisibleOption = Array.from(combobox.querySelectorAll("[data-qc-history-filter-option]"))
+                    .find((option) => !option.hidden);
+                if (!firstVisibleOption) return;
+                applyHistoryFilterValue(
+                    state,
+                    firstVisibleOption.dataset.qcHistoryFilterOption,
+                    firstVisibleOption.dataset.value || ""
+                );
+                renderApp(elements, state);
             }
         });
     }
@@ -2136,8 +2848,10 @@
     }
 
     async function initQuoteCompare() {
+        const initStartedAt = performance.now();
         const elements = getElements();
         if (!elements.shell || !elements.app) return;
+        console.info("[quote compare init start]");
         setQuoteCompareReady(elements, false);
         const hardResetRequested = Boolean(window.PriceAnalyzerBootGuard?.didHardReset?.());
         const state = createState();
@@ -2148,14 +2862,26 @@
         }
         bindEvents(elements, state);
         exposeApi(elements, state);
-        await loadSavedComparisons(state);
+        await loadSavedComparisons(state, { includeComparisons: false });
+        if (state.currentScreen === "history") {
+            await ensureHistoryComparisonsLoaded(state);
+        }
+        const renderStartedAt = performance.now();
         renderApp(elements, state);
+        console.info("[quote compare initial render timing]", {
+            currentScreen: state.currentScreen,
+            durationMs: Number((performance.now() - renderStartedAt).toFixed(1))
+        });
         if (hardResetRequested) {
             writeScrollPosition(elements, 0);
         } else {
             restoreQuoteCompareScroll(elements);
         }
         setQuoteCompareReady(elements, true);
+        console.info("[quote compare init end]", {
+            currentScreen: state.currentScreen,
+            totalInitMs: Number((performance.now() - initStartedAt).toFixed(1))
+        });
 
         const scrollContext = getScrollContext(elements);
         const scrollTarget = scrollContext.type === "element" ? scrollContext.target : window;

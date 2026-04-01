@@ -6,8 +6,9 @@ import logging
 import random
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 from urllib.parse import urlencode
 
@@ -34,7 +35,17 @@ LATEST_RESULTS_PATH = BASE_DIR / "latest_results.csv"
 CODES_PATH = BASE_DIR / "codes.json"
 RECIPES_PATH = BASE_DIR / "recipes.json"
 QUOTE_COMPARISONS_PATH = BASE_DIR / "quote_comparisons.json"
+QUOTE_COMPARE_UPLOAD_CACHE_DIR = BASE_DIR / ".quote_compare_uploads"
+QUOTE_COMPARE_SESSION_CACHE_DIR = BASE_DIR / ".quote_compare_sessions"
 GUIDE_KNOWLEDGE_PATH = BASE_DIR / "guide_knowledge.json"
+LATEST_ANALYSIS_CACHE: dict[str, Any] = {
+    "signature": None,
+    "context": None
+}
+QUOTE_COMPARE_STORE_CACHE: dict[str, Any] = {
+    "signature": None,
+    "store": None
+}
 OPTIONAL_UNIT_COLUMNS = ["Purchase Unit", "Unit"]
 OPTIONAL_QUANTITY_COLUMNS = ["Quantity", "Qty"]
 OPTIONAL_UNIT_PRICE_COLUMNS = ["Unit Price", "Price"]
@@ -770,6 +781,59 @@ def read_uploaded_dataframe(file: UploadFile) -> pd.DataFrame:
     return dataframe
 
 
+def ensure_quote_compare_upload_cache_dir() -> None:
+    QUOTE_COMPARE_UPLOAD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_quote_compare_session_cache_dir() -> None:
+    QUOTE_COMPARE_SESSION_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def get_quote_compare_session_path(session_id: str) -> Path:
+    ensure_quote_compare_session_cache_dir()
+    return QUOTE_COMPARE_SESSION_CACHE_DIR / f"{session_id}.json"
+
+
+def cache_quote_compare_upload(file: UploadFile, session_id: str) -> str:
+    filename = file.filename or ""
+    extension = Path(filename).suffix.lower()
+    if not filename:
+        raise ValueError("No file was uploaded.")
+    ensure_quote_compare_upload_cache_dir()
+    cache_path = QUOTE_COMPARE_UPLOAD_CACHE_DIR / f"{session_id}{extension}"
+    try:
+        file.file.seek(0)
+        cache_path.write_bytes(file.file.read())
+        file.file.seek(0)
+    except Exception as exc:
+        logger.exception("Failed to cache quote compare upload: %s", filename)
+        raise ValueError("The uploaded supplier file could not be cached for review.") from exc
+    return str(cache_path)
+
+
+def read_cached_quote_compare_upload(cache_path: str | None, filename: str = "") -> pd.DataFrame:
+    normalized_path = str(cache_path or "").strip()
+    if not normalized_path:
+        raise ValueError("The uploaded supplier file is no longer available. Please upload it again.")
+    source_path = Path(normalized_path)
+    if not source_path.exists() or not source_path.is_file():
+        raise ValueError("The uploaded supplier file is no longer available. Please upload it again.")
+
+    class CachedUploadFile:
+        def __init__(self, path: Path, original_name: str):
+            self.filename = original_name or path.name
+            self.file = path.open("rb")
+
+    cached_upload = CachedUploadFile(source_path, filename or source_path.name)
+    try:
+        return read_uploaded_dataframe(cached_upload)
+    finally:
+        try:
+            cached_upload.file.close()
+        except Exception:
+            logger.debug("Could not close cached quote compare upload: %s", source_path)
+
+
 def build_mapping_review_payload(
     dataframe: pd.DataFrame,
     *,
@@ -1138,6 +1202,65 @@ def normalize_request_value(value: Any) -> Any:
     return normalize_value(value)
 
 
+def parse_localized_float(value: Any) -> float:
+    normalized_value = normalize_value(value)
+    if normalized_value is None or normalized_value == "":
+        raise ValueError("Empty numeric value")
+    if isinstance(normalized_value, bool):
+        raise ValueError("Boolean value is not numeric")
+    if isinstance(normalized_value, (int, float)):
+        return float(normalized_value)
+
+    text = str(normalized_value).strip()
+    if not text:
+        raise ValueError("Empty numeric text")
+
+    text = text.replace("\u00a0", "").replace(" ", "")
+    if "," in text and "." in text:
+        if text.rfind(",") > text.rfind("."):
+            text = text.replace(".", "").replace(",", ".")
+        else:
+            text = text.replace(",", "")
+    elif "," in text:
+        text = text.replace(".", "").replace(",", ".")
+
+    text = re.sub(r"[^0-9.\-+]", "", text)
+    if not text or text in {"-", "+", ".", "-.", "+."}:
+        raise ValueError(f"Invalid numeric text: {normalized_value!r}")
+
+    return float(text)
+
+
+def make_json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): make_json_safe(item)
+            for key, item in value.items()
+        }
+
+    if isinstance(value, list):
+        return [make_json_safe(item) for item in value]
+
+    if isinstance(value, tuple):
+        return [make_json_safe(item) for item in value]
+
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+
+    if hasattr(value, "item") and not isinstance(value, (str, bytes)):
+        try:
+            normalized_item = value.item()
+        except (TypeError, ValueError):
+            normalized_item = value
+        if normalized_item is not value:
+            return make_json_safe(normalized_item)
+
+    return normalize_value(value)
+
+
 def coerce_numeric_value(value: Any, *, field_name: str, context: str) -> float:
     normalized_value = normalize_value(value)
     if normalized_value is None or normalized_value == "":
@@ -1160,7 +1283,7 @@ def coerce_numeric_value(value: Any, *, field_name: str, context: str) -> float:
         return 0.0
 
     try:
-        return float(normalized_value)
+        return parse_localized_float(normalized_value)
     except (TypeError, ValueError):
         logger.warning(
             "[quote compare upload] failed numeric coercion for %s (%s): type=%s value=%r",
@@ -1213,6 +1336,15 @@ def ensure_quote_comparisons_file() -> None:
 
 def load_quote_comparisons_store() -> dict[str, Any]:
     ensure_quote_comparisons_file()
+    cache_signature = (
+        QUOTE_COMPARISONS_PATH.stat().st_mtime_ns,
+        QUOTE_COMPARISONS_PATH.stat().st_size
+    )
+    if (
+        QUOTE_COMPARE_STORE_CACHE["signature"] == cache_signature
+        and isinstance(QUOTE_COMPARE_STORE_CACHE["store"], dict)
+    ):
+        return QUOTE_COMPARE_STORE_CACHE["store"]
     try:
         store = json.loads(QUOTE_COMPARISONS_PATH.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -1229,19 +1361,36 @@ def load_quote_comparisons_store() -> dict[str, Any]:
         changed = True
     if changed:
         save_quote_comparisons_store(store)
+        return QUOTE_COMPARE_STORE_CACHE["store"]
+    QUOTE_COMPARE_STORE_CACHE["signature"] = cache_signature
+    QUOTE_COMPARE_STORE_CACHE["store"] = store
     return store
 
 
 def save_quote_comparisons_store(store: dict[str, Any]) -> None:
-    QUOTE_COMPARISONS_PATH.write_text(json.dumps(store, indent=2), encoding="utf-8")
+    safe_store = make_json_safe(store)
+    QUOTE_COMPARISONS_PATH.write_text(
+        json.dumps(safe_store, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8"
+    )
+    QUOTE_COMPARE_STORE_CACHE["signature"] = (
+        QUOTE_COMPARISONS_PATH.stat().st_mtime_ns,
+        QUOTE_COMPARISONS_PATH.stat().st_size
+    )
+    QUOTE_COMPARE_STORE_CACHE["store"] = safe_store
 
 
 def serialize_dataframe_records(dataframe: pd.DataFrame) -> list[dict[str, Any]]:
+    dataframe = dataframe.copy()
+    for column in dataframe.columns:
+        if pd.api.types.is_datetime64_any_dtype(dataframe[column]):
+            dataframe[column] = dataframe[column].astype(str)
+
     serializable = dataframe.astype(object).where(pd.notna(dataframe), None)
     records: list[dict[str, Any]] = []
     for row in serializable.to_dict(orient="records"):
         records.append({
-            str(key): normalize_value(value)
+            str(key): make_json_safe(value)
             for key, value in row.items()
         })
     return records
@@ -1259,17 +1408,33 @@ def hydrate_dataframe_from_session(columns: list[str], records: list[dict[str, A
 
 
 def save_quote_compare_active_session(session_id: str, payload: dict[str, Any]) -> None:
-    store = load_quote_comparisons_store()
-    active_sessions = store.get("active_sessions", {})
-    active_sessions[session_id] = payload
-    store["active_sessions"] = active_sessions
-    save_quote_comparisons_store(store)
+    normalized_payload = make_json_safe(payload)
+    normalized_payload["session_id"] = session_id
+    session_path = get_quote_compare_session_path(session_id)
+    session_path.write_text(
+        json.dumps(normalized_payload, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8"
+    )
 
 
 def load_quote_compare_active_session(session_id: str | None) -> dict[str, Any] | None:
     if not session_id:
         return None
-    return load_quote_comparisons_store().get("active_sessions", {}).get(session_id)
+    normalized_session_id = str(session_id).strip()
+    if not normalized_session_id:
+        return None
+
+    session_path = get_quote_compare_session_path(normalized_session_id)
+    if session_path.exists():
+        try:
+            payload = json.loads(session_path.read_text(encoding="utf-8"))
+            return payload if isinstance(payload, dict) else None
+        except json.JSONDecodeError:
+            logger.warning("Quote compare session file is invalid: %s", session_path)
+            return None
+
+    # Backward-compatible fallback for previously stored sessions in the shared store.
+    return load_quote_comparisons_store().get("active_sessions", {}).get(normalized_session_id)
 
 
 def validate_quote_compare_active_session(session_payload: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -1279,6 +1444,7 @@ def validate_quote_compare_active_session(session_payload: dict[str, Any] | None
     session_id = str(session_payload.get("session_id") or "").strip()
     step = str(session_payload.get("step") or "").strip().lower()
     dataframe = session_payload.get("dataframe") or {}
+    cached_upload_path = str(session_payload.get("cached_upload_path") or "").strip()
     headers = session_payload.get("headers")
     dataframe_columns = dataframe.get("columns") if isinstance(dataframe, dict) else None
     dataframe_records = dataframe.get("records") if isinstance(dataframe, dict) else None
@@ -1287,9 +1453,9 @@ def validate_quote_compare_active_session(session_payload: dict[str, Any] | None
         return None
     if not isinstance(headers, list) or not headers:
         return None
-    if not isinstance(dataframe_columns, list) or not dataframe_columns:
-        return None
-    if not isinstance(dataframe_records, list):
+    has_hydrated_dataframe = isinstance(dataframe_columns, list) and dataframe_columns and isinstance(dataframe_records, list)
+    has_cached_upload = bool(cached_upload_path)
+    if not has_hydrated_dataframe and not has_cached_upload:
         return None
 
     if step == "review":
@@ -1777,9 +1943,12 @@ def validate_quote_comparison_payload(comparison: dict[str, Any], *, require_nam
             raise ValueError("Each offer must include a total price greater than zero.")
 
 
-def build_quote_bids_from_dataframe(dataframe: pd.DataFrame) -> list[dict[str, Any]]:
+def build_quote_bid_import_result(dataframe: pd.DataFrame) -> dict[str, Any]:
     bids: list[dict[str, Any]] = []
     optional_fields = set(QUOTE_COMPARE_OPTIONAL_FIELDS)
+    skipped_row_count = 0
+    numeric_preview: list[dict[str, float]] = []
+    positive_total_count = 0
 
     for index, row in enumerate(dataframe.iterrows(), start=1):
         _, row_values = row
@@ -1809,9 +1978,53 @@ def build_quote_bids_from_dataframe(dataframe: pd.DataFrame) -> list[dict[str, A
         )
 
         if not supplier_name and not product_name and quantity <= 0 and unit_price <= 0 and total_price <= 0:
+            skipped_row_count += 1
+            continue
+        if not supplier_name:
+            logger.warning(
+                "[quote compare upload] skipping row with empty resolved supplier | row_index=%s | supplier_value=%r | product_name=%r | quantity=%r | unit_price=%r",
+                index,
+                row_values.get("Supplier", row_values.get("Supplier Name", "")),
+                product_name,
+                quantity,
+                unit_price
+            )
+            skipped_row_count += 1
+            continue
+        if quantity <= 0:
+            logger.warning(
+                "[quote compare upload] skipping row with invalid resolved quantity | row_index=%s | supplier_name=%r | quantity=%r | unit_price=%r | total_price=%r",
+                index,
+                supplier_name,
+                quantity,
+                unit_price,
+                total_price
+            )
+            skipped_row_count += 1
             continue
 
         resolved_total = total_price if total_price > 0 else quantity * unit_price
+        if unit_price <= 0 and resolved_total <= 0:
+            logger.warning(
+                "[quote compare upload] skipping row with invalid resolved pricing | row_index=%s | supplier_name=%r | quantity=%r | unit_price=%r | total_price=%r | resolved_total=%r",
+                index,
+                supplier_name,
+                quantity,
+                unit_price,
+                total_price,
+                resolved_total
+            )
+            skipped_row_count += 1
+            continue
+        if len(numeric_preview) < 10:
+            numeric_preview.append({
+                "quantity": round(quantity, 4),
+                "unit_price": round(unit_price, 4),
+                "total_price": round(total_price, 4),
+                "resolved_total": round(resolved_total, 4)
+            })
+        if resolved_total > 0:
+            positive_total_count += 1
         bids.append({
             "supplier_name": supplier_name,
             "product_name": product_name,
@@ -1827,7 +2040,68 @@ def build_quote_bids_from_dataframe(dataframe: pd.DataFrame) -> list[dict[str, A
             "notes": normalize_text_value(row_values.get("Notes", ""))
         })
 
-    return bids
+    logger.info(
+        "[quote compare upload] numeric debug | first_10_numeric_values=%s | rows_with_resolved_total_gt_zero=%s | skipped_row_count=%s | valid_row_count=%s",
+        numeric_preview,
+        positive_total_count,
+        skipped_row_count,
+        len(bids)
+    )
+
+    return {
+        "bids": bids,
+        "skipped_row_count": skipped_row_count,
+        "valid_row_count": len(bids)
+    }
+
+
+def build_quote_bids_from_dataframe(dataframe: pd.DataFrame) -> list[dict[str, Any]]:
+    return build_quote_bid_import_result(dataframe)["bids"]
+
+
+def normalize_quote_compare_mapped_dataframe(
+    dataframe: pd.DataFrame,
+    *,
+    selected_mapping: dict[str, Any] | None = None,
+    source_columns: list[str] | None = None
+) -> pd.DataFrame:
+    normalized = dataframe.copy()
+    text_columns = [
+        "Supplier",
+        "Product Name",
+        "Unit",
+        "Date",
+        "Currency",
+        "Delivery Time",
+        "Payment Terms",
+        "Valid Until",
+        "Notes"
+    ]
+
+    for column in text_columns:
+        if column in normalized.columns:
+            normalized[column] = normalized[column].map(normalize_text_value)
+
+    supplier_source_column = str((selected_mapping or {}).get("Supplier") or "").strip()
+    supplier_column_exists = supplier_source_column in (source_columns or [])
+    supplier_preview: list[str] = []
+    supplier_non_empty_count = 0
+    if "Supplier" in normalized.columns:
+        supplier_series = normalized["Supplier"].fillna("").map(normalize_text_value)
+        normalized["Supplier"] = supplier_series
+        supplier_preview = supplier_series.head(10).tolist()
+        supplier_non_empty_count = int(supplier_series.astype(bool).sum())
+
+    logger.info(
+        "[quote compare upload] supplier mapping debug | selected_supplier_column=%s | exists_in_source=%s | mapped_columns=%s | first_10_supplier_values=%s | non_empty_supplier_count=%s",
+        supplier_source_column or "<empty>",
+        supplier_column_exists,
+        list(normalized.columns),
+        supplier_preview,
+        supplier_non_empty_count
+    )
+
+    return normalized
 
 
 def normalize_metric_scores(values: list[float], *, reverse: bool = False) -> list[float]:
@@ -2646,7 +2920,18 @@ def analyze_dataframe(df: pd.DataFrame, *, source_name: str) -> dict:
     result_df["Overpay Pct"] = result_df["Overpay Pct"].round(2)
 
     result_df.to_csv(LATEST_RESULTS_PATH, index=False)
+    LATEST_ANALYSIS_CACHE["signature"] = None
+    LATEST_ANALYSIS_CACHE["context"] = None
+    return build_analysis_context_from_results(result_df, source_name=source_name)
+
+
+def build_analysis_context_from_results(result_df: pd.DataFrame, *, source_name: str) -> dict[str, Any]:
     rows = result_df.to_dict(orient="records")
+    total_rows = len(result_df)
+    overpay_items = int((result_df["Status"] == "Overpay").sum())
+    estimated_extra_spend = round(result_df["Savings Opportunity"].sum(), 2)
+    total_spend = round(result_df["Total Amount"].sum(), 2)
+    overpay_rate = round((overpay_items / total_rows) * 100, 2) if total_rows else 0
 
     top_overpay = (
         result_df[result_df["Status"] == "Overpay"]
@@ -2736,15 +3021,30 @@ def load_latest_analysis_context(*, source_name: str | None = None, demo_mode: b
     if not LATEST_RESULTS_PATH.exists():
         raise ValueError("No results available yet. Please upload a file first.")
 
+    cache_signature = (
+        LATEST_RESULTS_PATH.stat().st_mtime_ns,
+        LATEST_RESULTS_PATH.stat().st_size,
+        source_name or "Previous analysis",
+        bool(demo_mode)
+    )
+    if (
+        LATEST_ANALYSIS_CACHE["signature"] == cache_signature
+        and isinstance(LATEST_ANALYSIS_CACHE["context"], dict)
+    ):
+        return dict(LATEST_ANALYSIS_CACHE["context"])
+
     latest_results_df = pd.read_csv(LATEST_RESULTS_PATH)
-    analysis_context = analyze_dataframe(
+    analysis_context = build_analysis_context_from_results(
         latest_results_df,
         source_name=source_name or "Previous analysis"
     )
     if demo_mode:
         analysis_context["demo_mode"] = True
     analysis_context["persisted_analysis"] = True
-    return analysis_context
+    analysis_context["has_analysis"] = True
+    LATEST_ANALYSIS_CACHE["signature"] = cache_signature
+    LATEST_ANALYSIS_CACHE["context"] = dict(analysis_context)
+    return dict(analysis_context)
 
 
 def build_page_context(
@@ -2752,26 +3052,34 @@ def build_page_context(
     *,
     active_view: str = "analyzer"
 ) -> dict[str, Any]:
-    context: dict[str, Any] = {"request": request, "active_view": active_view}
+    context_started_at = perf_counter()
+    has_analysis = LATEST_RESULTS_PATH.exists()
+    context: dict[str, Any] = {
+        "request": request,
+        "active_view": active_view,
+        "has_analysis": has_analysis,
+        "persisted_analysis": has_analysis,
+        "rows": [],
+        "summary": None,
+        "insights": [],
+        "charts_json": "{}",
+        "has_unit": True
+    }
     error = request.query_params.get("error")
     source_name = request.query_params.get("filename")
     demo_mode = parse_bool_flag(request.query_params.get("demo_mode"))
+    context["demo_mode"] = demo_mode
+    context["filename"] = source_name or ("Previous analysis" if has_analysis else "")
 
     if error:
         context["error"] = error
 
-    if LATEST_RESULTS_PATH.exists():
-        try:
-            context.update(
-                load_latest_analysis_context(
-                    source_name=source_name,
-                    demo_mode=demo_mode
-                )
-            )
-        except Exception as exc:
-            logger.exception("Failed to load latest analysis for %s view", active_view)
-            context["error"] = str(exc)
-
+    logger.info(
+        "[page context timing] active_view=%s has_analysis=%s total_ms=%.1f",
+        active_view,
+        has_analysis,
+        (perf_counter() - context_started_at) * 1000
+    )
     return context
 
 
@@ -2942,6 +3250,21 @@ def create_app() -> FastAPI:
             headers={"Content-Disposition": "attachment; filename=price_analysis_results.xlsx"}
         )
 
+    @app.get("/analysis/bootstrap")
+    def analysis_bootstrap():
+        if not LATEST_RESULTS_PATH.exists():
+            return {
+                "success": True,
+                "has_analysis": False,
+                "analysis_source": "empty",
+                "rows": []
+            }
+
+        payload = load_latest_analysis_context()
+        payload["success"] = True
+        payload["analysis_source"] = "restored_analysis"
+        return payload
+
     @app.post("/upload")
     async def upload_file(request: Request, file: UploadFile = File(...)):
         filename = file.filename or ""
@@ -3077,11 +3400,34 @@ def create_app() -> FastAPI:
 
     @app.post("/demo-data")
     def demo_data(request: Request):
+        json_response = wants_json_response(request)
+
         try:
-            analyze_dataframe(build_sample_dataframe(), source_name="Demo dataset")
+            analysis_context = analyze_dataframe(build_sample_dataframe(), source_name="Demo dataset")
         except ValueError as exc:
             logger.exception("Demo data analysis failed")
+            if json_response:
+                return JSONResponse(
+                    {"success": False, "message": str(exc)},
+                    status_code=400
+                )
             return build_home_redirect(error=str(exc))
+        except Exception:
+            logger.exception("Unexpected demo data load failure")
+            error_message = "Demo data could not be loaded right now. Please try again."
+            if json_response:
+                return JSONResponse(
+                    {"success": False, "message": error_message},
+                    status_code=500
+                )
+            return build_home_redirect(error=error_message)
+
+        if json_response:
+            return JSONResponse({
+                "success": True,
+                "demo_mode": True,
+                **analysis_context
+            })
 
         return build_home_redirect(
             results="1",
@@ -3237,15 +3583,47 @@ def create_app() -> FastAPI:
         })
 
     @app.get("/quote-compare/bootstrap")
-    def quote_compare_bootstrap(session_id: str | None = None):
-        store = load_quote_comparisons_store()
-        comparisons = store.get("comparisons", [])
-        active_session = validate_quote_compare_active_session(load_quote_compare_active_session(session_id))
-        return JSONResponse({
+    def quote_compare_bootstrap(session_id: str | None = None, include_comparisons: bool = False):
+        request_started_at = perf_counter()
+        store_load_started_at = request_started_at
+        store = None
+        comparisons: list[dict[str, Any]] = []
+        active_session = None
+
+        if include_comparisons:
+            store = load_quote_comparisons_store()
+        store_loaded_at = perf_counter()
+
+        if include_comparisons and store is not None:
+            comparisons = store.get("comparisons", [])
+        comparisons_loaded_at = perf_counter()
+
+        if session_id:
+            active_session = validate_quote_compare_active_session(
+                load_quote_compare_active_session(session_id)
+            )
+        active_session_loaded_at = perf_counter()
+
+        response_payload = {
             "success": True,
             "comparisons": comparisons,
             "active_session": active_session
-        })
+        }
+        response_json = json.dumps(response_payload, ensure_ascii=False, separators=(",", ":"))
+        response_serialized_at = perf_counter()
+        logger.info(
+            "[quote compare bootstrap timing] session_id=%s include_comparisons=%s total_ms=%.1f store_load_ms=%.1f comparisons_ms=%.1f active_session_ms=%.1f response_serialize_ms=%.1f response_bytes=%s comparisons=%s",
+            bool(session_id),
+            include_comparisons,
+            (response_serialized_at - request_started_at) * 1000,
+            (store_loaded_at - store_load_started_at) * 1000,
+            (comparisons_loaded_at - store_loaded_at) * 1000,
+            (active_session_loaded_at - comparisons_loaded_at) * 1000,
+            (response_serialized_at - active_session_loaded_at) * 1000,
+            len(response_json.encode("utf-8")),
+            len(comparisons)
+        )
+        return JSONResponse(response_payload)
 
     @app.post("/quote-compare/demo-data")
     def quote_compare_demo_data():
@@ -3265,20 +3643,28 @@ def create_app() -> FastAPI:
     @app.post("/quote-compare/upload/inspect")
     async def inspect_quote_compare_upload(file: UploadFile = File(...)):
         filename = file.filename or ""
+        request_started_at = perf_counter()
+        parse_started_at = request_started_at
 
         try:
+            session_id = str(uuid.uuid4())
             df = read_uploaded_dataframe(file)
+            parse_finished_at = perf_counter()
+            cached_upload_path = cache_quote_compare_upload(file, session_id)
+            cache_finished_at = perf_counter()
             columns = [str(column) for column in df.columns]
             required_detection = detect_column_mappings(
                 columns,
                 required_fields=QUOTE_COMPARE_REQUIRED_FIELDS,
                 field_synonyms=QUOTE_COMPARE_FIELD_SYNONYMS
             )
+            required_detection_finished_at = perf_counter()
             optional_detection = detect_column_mappings(
                 columns,
                 required_fields=QUOTE_COMPARE_OPTIONAL_FIELDS,
                 field_synonyms=QUOTE_COMPARE_FIELD_SYNONYMS
             )
+            optional_detection_finished_at = perf_counter()
         except ValueError as exc:
             return JSONResponse({"success": False, "message": str(exc)}, status_code=400)
         except Exception:
@@ -3305,9 +3691,10 @@ def create_app() -> FastAPI:
             elif detected_column:
                 used_headers.add(detected_column)
             optional_reviews.append(review)
+        optional_merge_finished_at = perf_counter()
 
         payload = {
-            "session_id": str(uuid.uuid4()),
+            "session_id": session_id,
             "filename": filename,
             "required_fields": QUOTE_COMPARE_REQUIRED_FIELDS,
             "optional_fields": QUOTE_COMPARE_OPTIONAL_FIELDS,
@@ -3331,9 +3718,13 @@ def create_app() -> FastAPI:
             payload["session_id"],
             {
                 "session_id": payload["session_id"],
+                "file_id": payload["session_id"],
                 "step": "review",
                 "filename": filename,
+                "file_path": cached_upload_path,
                 "headers": columns,
+                "column_count": len(columns),
+                "row_count": len(df.index),
                 "mapping": payload["mapping"],
                 "field_reviews": payload["field_reviews"],
                 "required_fields": QUOTE_COMPARE_REQUIRED_FIELDS,
@@ -3343,14 +3734,29 @@ def create_app() -> FastAPI:
                 "optional_columns": payload["optional_columns"],
                 "review_message": payload["review_message"],
                 "message": payload["message"],
-                "dataframe": {
-                    "columns": columns,
-                    "records": serialize_dataframe_records(df)
-                }
+                "cached_upload_path": cached_upload_path
             }
         )
+        session_saved_at = perf_counter()
+        response_payload = {"success": True, **payload}
+        response_json = json.dumps(response_payload, ensure_ascii=False, separators=(",", ":"))
+        response_serialized_at = perf_counter()
+        logger.info(
+            "[quote compare inspect timing] filename=%s total_ms=%.1f parse_ms=%.1f cache_upload_ms=%.1f required_detect_ms=%.1f optional_detect_ms=%.1f optional_merge_ms=%.1f session_save_ms=%.1f response_serialize_ms=%.1f response_bytes=%s headers=%s",
+            filename,
+            (response_serialized_at - request_started_at) * 1000,
+            (parse_finished_at - parse_started_at) * 1000,
+            (cache_finished_at - parse_finished_at) * 1000,
+            (required_detection_finished_at - cache_finished_at) * 1000,
+            (optional_detection_finished_at - required_detection_finished_at) * 1000,
+            (optional_merge_finished_at - optional_detection_finished_at) * 1000,
+            (session_saved_at - optional_merge_finished_at) * 1000,
+            (response_serialized_at - session_saved_at) * 1000,
+            len(response_json.encode("utf-8")),
+            len(columns)
+        )
 
-        return JSONResponse({"success": True, **payload})
+        return JSONResponse(response_payload)
 
     @app.post("/quote-compare/upload/confirm")
     async def confirm_quote_compare_upload(
@@ -3383,36 +3789,73 @@ def create_app() -> FastAPI:
                     session_payload["dataframe"].get("records", [])
                 )
                 filename = session_payload.get("filename", filename)
+            elif session_payload and session_payload.get("cached_upload_path"):
+                filename = session_payload.get("filename", filename)
+                df = read_cached_quote_compare_upload(
+                    session_payload.get("cached_upload_path"),
+                    filename=filename
+                )
             else:
                 raise ValueError("The uploaded supplier file is no longer available. Please upload it again.")
             full_mapping = {
                 field_name: parsed_mapping.get(field_name)
                 for field_name in [*QUOTE_COMPARE_REQUIRED_FIELDS, *QUOTE_COMPARE_OPTIONAL_FIELDS]
             }
+            logger.info(
+                "[quote compare upload] confirm mapping debug | selected_supplier_mapping=%s | dataframe_columns_before_rename=%s",
+                full_mapping.get("Supplier"),
+                list(df.columns)
+            )
             mapped_df = apply_column_mapping(
                 df,
                 full_mapping,
                 required_fields=QUOTE_COMPARE_REQUIRED_FIELDS
             )
+            mapped_df = normalize_quote_compare_mapped_dataframe(
+                mapped_df,
+                selected_mapping=full_mapping,
+                source_columns=list(df.columns)
+            )
+            logger.info(
+                "[quote compare upload] confirm mapping debug | dataframe_columns_after_rename=%s",
+                list(mapped_df.columns)
+            )
+            import_result = build_quote_bid_import_result(mapped_df)
+            if import_result["valid_row_count"] <= 0:
+                raise ValueError("No valid supplier offer rows were found after filtering invalid or missing data.")
             normalized_comparison = normalize_quote_comparison_payload({
                 "name": Path(filename).stem.replace("_", " ").strip() or "Uploaded quote comparison",
                 "sourcing_need": "",
                 "source_type": "upload",
-                "bids": build_quote_bids_from_dataframe(mapped_df)
+                "bids": import_result["bids"]
             })
             evaluation = calculate_quote_comparison(normalized_comparison)
             if session_id:
+                lightweight_session_payload = {
+                    "session_id": session_id,
+                    "file_id": (session_payload or {}).get("file_id") or session_id,
+                    "step": "analyze",
+                    "filename": filename,
+                    "file_path": (session_payload or {}).get("file_path") or (session_payload or {}).get("cached_upload_path"),
+                    "cached_upload_path": (session_payload or {}).get("cached_upload_path"),
+                    "headers": (session_payload or {}).get("headers", []),
+                    "column_count": (session_payload or {}).get("column_count", len(df.columns)),
+                    "row_count": (session_payload or {}).get("row_count", len(df.index)),
+                    "mapping": parsed_mapping,
+                    "field_reviews": (session_payload or {}).get("field_reviews", []),
+                    "required_fields": (session_payload or {}).get("required_fields", QUOTE_COMPARE_REQUIRED_FIELDS),
+                    "optional_fields": (session_payload or {}).get("optional_fields", QUOTE_COMPARE_OPTIONAL_FIELDS),
+                    "matched_fields": (session_payload or {}).get("matched_fields", 0),
+                    "missing_fields": (session_payload or {}).get("missing_fields", []),
+                    "optional_columns": (session_payload or {}).get("optional_columns", []),
+                    "review_message": (session_payload or {}).get("review_message", ""),
+                    "message": (session_payload or {}).get("message", ""),
+                    "comparison": normalized_comparison,
+                    "evaluation": evaluation
+                }
                 save_quote_compare_active_session(
                     session_id,
-                    {
-                        **(session_payload or {}),
-                        "session_id": session_id,
-                        "step": "analyze",
-                        "filename": filename,
-                        "mapping": parsed_mapping,
-                        "comparison": normalized_comparison,
-                        "evaluation": evaluation
-                    }
+                    lightweight_session_payload
                 )
         except ValueError as exc:
             return JSONResponse({"success": False, "message": str(exc)}, status_code=400)
@@ -3431,7 +3874,11 @@ def create_app() -> FastAPI:
             "session_id": session_id,
             "comparison": normalized_comparison,
             "evaluation": evaluation,
-            "message": f"Imported supplier offers from {filename}"
+            "skipped_rows": import_result["skipped_row_count"],
+            "message": (
+                f"Imported supplier offers from {filename}. "
+                f"{import_result['skipped_row_count']} rows skipped due to invalid or missing data."
+            )
         })
 
     @app.post("/quote-compare/evaluate")

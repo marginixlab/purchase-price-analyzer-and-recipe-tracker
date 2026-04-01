@@ -26,9 +26,42 @@
         notesPanelOpen: false,
         workspaceNotes: ""
     };
+    const analyzerRefreshResetKeys = new Set([
+        "guidedEntryCollapsed",
+        "uploadAnalyzeCollapsed",
+        "topInsightsCollapsed",
+        "advancedFiltersCollapsed",
+        "visualInsightsCollapsed",
+        "analystWorkspaceCollapsed",
+        "askDataCollapsed"
+    ]);
     let dashboardInitialized = false;
     let isInitializing = false;
     let isSyncingUrl = false;
+
+    function isReloadNavigation() {
+        try {
+            const navigationEntry = performance.getEntriesByType("navigation")[0];
+            if (navigationEntry?.type === "reload") {
+                return true;
+            }
+        } catch (error) {
+            // Ignore Navigation Timing errors.
+        }
+
+        try {
+            return performance.navigation?.type === 1;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function shouldResetAnalyzerPanelPreferenceOnLoad(key) {
+        return document.body?.dataset.activeView === "analyzer"
+            && analyzerRefreshResetKeys.has(key)
+            && isReloadNavigation()
+            && !window.location.hash;
+    }
 
     function ensureFilterPopoverRoot() {
         let root = document.getElementById("filterPopoverRoot");
@@ -71,6 +104,9 @@
     }
 
     function readCollapsedPreference(key) {
+        if (shouldResetAnalyzerPanelPreferenceOnLoad(key)) {
+            return Boolean(collapsibleDefaults[key]);
+        }
         try {
             const stored = window.localStorage.getItem(key);
             if (stored === null) {
@@ -289,11 +325,13 @@
             tableHead: document.getElementById("resultsTableHead"),
             tableBody: document.getElementById("resultsTableBody"),
             uploadForm: document.getElementById("uploadForm"),
+            demoDataForm: document.getElementById("demoDataForm"),
             fileInput: document.getElementById("file-upload"),
             fileName: document.getElementById("file-name"),
             goToAnalysisButton: document.getElementById("goToAnalysisButton"),
             uploadBox: document.getElementById("uploadBox"),
             uploadSubmitButton: document.querySelector("#uploadForm .upload-submit"),
+            demoDataButton: document.getElementById("demoDataButton"),
             uploadError: document.getElementById("uploadError"),
             uploadStatusHost: document.getElementById("uploadStatusHost"),
             clearAnalysisForm: document.getElementById("clearAnalysisForm"),
@@ -508,6 +546,55 @@
                 }
             }
         };
+    }
+
+    async function fetchJson(url, options = {}) {
+        const response = await fetch(url, {
+            headers: {
+                Accept: "application/json",
+                ...(options.body ? { "Content-Type": "application/json" } : {})
+            },
+            ...options
+        });
+        const payload = await response.json();
+        if (!response.ok || payload.success === false) {
+            throw new Error(payload.message || "The requested analysis could not be loaded.");
+        }
+        return payload;
+    }
+
+    async function restorePersistedAnalysis(elements, state) {
+        const hasPersistedAnalysis = elements.mainDashboardView?.dataset.hasAnalysis === "true";
+        if (!hasPersistedAnalysis || hasValidAnalysisRows(state.allRows)) {
+            return hasValidAnalysisRows(state.allRows);
+        }
+
+        if (elements.resultCountChip) {
+            elements.resultCountChip.textContent = "Loading saved analysis...";
+        }
+
+        try {
+            const payload = await fetchJson("/analysis/bootstrap");
+            if (!payload.has_analysis || !Array.isArray(payload.rows) || !payload.rows.length) {
+                return false;
+            }
+
+            applyAnalysisPayload(payload, elements, state, {
+                source: payload.analysis_source || "restored_analysis",
+                successMessage: payload.filename ? `Analysis ready for ${payload.filename}` : "Saved analysis ready",
+                showReplace: true,
+                resetSelectedFile: true
+            });
+            return true;
+        } catch (error) {
+            state.upload.feedback = {
+                error: error.message || "Saved analysis could not be restored.",
+                success: "",
+                showReplace: false
+            };
+            renderAnalyzerStep2(elements, state);
+            return false;
+        }
     }
 
     function isLocked(elements) {
@@ -1028,14 +1115,14 @@
         const hasAnalysis = hasValidAnalysisRows(state.allRows);
         const source = normalizeAnalysisSource(elements.mainDashboardView?.dataset.analysisSource || "empty");
 
+        if (hasAnalysis && source !== "empty") {
+            return { mode: source, phase: "active", selectedFile: null, hasAnalysis: true };
+        }
         if (state.upload.review && hasSelectedFile) {
             return { mode: "uploaded_file", phase: "review", selectedFile, hasAnalysis: false };
         }
         if (hasSelectedFile) {
             return { mode: "uploaded_file", phase: "selected", selectedFile, hasAnalysis: false };
-        }
-        if (hasAnalysis && source !== "empty") {
-            return { mode: source, phase: "active", selectedFile: null, hasAnalysis: true };
         }
         return { mode: "empty", phase: "idle", selectedFile: null, hasAnalysis: false };
     }
@@ -1449,8 +1536,18 @@
         }
     }
 
-    function applyUploadedAnalysis(payload, elements, state) {
+    function applyAnalysisPayload(payload, elements, state, options = {}) {
+        const {
+            source = "uploaded_file",
+            successMessage = "",
+            showReplace = true,
+            resetSelectedFile = false
+        } = options;
+
         resetUploadReview(elements, state);
+        if (resetSelectedFile) {
+            resetUploadUi(elements);
+        }
         state.upload.hasUploadedAnalysis = true;
         state.allRows = normalizeUploadedRows(payload.rows);
         state.visibleRows = [...state.allRows];
@@ -1462,18 +1559,18 @@
         populateSuppliers(elements, state);
         if (elements.mainDashboardView) {
             elements.mainDashboardView.dataset.hasAnalysis = state.allRows.length > 0 ? "true" : "false";
-            elements.mainDashboardView.dataset.analysisSource = "uploaded_file";
+            elements.mainDashboardView.dataset.analysisSource = source;
             elements.mainDashboardView.dataset.analysisFilename = payload.filename || "";
         }
-        setAnalysisSourceState(elements, state.allRows.length > 0 ? "uploaded_file" : "empty");
+        setAnalysisSourceState(elements, state.allRows.length > 0 ? source : "empty");
         syncRecipesAvailability(elements, state.allRows.length > 0);
         if (elements.askDataPanel) {
             elements.askDataPanel.hidden = state.allRows.length === 0;
         }
         state.upload.feedback = {
             error: "",
-            success: payload.filename ? `Analysis ready for ${payload.filename}` : "Analysis ready",
-            showReplace: true
+            success: successMessage || (payload.filename ? `Analysis ready for ${payload.filename}` : "Analysis ready"),
+            showReplace
         };
         renderAnalyzerStep2(elements, state);
         refresh(elements, state);
@@ -1482,6 +1579,24 @@
             setStoredCollapsibleState("uploadAnalyzeCollapsed", true);
             setStoredCollapsibleState("topInsightsCollapsed", false);
             setStoredCollapsibleState("analystWorkspaceCollapsed", false);
+        });
+    }
+
+    function applyUploadedAnalysis(payload, elements, state) {
+        applyAnalysisPayload(payload, elements, state, {
+            source: "uploaded_file",
+            successMessage: payload.filename ? `Analysis ready for ${payload.filename}` : "Analysis ready",
+            showReplace: true,
+            resetSelectedFile: false
+        });
+    }
+
+    function applyDemoAnalysis(payload, elements, state) {
+        applyAnalysisPayload(payload, elements, state, {
+            source: "demo_data",
+            successMessage: "Analysis ready for demo dataset",
+            showReplace: false,
+            resetSelectedFile: true
         });
     }
 
@@ -1540,6 +1655,59 @@
             state.upload.isSubmitting = false;
             if (elements.uploadSubmitButton) {
                 elements.uploadSubmitButton.disabled = false;
+            }
+            updateMappingReviewState(elements, state);
+        }
+    }
+
+    async function submitDemoData(elements, state) {
+        if (!elements.demoDataForm || state.upload.isSubmitting) {
+            return;
+        }
+
+        state.upload.isSubmitting = true;
+        if (elements.uploadSubmitButton) {
+            elements.uploadSubmitButton.disabled = true;
+        }
+        if (elements.demoDataButton) {
+            elements.demoDataButton.disabled = true;
+            elements.demoDataButton.textContent = "Loading Demo...";
+        }
+        if (elements.confirmMappingButton) {
+            elements.confirmMappingButton.disabled = true;
+        }
+
+        resetUploadReview(elements, state);
+        setUploadFeedback(elements, {});
+
+        try {
+            const response = await fetch("/demo-data", {
+                method: "POST",
+                headers: {
+                    Accept: "application/json",
+                    "X-Requested-With": "XMLHttpRequest"
+                }
+            });
+            const data = await response.json();
+            if (!response.ok || data.success !== true) {
+                throw new Error(data.message || "Demo data could not be loaded.");
+            }
+
+            applyDemoAnalysis(data, elements, state);
+        } catch (error) {
+            console.error("[demo-data] request failed", error);
+            resetAnalysisState(elements, state);
+            setUploadFeedback(elements, {
+                error: error.message || "Demo data could not be loaded right now. Please try again."
+            });
+        } finally {
+            state.upload.isSubmitting = false;
+            if (elements.uploadSubmitButton) {
+                elements.uploadSubmitButton.disabled = false;
+            }
+            if (elements.demoDataButton) {
+                elements.demoDataButton.disabled = false;
+                elements.demoDataButton.textContent = "Try Demo Data";
             }
             updateMappingReviewState(elements, state);
         }
@@ -2432,6 +2600,18 @@
             });
         }
 
+        if (elements.demoDataForm && elements.demoDataForm.dataset.bound !== "true") {
+            elements.demoDataForm.dataset.bound = "true";
+            elements.demoDataForm.addEventListener("submit", async (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                logUploadEvent("demo submit", event, {
+                    submitterId: event.submitter?.id || null
+                });
+                await submitDemoData(elements, state);
+            });
+        }
+
         if (elements.confirmMappingButton && elements.confirmMappingButton.dataset.bound !== "true") {
             elements.confirmMappingButton.dataset.bound = "true";
             elements.confirmMappingButton.addEventListener("click", async () => {
@@ -2477,8 +2657,8 @@
         });
     }
 
-    function initDashboard() {
-        if (dashboardInitialized) {
+    async function initDashboard() {
+        if (dashboardInitialized || isInitializing) {
             return;
         }
         console.log("INIT START");
@@ -2498,6 +2678,9 @@
             Table.loadColumnOrder();
             initFileInput(elements, state);
             state.allRows = Table.extractTableData(elements.tableBody);
+            if (!hasValidAnalysisRows(state.allRows)) {
+                await restorePersistedAnalysis(elements, state);
+            }
             const hasValidRestoredAnalysis = validateRestoredAnalysisState(elements, state);
             console.log("URL READ ONCE", getUrlState());
             stripInitialSortParams();

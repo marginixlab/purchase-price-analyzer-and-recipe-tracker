@@ -7,7 +7,6 @@
     <script>
         document.documentElement.classList.add("auth-pending");
     </script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link rel="stylesheet" href="{{ url_for('static', path='/css/styles.css') }}">
     <style>
         #quoteCompareWorkspaceView[data-qc-ready="false"] #quoteCompareApp {
@@ -17,17 +16,35 @@
 </head>
 <body data-active-view="{{ active_view }}" class="app-booting">
     <section class="access-shell" id="accessShell" hidden>
-        <div class="access-card">
-            <div class="panel-label">Secure Access</div>
-            <h1 class="access-title">Enter Access Code</h1>
-            <p class="access-copy">Use a valid access code to unlock the Purchase Price Analyzer dashboard.</p>
-            <form id="accessCodeForm" class="access-form">
-                <label for="accessCodeInput" class="access-label">Access Code</label>
-                <input id="accessCodeInput" name="code" class="access-input" type="text" autocomplete="off" placeholder="Enter your access code" maxlength="12" required>
-                <p class="access-helper">You received your access code after purchase</p>
-                <button type="button" class="action-btn access-submit" id="accessSubmitButton">Unlock Dashboard</button>
-                <div class="error-box access-error" id="accessCodeError" hidden>Invalid access code. Please try again.</div>
-            </form>
+        <div class="access-atmosphere" aria-hidden="true">
+            <div class="access-gradient-layer"></div>
+            <div class="access-spotlight-layer"></div>
+            <div class="access-mouse-light"></div>
+        </div>
+        <div class="access-stage">
+            <div class="access-hero">
+                <div class="access-eyebrow">Purchase Price Analyzer</div>
+                <h1 class="access-hero-title">Review Costs Faster. Compare Smarter.</h1>
+                <p class="access-hero-copy">Purchase Price Analyzer, Recipe Costing, and Supplier Tracking in one decision-ready workspace.</p>
+                <ul class="access-points" aria-label="Workspace highlights">
+                    <li class="access-point">Compare supplier quotes instantly</li>
+                    <li class="access-point">Find savings opportunities faster</li>
+                    <li class="access-point">Build recipe costs from real purchase data</li>
+                </ul>
+            </div>
+
+            <div class="access-card">
+                <div class="panel-label">Secure Access</div>
+                <h2 class="access-title">Enter Access Code</h2>
+                <p class="access-copy">Use a valid access code to unlock your procurement workspace.</p>
+                <form id="accessCodeForm" class="access-form">
+                    <label for="accessCodeInput" class="access-label">Access Code</label>
+                    <input id="accessCodeInput" name="code" class="access-input" type="text" autocomplete="off" placeholder="Enter your access code" maxlength="12" required>
+                    <p class="access-helper">You received your access code after purchase</p>
+                    <button type="button" class="action-btn access-submit" id="accessSubmitButton">Unlock Dashboard</button>
+                    <div class="error-box access-error" id="accessCodeError" hidden>Invalid access code. Please try again.</div>
+                </form>
+            </div>
         </div>
     </section>
 
@@ -73,8 +90,8 @@
         {% if active_view == 'analyzer' %}
         <div
             id="mainDashboardView"
-            data-has-analysis="{{ 'true' if rows else 'false' }}"
-            data-analysis-source="{% if demo_mode and rows %}demo_data{% elif persisted_analysis and rows %}restored_analysis{% elif rows %}uploaded_file{% else %}empty{% endif %}"
+            data-has-analysis="{{ 'true' if has_analysis else 'false' }}"
+            data-analysis-source="{% if demo_mode and has_analysis %}demo_data{% elif persisted_analysis and has_analysis %}restored_analysis{% elif has_analysis %}uploaded_file{% else %}empty{% endif %}"
             data-analysis-filename="{{ filename or '' }}"
         >
         <section class="collapsible-panel collapsible-panel-hero is-expanded" id="guidedEntryPanel" data-collapsible data-storage-key="guidedEntryCollapsed">
@@ -141,7 +158,7 @@
             </button>
             <div class="collapsible-body" id="uploadPanelBody" data-collapsible-body>
                 <div class="collapsible-body-inner">
-                    {% set has_analysis_rows = rows and (rows|length > 0) %}
+                    {% set has_analysis_rows = has_analysis %}
                     <section class="upload-box" id="uploadBox">
                         <div class="upload-header">
                             <div>
@@ -194,7 +211,7 @@
                         </section>
 
                         <div class="upload-secondary-flow">
-                            <form action="/demo-data" method="post" class="demo-form">
+                            <form action="/demo-data" method="post" class="demo-form" id="demoDataForm">
                                 <div class="upload-step">Step 2: Explore instantly</div>
                                 <div class="demo-cta-shell">
                                     <div>
@@ -202,7 +219,7 @@
                                         <div class="demo-cta-copy">Load a ready-made purchasing file and explore the full dashboard before uploading anything.</div>
                                     </div>
                                     <div class="demo-cta-actions">
-                                        <button type="submit" class="secondary-btn demo-btn">Try Demo Data</button>
+                                        <button type="submit" class="secondary-btn demo-btn" id="demoDataButton">Try Demo Data</button>
                                         <span class="demo-note">No setup required</span>
                                     </div>
                                 </div>
@@ -236,10 +253,6 @@
                         <div class="error-box" id="uploadError" hidden></div>
 
                         <div id="uploadStatusHost"></div>
-
-                        <div class="demo-badge" id="previousAnalysisBadge" hidden>Viewing previous analysis</div>
-
-                        <div class="demo-badge" id="demoDatasetBadge" hidden>Viewing demo dataset</div>
                     </section>
                 </div>
             </div>
@@ -269,7 +282,7 @@
                 </div>
             </div>
             <p class="executive-summary-smartline" id="executiveSummarySmartline">
-                {% if rows %}
+                {% if has_analysis %}
                     Your current cost pressure is concentrated in the highest-leakage product and the weakest supplier signal visible in this dataset.
                 {% else %}
                     Upload and analyze a dataset to surface the highest-impact overpay signals first.
@@ -281,7 +294,7 @@
                     <h3 class="hero-insight-title" id="heroInsightTitle">What is the main problem?</h3>
                     <div class="hero-insight-value" id="heroInsightValue">{% if summary %}${{ "%.2f"|format(summary.estimated_extra_spend) }}{% else %}$0.00{% endif %}</div>
                     <p class="hero-insight-copy" id="heroInsightCopy">
-                        {% if rows %}
+                        {% if has_analysis %}
                             Your main opportunity is concentrated in the highest-leakage product and the supplier driving the weakest pricing signal.
                         {% else %}
                             Analyze a file to surface one clear pricing problem, the products affected, and the next best move.
@@ -298,11 +311,11 @@
                         </article>
                         <article class="hero-metric-card">
                             <div class="hero-metric-label">Affected Products</div>
-                            <div class="hero-metric-value">{% if rows %}Reviewing...{% else %}0{% endif %}</div>
+                            <div class="hero-metric-value">{% if has_analysis %}Reviewing...{% else %}0{% endif %}</div>
                         </article>
                         <article class="hero-metric-card">
                             <div class="hero-metric-label">Priority Supplier</div>
-                            <div class="hero-metric-value">{% if rows %}Reviewing...{% else %}Waiting for upload{% endif %}</div>
+                            <div class="hero-metric-value">{% if has_analysis %}Reviewing...{% else %}Waiting for upload{% endif %}</div>
                         </article>
                     </div>
                 </article>
@@ -609,7 +622,7 @@
             </div>
         </section>
 
-        <section class="collapsible-panel collapsible-panel-inline collapsible-panel-ask is-collapsed" id="askDataPanel" data-collapsible data-storage-key="askDataCollapsed" {% if not rows %}hidden{% endif %}>
+        <section class="collapsible-panel collapsible-panel-inline collapsible-panel-ask is-collapsed" id="askDataPanel" data-collapsible data-storage-key="askDataCollapsed" {% if not has_analysis %}hidden{% endif %}>
             <button type="button" class="collapsible-toggle collapsible-toggle-inline" data-collapsible-toggle aria-expanded="false" aria-controls="askDataPanelBody">
                 <span class="collapsible-toggle-copy">
                     <span class="collapsible-step-badge">Step 5</span>
@@ -627,7 +640,7 @@
                             <p class="panel-copy">Open a focused insights workspace for business questions, renegotiation prompts, and premium AI-guided readouts built from the current analyzed dataset.</p>
                         </div>
                         <div class="ai-entry-actions">
-                            <div class="result-chip" id="aiWorkspaceEntryChip">{% if rows %}{{ rows|length }} rows ready for AI{% else %}AI unlocks after analysis{% endif %}</div>
+                            <div class="result-chip" id="aiWorkspaceEntryChip">{% if has_analysis %}Analysis ready for AI{% else %}AI unlocks after analysis{% endif %}</div>
                             <button type="button" class="action-btn ai-entry-btn" id="openAiWorkspaceButton">Ask Your Data</button>
                         </div>
                     </section>
@@ -639,7 +652,7 @@
 
         {% if active_view == 'guide' %}
         <div id="guideWorkspaceView">
-        <section class="guide-workspace" id="guideWorkspace" data-has-analysis="{{ 'true' if rows else 'false' }}">
+        <section class="guide-workspace" id="guideWorkspace" data-has-analysis="{{ 'true' if has_analysis else 'false' }}">
             <section class="guide-workspace-hero">
                 <div>
                     <div class="panel-label">Guide Workspace</div>
@@ -647,7 +660,7 @@
                     <p class="panel-copy">Ask product-use questions, reopen recent answers, and jump directly into the right part of the app without guessing where to go next.</p>
                 </div>
                 <div class="guide-workspace-hero-actions">
-                    <div class="result-chip">{% if rows %}Analysis context available{% else %}Works with or without analysis{% endif %}</div>
+                    <div class="result-chip">{% if has_analysis %}Analysis context available{% else %}Works with or without analysis{% endif %}</div>
                 </div>
             </section>
 
@@ -657,7 +670,7 @@
                         <div class="guide-card-kicker">Workspace Guide</div>
                         <h2 class="guide-card-title">Quick direction</h2>
                         <p class="guide-card-copy">
-                            {% if rows %}
+                            {% if has_analysis %}
                             You already have analysis available. Use Guide to move from findings into the right next workspace quickly.
                             {% else %}
                             Start with a product-help question or use the beginner shortcuts below to follow the tool step by step.
@@ -776,7 +789,7 @@
                 </div>
             </section>
 
-            <section class="recipes-empty-shell" id="recipesNeedsAnalysis" {% if rows %}hidden{% endif %}>
+            <section class="recipes-empty-shell" id="recipesNeedsAnalysis" {% if has_analysis %}hidden{% endif %}>
                 <div class="recipes-empty-card">
                     <div class="panel-label">Pricing Data Needed</div>
                     <h2 class="panel-title">Analyze purchase data before pricing recipes</h2>
@@ -787,8 +800,8 @@
                 </div>
             </section>
 
-            <section class="recipes-panel-view" id="recipesWorkspaceState" data-has-analysis="{{ 'true' if rows else 'false' }}">
-            <section class="recipes-panel-view" id="recipesPanel" {% if not rows %}hidden{% endif %}>
+            <section class="recipes-panel-view" id="recipesWorkspaceState" data-has-analysis="{{ 'true' if has_analysis else 'false' }}">
+            <section class="recipes-panel-view" id="recipesPanel" {% if not has_analysis %}hidden{% endif %}>
                 <section class="recipes-shell" id="recipesShell">
                     <div class="recipes-layout">
                         <aside class="recipes-sidebar">
@@ -1179,13 +1192,22 @@
             };
         })();
     </script>
-    <script src="{{ url_for('static', path='/js/access-code.js') }}"></script>
-    <script src="{{ url_for('static', path='/js/charts.js') }}"></script>
-    <script src="{{ url_for('static', path='/js/table.js') }}"></script>
-    <script src="{{ url_for('static', path='/js/dashboard.js') }}"></script>
-    <script src="{{ url_for('static', path='/js/guide-assistant.js') }}"></script>
-    <script src="{{ url_for('static', path='/js/recipes.js') }}"></script>
-    <script src="{{ url_for('static', path='/js/quote-compare.js') }}"></script>
-    <script src="{{ url_for('static', path='/js/assistant.js') }}"></script>
+    <script defer src="{{ url_for('static', path='/js/access-code.js') }}"></script>
+    {% if active_view == 'analyzer' %}
+    <script defer src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script defer src="{{ url_for('static', path='/js/charts.js') }}"></script>
+    <script defer src="{{ url_for('static', path='/js/table.js') }}"></script>
+    <script defer src="{{ url_for('static', path='/js/dashboard.js') }}"></script>
+    <script defer src="{{ url_for('static', path='/js/assistant.js') }}"></script>
+    {% endif %}
+    {% if active_view == 'guide' %}
+    <script defer src="{{ url_for('static', path='/js/guide-assistant.js') }}"></script>
+    {% endif %}
+    {% if active_view == 'recipes' %}
+    <script defer src="{{ url_for('static', path='/js/recipes.js') }}"></script>
+    {% endif %}
+    {% if active_view == 'quote_compare' %}
+    <script defer src="{{ url_for('static', path='/js/quote-compare.js') }}"></script>
+    {% endif %}
 </body>
 </html>
