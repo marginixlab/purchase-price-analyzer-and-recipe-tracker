@@ -76,7 +76,13 @@
     }
 
     function currency(value) {
-        return `$${Number(value || 0).toFixed(2)}`;
+        const numericValue = Number(value || 0);
+        return Number.isFinite(numericValue)
+            ? numericValue.toLocaleString("en-US", {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            })
+            : "0.00";
     }
 
     function buildTooltip(themeTokens, valueFormatter) {

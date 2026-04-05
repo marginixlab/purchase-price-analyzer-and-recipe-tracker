@@ -829,7 +829,7 @@ def cache_quote_compare_upload(file: UploadFile, session_id: str) -> str:
         cache_path.write_bytes(file.file.read())
         file.file.seek(0)
     except Exception as exc:
-        logger.exception("Failed to cache quote compare upload: %s", filename)
+        logger.exception("Failed to cache compare prices upload: %s", filename)
         raise ValueError("The uploaded supplier file could not be cached for review.") from exc
     return str(cache_path)
 
@@ -854,7 +854,7 @@ def read_cached_quote_compare_upload(cache_path: str | None, filename: str = "")
         try:
             cached_upload.file.close()
         except Exception:
-            logger.debug("Could not close cached quote compare upload: %s", source_path)
+            logger.debug("Could not close cached compare prices upload: %s", source_path)
 
 
 def build_mapping_review_payload(
@@ -1304,7 +1304,7 @@ def coerce_numeric_value(value: Any, *, field_name: str, context: str) -> float:
         return 0.0
     if isinstance(normalized_value, bool):
         logger.info(
-            "[quote compare upload] preserving boolean-like value for %s (%s): %r",
+            "[compare prices upload] preserving boolean-like value for %s (%s): %r",
             field_name,
             context,
             normalized_value
@@ -1312,7 +1312,7 @@ def coerce_numeric_value(value: Any, *, field_name: str, context: str) -> float:
         return 0.0
     if isinstance(normalized_value, str) and normalized_value.lower() in {"true", "false"}:
         logger.info(
-            "[quote compare upload] preserving boolean-like string for %s (%s): %r",
+            "[compare prices upload] preserving boolean-like string for %s (%s): %r",
             field_name,
             context,
             normalized_value
@@ -1323,7 +1323,7 @@ def coerce_numeric_value(value: Any, *, field_name: str, context: str) -> float:
         return parse_localized_float(normalized_value)
     except (TypeError, ValueError):
         logger.warning(
-            "[quote compare upload] failed numeric coercion for %s (%s): type=%s value=%r",
+            "[compare prices upload] failed numeric coercion for %s (%s): type=%s value=%r",
             field_name,
             context,
             type(normalized_value).__name__,
@@ -1692,7 +1692,7 @@ def load_quote_compare_active_session(session_id: str | None) -> dict[str, Any] 
             payload = json.loads(session_path.read_text(encoding="utf-8"))
             return payload if isinstance(payload, dict) else None
         except json.JSONDecodeError:
-            logger.warning("Quote compare session file is invalid: %s", session_path)
+            logger.warning("Compare Prices session file is invalid: %s", session_path)
             return None
 
     # Backward-compatible fallback for previously stored sessions in the shared store.
@@ -1731,7 +1731,11 @@ def validate_quote_compare_active_session(session_payload: dict[str, Any] | None
     return session_payload
 
 
-GUIDE_ASSISTANT_FALLBACK = "I couldn't find that feature in this tool yet."
+GUIDE_ASSISTANT_FALLBACK = (
+    "Guide can help with upload workflow, supplier comparison, Product History, reset behavior, "
+    "saved recipe behavior, and why rows may not compare cleanly. Ask what to do first, what Reset all data removes, "
+    "or what Product History shows."
+)
 GUIDE_ASSISTANT_STOPWORDS = {
     "a", "an", "and", "are", "can", "do", "find", "for", "help", "how", "i", "in",
     "is", "me", "my", "of", "the", "this", "to", "use", "with", "you", "your"
@@ -1770,11 +1774,11 @@ GUIDE_ASSISTANT_SYNONYMS = {
     "food": "recipe"
 }
 GUIDE_ACTION_CATALOG = {
-    "go_upload": {"label": "Open Quote Compare", "href": "/quote-compare"},
-    "go_top_insights": {"label": "Open Quote Compare", "href": "/quote-compare"},
-    "go_workspace": {"label": "Open Quote Compare", "href": "/quote-compare"},
-    "go_ask_data": {"label": "Open Quote Compare", "href": "/quote-compare"},
-    "go_quote_compare": {"label": "Open Quote Compare", "href": "/quote-compare"},
+    "go_upload": {"label": "Open Compare Prices", "href": "/quote-compare"},
+    "go_top_insights": {"label": "Open Compare Prices", "href": "/quote-compare"},
+    "go_workspace": {"label": "Open Compare Prices", "href": "/quote-compare"},
+    "go_ask_data": {"label": "Open Compare Prices", "href": "/quote-compare"},
+    "go_quote_compare": {"label": "Open Compare Prices", "href": "/quote-compare"},
     "go_recipes": {"label": "Open Recipes", "href": "/recipes"}
 }
 
@@ -1922,46 +1926,128 @@ def load_latest_results_frame() -> pd.DataFrame | None:
     return frame if not frame.empty else None
 
 
+def get_first_existing_column(frame: pd.DataFrame, candidates: list[str]) -> str | None:
+    for candidate in candidates:
+        if candidate in frame.columns:
+            return candidate
+    return None
+
+
+def get_numeric_series(frame: pd.DataFrame, column_name: str | None) -> pd.Series:
+    if not column_name or column_name not in frame.columns:
+        return pd.Series(dtype="float64")
+    return pd.to_numeric(frame[column_name], errors="coerce")
+
+
 def build_guide_analysis_snapshot() -> dict[str, Any] | None:
     frame = load_latest_results_frame()
     if frame is None:
         return None
 
-    overpay_rows = int((frame["Status"] == "Overpay").sum()) if "Status" in frame else 0
+    product_column = get_first_existing_column(frame, ["Product Display", "Product Name", "Product"])
+    supplier_column = get_first_existing_column(frame, ["Supplier"])
+    unit_column = get_first_existing_column(frame, ["Purchase Unit", "Unit"])
+    savings_column = get_first_existing_column(frame, ["Savings Opportunity"])
+    status_column = get_first_existing_column(frame, ["Status"])
+    unit_price_column = get_first_existing_column(frame, ["Unit Price", "Average Price"])
+
     total_rows = int(len(frame))
-    total_savings = round(float(frame["Savings Opportunity"].fillna(0).sum()), 2) if "Savings Opportunity" in frame else 0.0
+    product_count = int(frame[product_column].nunique()) if product_column else 0
+    supplier_count = int(frame[supplier_column].nunique()) if supplier_column else 0
+    savings_series = get_numeric_series(frame, savings_column).fillna(0)
+    unit_price_series = get_numeric_series(frame, unit_price_column)
+    overpay_rows = int((frame[status_column] == "Overpay").sum()) if status_column else 0
+    good_deal_rows = int((frame[status_column] == "Good Deal").sum()) if status_column else 0
+    total_savings = round(float(savings_series.sum()), 2) if not savings_series.empty else 0.0
+    average_savings_per_overpay = round(total_savings / overpay_rows, 2) if overpay_rows else 0.0
 
     compare_ready_products = 0
-    if {"Product Display", "Supplier"}.issubset(frame.columns):
-        compare_ready_products = int((frame.groupby("Product Display")["Supplier"].nunique() > 1).sum())
+    if product_column and supplier_column:
+        compare_ready_products = int((frame.groupby(product_column)[supplier_column].nunique() > 1).sum())
 
     top_supplier = None
-    if {"Supplier", "Savings Opportunity"}.issubset(frame.columns):
+    top_supplier_savings = 0.0
+    if supplier_column and savings_column:
         supplier_savings = (
-            frame.groupby("Supplier", as_index=False)["Savings Opportunity"]
+            frame.groupby(supplier_column, as_index=False)[savings_column]
             .sum()
-            .sort_values("Savings Opportunity", ascending=False)
+            .sort_values(savings_column, ascending=False)
         )
         if not supplier_savings.empty:
-            top_supplier = str(supplier_savings.iloc[0]["Supplier"])
+            top_supplier = str(supplier_savings.iloc[0][supplier_column])
+            top_supplier_savings = round(float(supplier_savings.iloc[0][savings_column]), 2)
 
     highest_risk_product = None
-    if {"Product Display", "Savings Opportunity"}.issubset(frame.columns):
+    highest_risk_amount = 0.0
+    top_savings_products: list[dict[str, Any]] = []
+    if product_column and savings_column:
         product_savings = (
-            frame.groupby("Product Display", as_index=False)["Savings Opportunity"]
+            frame.groupby(product_column, as_index=False)[savings_column]
             .sum()
-            .sort_values("Savings Opportunity", ascending=False)
+            .sort_values(savings_column, ascending=False)
         )
         if not product_savings.empty:
-            highest_risk_product = str(product_savings.iloc[0]["Product Display"])
+            highest_risk_product = str(product_savings.iloc[0][product_column])
+            highest_risk_amount = round(float(product_savings.iloc[0][savings_column]), 2)
+            top_savings_products = [
+                {
+                    "product": str(row[product_column]),
+                    "savings": round(float(row[savings_column]), 2)
+                }
+                for _, row in product_savings.head(3).iterrows()
+                if str(row[product_column]).strip()
+            ]
+
+    multi_unit_products = 0
+    if product_column and unit_column:
+        multi_unit_products = int((frame.groupby(product_column)[unit_column].nunique() > 1).sum())
+
+    price_movement_product = None
+    price_movement_pct = 0.0
+    if product_column and not unit_price_series.empty:
+        price_spread_frame = frame.assign(__guide_unit_price=unit_price_series).dropna(subset=["__guide_unit_price"])
+        if not price_spread_frame.empty:
+            grouped_prices = (
+                price_spread_frame.groupby(product_column)["__guide_unit_price"]
+                .agg(["min", "max", "count"])
+                .reset_index()
+            )
+            grouped_prices = grouped_prices[grouped_prices["count"] > 1]
+            if not grouped_prices.empty:
+                grouped_prices["spread_pct"] = grouped_prices.apply(
+                    lambda row: ((row["max"] - row["min"]) / row["min"] * 100) if row["min"] else 0.0,
+                    axis=1
+                )
+                grouped_prices = grouped_prices.sort_values("spread_pct", ascending=False)
+                if not grouped_prices.empty:
+                    price_movement_product = str(grouped_prices.iloc[0][product_column])
+                    price_movement_pct = round(float(grouped_prices.iloc[0]["spread_pct"]), 1)
+
+    snapshot_lines = [
+        {"label": "Products analyzed", "value": str(product_count or total_rows or "--")},
+        {"label": "Suppliers in view", "value": str(supplier_count or "--")},
+        {"label": "Products with savings", "value": str(compare_ready_products or 0)},
+        {"label": "Visible savings", "value": format_currency(total_savings) if total_savings > 0 else "--"}
+    ]
 
     return {
         "total_rows": total_rows,
+        "product_count": product_count,
+        "supplier_count": supplier_count,
         "overpay_rows": overpay_rows,
+        "good_deal_rows": good_deal_rows,
         "total_savings": total_savings,
+        "average_savings_per_overpay": average_savings_per_overpay,
         "compare_ready_products": compare_ready_products,
         "top_supplier": top_supplier,
-        "highest_risk_product": highest_risk_product
+        "top_supplier_savings": top_supplier_savings,
+        "highest_risk_product": highest_risk_product,
+        "highest_risk_amount": highest_risk_amount,
+        "multi_unit_products": multi_unit_products,
+        "price_movement_product": price_movement_product,
+        "price_movement_pct": price_movement_pct,
+        "top_savings_products": top_savings_products,
+        "snapshot_lines": snapshot_lines
     }
 
 
@@ -1986,88 +2072,85 @@ def append_guide_action(actions: list[dict[str, str]], action_id: str) -> list[d
     return [*actions, {"label": action["label"], "href": action["href"]}]
 
 
-def build_beginner_guide_steps(snapshot: dict[str, Any] | None) -> list[str]:
-    if not snapshot:
-        return [
-            "Step 1: Upload your purchasing file and confirm the mapped columns before analysis.",
-            "Step 2: Review Top Insights to spot the biggest margin leaks first.",
-            "Step 3: Open the Workspace Table to compare suppliers on repeated price differences.",
-            "Step 4: Filter high-volume or high-savings items so you can prioritize action.",
-            "Step 5: Use Ask Your Data for an executive-ready summary once the evidence is clear."
-        ]
-
-    step_two = "Step 2: Review Top Insights for the biggest margin leaks in the current analysis."
-    if snapshot["overpay_rows"] > 0:
-        step_two = f"Step 2: Review Top Insights first because the current analysis already shows {snapshot['overpay_rows']} overpay rows."
-
-    step_three = "Step 3: Open the Workspace Table to compare suppliers where price gaps repeat."
-    if snapshot["compare_ready_products"] > 0:
-        step_three = f"Step 3: Compare suppliers in the Workspace Table because {snapshot['compare_ready_products']} product groups already show supplier variation."
-
-    step_four = "Step 4: Filter the highest-volume or highest-savings items so you can prioritize effort."
-    if snapshot["total_savings"] > 0:
-        step_four = f"Step 4: Prioritize the highest-savings items first because the current visible opportunity is about ${snapshot['total_savings']:,.2f}."
-
+def build_beginner_guide_steps(_: dict[str, Any] | None = None) -> list[str]:
     return [
-        "Step 1: Upload your purchasing file and confirm the mapped columns before analysis.",
-        step_two,
-        step_three,
-        step_four,
-        "Step 5: Use Ask Your Data for an executive-ready summary once the evidence is clear."
+        "Upload a CSV or Excel file in Compare Prices.",
+        "Confirm the required column mappings before you continue.",
+        "Use the comparison screen to review matched supplier prices on a consistent basis.",
+        "Open Product History when you want to check whether a price change looks persistent or temporary.",
+        "Move into Recipes only when you want to turn uploaded purchase prices into recipe costing."
     ]
+
+
+def build_general_guide_response(question: str) -> dict[str, Any]:
+    normalized_question = normalize_guide_text(question)
+
+    if "compare" in normalized_question and "supplier" in normalized_question:
+        return {
+            "found": True,
+            "id": "general-supplier-compare",
+            "title": "Compare suppliers by product and unit",
+            "answer": "Use supplier comparison only when the same item is being matched on the same unit and buying basis. First confirm the mapping, then compare like-for-like prices, and only after that weigh softer trade-offs such as delivery or payment terms.",
+            "why_this_matters": "This keeps the comparison honest. A lower price can be misleading if the rows are really describing different units, pack sizes, or quantity assumptions.",
+            "related_section": "Compare Prices",
+            "next_step": "Open Compare Prices, confirm the mappings, and review the comparison table with unit consistency in mind.",
+            "actions": resolve_guide_actions(["go_quote_compare"]),
+            "workflow_steps": [
+                "Check that product, supplier, unit, quantity, price, and date are mapped correctly.",
+                "Open a matched comparison view rather than scanning raw rows first.",
+                "Compare on a like-for-like basis before making a sourcing decision."
+            ],
+            "analysis_snapshot": [],
+            "context_note": "Guide is answering as a product-usage assistant, not from uploaded dataset results.",
+            "context_available": False
+        }
+
+    return {
+        "found": False,
+        "id": "general-product-guidance",
+        "title": "Guide can explain how the product works",
+        "answer": "Ask Guide about workflow, screen purpose, interpretation, reset behavior, saved recipe behavior, or how to compare rows correctly. It is designed to explain how to use the product rather than summarize your uploaded data.",
+        "why_this_matters": "That keeps the answers stable and practical. You get help with what to do next, what each screen means, and how to avoid common mistakes while using the product.",
+        "related_section": "Guide Workspace",
+        "next_step": "Try a usage question such as how to upload a file, how to compare suppliers, what Product History shows, or what reset removes.",
+        "actions": resolve_guide_actions(["go_quote_compare"]),
+        "workflow_steps": [
+            "Choose the screen you want to understand.",
+            "Ask Guide what that screen is for or how to use it.",
+            "Follow the suggested workflow in the answer."
+        ],
+        "analysis_snapshot": [],
+        "context_note": "Guide answers from built-in product guidance only.",
+        "context_available": False
+    }
 
 
 def build_guide_response(question: str) -> dict[str, Any]:
     response = find_guide_answer(question)
-    snapshot = build_guide_analysis_snapshot()
     actions = resolve_guide_actions(response.get("actions"))
     workflow_steps = [str(step) for step in response.get("workflow_steps", []) if step]
-    context_note = None
+    context_note = "Guide answers from built-in product guidance only."
+    why_this_matters = None
 
     if response.get("id") == "beginner-flow":
-        workflow_steps = build_beginner_guide_steps(snapshot)
+        workflow_steps = build_beginner_guide_steps(None)
         for action_id in ["go_upload", "go_top_insights", "go_workspace", "go_ask_data"]:
             actions = append_guide_action(actions, action_id)
-    elif snapshot and response.get("found"):
-        response_id = response.get("id")
-        if response_id == "compare-suppliers":
-            if snapshot["compare_ready_products"] > 0:
-                context_note = (
-                    f"Current analysis already contains {snapshot['compare_ready_products']} product groups with multiple suppliers, "
-                    "so supplier comparison is immediately available."
-                )
-                actions = append_guide_action(actions, "go_workspace")
-            if snapshot.get("top_supplier"):
-                response["next_step"] = (
-                    f"Start with {snapshot['top_supplier']} in Top Insights, then compare that supplier against alternatives in the Workspace Table."
-                )
-        elif response_id == "review-supplier-pricing":
-            if snapshot.get("top_supplier"):
-                context_note = f"{snapshot['top_supplier']} currently appears as the strongest supplier signal to review first."
-            if snapshot["overpay_rows"] > 0:
-                response["next_step"] = (
-                    "Open Top Insights to see which supplier is contributing to repeated overpay, then inspect that supplier across the Workspace Table."
-                )
-        elif response_id == "find-overpay-rows" and snapshot["overpay_rows"] > 0:
-            context_note = f"The current analysis shows {snapshot['overpay_rows']} rows already flagged as Overpay."
-            actions = append_guide_action(actions, "go_top_insights")
-            actions = append_guide_action(actions, "go_workspace")
-        elif response_id == "savings-opportunities" and snapshot["total_savings"] > 0:
-            context_note = f"The current visible savings opportunity is about ${snapshot['total_savings']:,.2f}."
-            actions = append_guide_action(actions, "go_top_insights")
-        elif response_id == "use-recipes" and snapshot["total_rows"] > 0:
-            context_note = f"The current analysis already contains {snapshot['total_rows']} rows, so Recipes can use that purchasing data as its cost source."
-            actions = append_guide_action(actions, "go_recipes")
-        elif response_id == "upload-and-mapping" and snapshot["total_rows"] > 0:
-            context_note = f"A saved analysis with {snapshot['total_rows']} rows is already available if you want to review before replacing it."
-            actions = append_guide_action(actions, "go_quote_compare")
+
+    if response.get("found"):
+        why_this_matters = "This guidance is meant to help you understand the product flow, avoid common usage mistakes, and choose the right workspace for the task in front of you."
+    else:
+        fallback_response = build_general_guide_response(question)
+        return fallback_response
 
     return {
         **response,
         "actions": actions,
         "workflow_steps": workflow_steps,
         "context_note": context_note,
-        "context_available": snapshot is not None
+        "why_this_matters": why_this_matters,
+        "analysis_snapshot": [],
+        "context_available": False
     }
 
 
@@ -2100,7 +2183,7 @@ def normalize_quote_weighting(weighting: dict[str, Any] | None = None) -> dict[s
             isinstance(raw_value, str) and raw_value.lower() in {"true", "false", ""}
         ) or raw_value is None:
             logger.info(
-                "[quote compare upload] preserving non-numeric weighting for %s: %r",
+                "[Compare Prices upload] preserving non-numeric weighting for %s: %r",
                 key,
                 raw_value
             )
@@ -2110,7 +2193,7 @@ def normalize_quote_weighting(weighting: dict[str, Any] | None = None) -> dict[s
             normalized[key] = max(float(raw_value), 0.0)
         except (TypeError, ValueError):
             logger.warning(
-                "[quote compare upload] failed numeric coercion for %s (quote weighting): type=%s value=%r",
+                "[Compare Prices upload] failed numeric coercion for %s (quote weighting): type=%s value=%r",
                 key,
                 type(raw_value).__name__,
                 raw_value
@@ -2244,7 +2327,7 @@ def build_quote_bid_import_result(dataframe: pd.DataFrame) -> dict[str, Any]:
             continue
         if not supplier_name:
             logger.warning(
-                "[quote compare upload] skipping row with empty resolved supplier | row_index=%s | supplier_value=%r | product_name=%r | quantity=%r | unit_price=%r",
+                "[Compare Prices upload] skipping row with empty resolved supplier | row_index=%s | supplier_value=%r | product_name=%r | quantity=%r | unit_price=%r",
                 index,
                 row_values.get("Supplier", row_values.get("Supplier Name", "")),
                 product_name,
@@ -2255,7 +2338,7 @@ def build_quote_bid_import_result(dataframe: pd.DataFrame) -> dict[str, Any]:
             continue
         if quantity <= 0:
             logger.warning(
-                "[quote compare upload] skipping row with invalid resolved quantity | row_index=%s | supplier_name=%r | quantity=%r | unit_price=%r | total_price=%r",
+                "[Compare Prices upload] skipping row with invalid resolved quantity | row_index=%s | supplier_name=%r | quantity=%r | unit_price=%r | total_price=%r",
                 index,
                 supplier_name,
                 quantity,
@@ -2268,7 +2351,7 @@ def build_quote_bid_import_result(dataframe: pd.DataFrame) -> dict[str, Any]:
         resolved_total = total_price if total_price > 0 else quantity * unit_price
         if unit_price <= 0 and resolved_total <= 0:
             logger.warning(
-                "[quote compare upload] skipping row with invalid resolved pricing | row_index=%s | supplier_name=%r | quantity=%r | unit_price=%r | total_price=%r | resolved_total=%r",
+                "[Compare Prices upload] skipping row with invalid resolved pricing | row_index=%s | supplier_name=%r | quantity=%r | unit_price=%r | total_price=%r | resolved_total=%r",
                 index,
                 supplier_name,
                 quantity,
@@ -2303,7 +2386,7 @@ def build_quote_bid_import_result(dataframe: pd.DataFrame) -> dict[str, Any]:
         })
 
     logger.info(
-        "[quote compare upload] numeric debug | first_10_numeric_values=%s | rows_with_resolved_total_gt_zero=%s | skipped_row_count=%s | valid_row_count=%s",
+        "[Compare Prices upload] numeric debug | first_10_numeric_values=%s | rows_with_resolved_total_gt_zero=%s | skipped_row_count=%s | valid_row_count=%s",
         numeric_preview,
         positive_total_count,
         skipped_row_count,
@@ -2355,7 +2438,7 @@ def normalize_quote_compare_mapped_dataframe(
         supplier_non_empty_count = int(supplier_series.astype(bool).sum())
 
     logger.info(
-        "[quote compare upload] supplier mapping debug | selected_supplier_column=%s | exists_in_source=%s | mapped_columns=%s | first_10_supplier_values=%s | non_empty_supplier_count=%s",
+        "[Compare Prices upload] supplier mapping debug | selected_supplier_column=%s | exists_in_source=%s | mapped_columns=%s | first_10_supplier_values=%s | non_empty_supplier_count=%s",
         supplier_source_column or "<empty>",
         supplier_column_exists,
         list(normalized.columns),
@@ -2564,8 +2647,8 @@ def append_analysis_history_rows(
     store = {
         "uploads": [{
             "upload_id": upload_id,
-            "source_name": str(source_name or "").strip() or "Quote Compare analysis",
-            "comparison_name": str(comparison_name or "").strip() or str(source_name or "").strip() or "Quote Compare analysis",
+            "source_name": str(source_name or "").strip() or "Compare Prices analysis",
+            "comparison_name": str(comparison_name or "").strip() or str(source_name or "").strip() or "Compare Prices analysis",
             "source_type": str(source_type or "manual").strip() or "manual",
             "created_at": now,
             "updated_at": now,
@@ -2599,7 +2682,7 @@ def persist_quote_compare_analysis_results(
         upload_id=normalized_upload_id,
         source_name=source_name,
         source_type=str(normalize_quote_comparison_payload(comparison or {}).get("source_type") or "manual"),
-        comparison_name=str(normalize_quote_comparison_payload(comparison or {}).get("name") or source_name or "Quote Compare analysis")
+        comparison_name=str(normalize_quote_comparison_payload(comparison or {}).get("name") or source_name or "Compare Prices analysis")
     )
     return result_df
 
@@ -2617,7 +2700,7 @@ def get_latest_quote_compare_analysis_session() -> dict[str, Any] | None:
         try:
             payload = json.loads(session_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
-            logger.warning("Skipping invalid quote compare session file: %s", session_path)
+            logger.warning("Skipping invalid Compare Prices session file: %s", session_path)
             continue
         validated_payload = validate_quote_compare_active_session(payload)
         if validated_payload and isinstance(validated_payload.get("comparison"), dict):
@@ -2649,13 +2732,13 @@ def restore_latest_quote_compare_analysis_results() -> pd.DataFrame | None:
         source_name = (
             str(latest_session.get("filename") or "").strip()
             or str(latest_session["comparison"].get("name") or "").strip()
-            or "Quote Compare analysis"
+            or "Compare Prices analysis"
         )
         return persist_quote_compare_analysis_results(latest_session["comparison"], source_name=source_name)
 
     latest_comparison = get_latest_saved_quote_compare_analysis()
     if latest_comparison:
-        source_name = str(latest_comparison.get("name") or "").strip() or "Quote Compare analysis"
+        source_name = str(latest_comparison.get("name") or "").strip() or "Compare Prices analysis"
         return persist_quote_compare_analysis_results(latest_comparison, source_name=source_name)
 
     return None
@@ -4008,6 +4091,14 @@ def create_app() -> FastAPI:
             build_page_context(request, active_view="guide")
         )
 
+    @app.get("/notes")
+    def notes_view(request: Request):
+        return safe_template_response(
+            request,
+            INDEX_TEMPLATE,
+            build_page_context(request, active_view="notes")
+        )
+
     @app.get("/quote-compare")
     def quote_compare_view(request: Request):
         return safe_template_response(
@@ -4062,7 +4153,7 @@ def create_app() -> FastAPI:
     @app.get("/quote-compare/download-sample-excel")
     def download_quote_compare_sample_excel():
         sample_df = build_quote_compare_sample_dataframe()
-        output = dataframe_to_excel_stream(sample_df, "Quote Compare Sample")
+        output = dataframe_to_excel_stream(sample_df, "Compare Prices Sample")
 
         return StreamingResponse(
             output,
@@ -4260,7 +4351,7 @@ def create_app() -> FastAPI:
         response_json = json.dumps(response_payload, ensure_ascii=False, separators=(",", ":"))
         response_serialized_at = perf_counter()
         logger.info(
-            "[quote compare bootstrap timing] session_id=%s include_comparisons=%s total_ms=%.1f store_load_ms=%.1f comparisons_ms=%.1f active_session_ms=%.1f response_serialize_ms=%.1f response_bytes=%s comparisons=%s",
+            "[Compare Prices bootstrap timing] session_id=%s include_comparisons=%s total_ms=%.1f store_load_ms=%.1f comparisons_ms=%.1f active_session_ms=%.1f response_serialize_ms=%.1f response_bytes=%s comparisons=%s",
             bool(session_id),
             include_comparisons,
             (response_serialized_at - request_started_at) * 1000,
@@ -4316,7 +4407,7 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             return JSONResponse({"success": False, "message": str(exc)}, status_code=400)
         except Exception:
-            logger.exception("Failed to inspect quote compare upload: %s", filename)
+            logger.exception("Failed to inspect Compare Prices upload: %s", filename)
             return JSONResponse(
                 {
                     "success": False,
@@ -4390,7 +4481,7 @@ def create_app() -> FastAPI:
         response_json = json.dumps(response_payload, ensure_ascii=False, separators=(",", ":"))
         response_serialized_at = perf_counter()
         logger.info(
-            "[quote compare inspect timing] filename=%s total_ms=%.1f parse_ms=%.1f cache_upload_ms=%.1f required_detect_ms=%.1f optional_detect_ms=%.1f optional_merge_ms=%.1f session_save_ms=%.1f response_serialize_ms=%.1f response_bytes=%s headers=%s",
+            "[Compare Prices inspect timing] filename=%s total_ms=%.1f parse_ms=%.1f cache_upload_ms=%.1f required_detect_ms=%.1f optional_detect_ms=%.1f optional_merge_ms=%.1f session_save_ms=%.1f response_serialize_ms=%.1f response_bytes=%s headers=%s",
             filename,
             (response_serialized_at - request_started_at) * 1000,
             (parse_finished_at - parse_started_at) * 1000,
@@ -4450,7 +4541,7 @@ def create_app() -> FastAPI:
                 for field_name in [*QUOTE_COMPARE_REQUIRED_FIELDS, *QUOTE_COMPARE_OPTIONAL_FIELDS]
             }
             logger.info(
-                "[quote compare upload] confirm mapping debug | selected_supplier_mapping=%s | dataframe_columns_before_rename=%s",
+                "[Compare Prices upload] confirm mapping debug | selected_supplier_mapping=%s | dataframe_columns_before_rename=%s",
                 full_mapping.get("Supplier"),
                 list(df.columns)
             )
@@ -4465,7 +4556,7 @@ def create_app() -> FastAPI:
                 source_columns=list(df.columns)
             )
             logger.info(
-                "[quote compare upload] confirm mapping debug | dataframe_columns_after_rename=%s",
+                "[Compare Prices upload] confirm mapping debug | dataframe_columns_after_rename=%s",
                 list(mapped_df.columns)
             )
             import_result = build_quote_bid_import_result(mapped_df)
@@ -4481,7 +4572,7 @@ def create_app() -> FastAPI:
             evaluation = calculate_quote_comparison(normalized_comparison)
             persist_quote_compare_analysis_results(
                 normalized_comparison,
-                source_name=filename or normalized_comparison["name"] or "Quote Compare analysis",
+                source_name=filename or normalized_comparison["name"] or "Compare Prices analysis",
                 upload_id=session_id
             )
             if session_id:
@@ -4514,7 +4605,7 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             return JSONResponse({"success": False, "message": str(exc)}, status_code=400)
         except Exception:
-            logger.exception("Failed to confirm quote compare upload: %s", filename)
+            logger.exception("Failed to confirm Compare Prices upload: %s", filename)
             return JSONResponse(
                 {
                     "success": False,
@@ -4542,7 +4633,7 @@ def create_app() -> FastAPI:
             evaluation = calculate_quote_comparison(normalized_comparison)
             persist_quote_compare_analysis_results(
                 normalized_comparison,
-                source_name=normalized_comparison["name"] or "Quote Compare analysis",
+                source_name=normalized_comparison["name"] or "Compare Prices analysis",
                 upload_id=normalized_comparison.get("upload_id")
             )
         except ValueError as exc:

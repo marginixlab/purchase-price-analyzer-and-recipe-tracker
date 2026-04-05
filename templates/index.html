@@ -23,8 +23,8 @@
         </div>
         <div class="access-stage">
             <div class="access-hero">
-                <div class="access-eyebrow">Purchase Price Analyzer</div>
-                <h1 class="access-hero-title">Review Costs Faster. Compare Smarter.</h1>
+                <div class="access-eyebrow">Purchase Price Analyzer - Recipe Creater & Tracker </div>
+                <h1 class="access-hero-title"> Review Costs Faster, Compare Smarter </h1>
                 <p class="access-hero-copy">Purchase Price Analyzer, Recipe Costing, and Supplier Tracking in one decision-ready workspace.</p>
                 <ul class="access-points" aria-label="Workspace highlights">
                     <li class="access-point">Compare supplier quotes instantly</li>
@@ -51,21 +51,22 @@
     <div class="container app-shell app-shell-locked" id="appShell" hidden>
         <header class="page-header">
             <div class="brand-lockup">
-                <div class="brand-kicker">Purchase Price Analyzer</div>
-                <p class="brand-title">Premium pricing review for procurement teams</p>
+                <div class="brand-kicker">Purchase Price Analyzer - Recipe Creater & Tracker </div>
+                <p class="brand-title">Premium pricing review and recipe tracker for procurement teams</p>
             </div>
             <div class="header-actions">
-                <a id="guideLinkButton" class="secondary-btn workspace-toggle-btn" href="/guide">Guide</a>
-                <button id="notesPanelToggle" class="secondary-btn workspace-toggle-btn" type="button" hidden>Notes</button>
+                <a id="guideLinkButton" class="secondary-btn workspace-toggle-btn {% if active_view == 'guide' %}is-active{% endif %}" href="/guide">Guide</a>
+                <a id="notesWorkspaceButton" class="secondary-btn workspace-toggle-btn {% if active_view == 'notes' %}is-active{% endif %}" href="/notes">Notes</a>
                 <button id="logoutButton" class="secondary-btn" type="button" hidden>Log Out</button>
             </div>
         </header>
 
         <nav class="app-view-nav" aria-label="Primary workspace">
-            <a class="app-view-tab {% if active_view == 'quote_compare' %}is-active{% endif %}" href="/" aria-current="{% if active_view == 'quote_compare' %}page{% else %}false{% endif %}">Quote Compare</a>
+            <a class="app-view-tab {% if active_view == 'quote_compare' %}is-active{% endif %}" href="{% if active_view == 'quote_compare' %}#{% else %}/?resume=1{% endif %}" {% if active_view == 'quote_compare' %}onclick="return false;"{% endif %} aria-current="{% if active_view == 'quote_compare' %}page{% else %}false{% endif %}">Compare Prices</a>
             <a class="app-view-tab {% if active_view == 'recipes' %}is-active{% endif %}" href="/recipes" aria-current="{% if active_view == 'recipes' %}page{% else %}false{% endif %}">Recipes</a>
         </nav>
 
+        {% if false %}
         <aside class="side-panel side-panel-right" id="notesPanel" hidden aria-hidden="true">
             <div class="side-panel-card">
                 <div class="side-panel-head">
@@ -99,6 +100,30 @@
                             <textarea id="notesNegotiationInput" class="notes-textarea notes-textarea-compact" data-notes-field="negotiation_reminders" placeholder="Anchor target, fallback supplier, delivery ask, payment ask..."></textarea>
                         </label>
                     </div>
+                    <section class="notes-list-shell" aria-label="Saved note list">
+                        <div class="notes-list-head">
+                            <div>
+                                <div class="notes-section-title">Saved Notes</div>
+                                <div class="notes-section-copy">Add quick notes with an optional product or topic tag. These notes stay available after Reset all data.</div>
+                            </div>
+                        </div>
+                        <div class="notes-compose-card">
+                            <label class="notes-inline-field" for="notesItemTagInput">
+                                <span class="notes-inline-label">Optional tag</span>
+                                <input id="notesItemTagInput" class="recipe-input notes-inline-input" type="text" maxlength="80" placeholder="Example: Chicken or Supplier A">
+                            </label>
+                            <label class="notes-inline-field" for="notesItemInput">
+                                <span class="notes-inline-label">Note</span>
+                                <textarea id="notesItemInput" class="notes-textarea notes-textarea-inline" placeholder="Add a quick buyer note, follow-up, or product-specific reminder..."></textarea>
+                            </label>
+                            <div class="notes-compose-actions">
+                                <button type="button" class="action-btn" id="notesAddButton">Add Note</button>
+                                <button type="button" class="secondary-btn" id="notesCancelEditButton" hidden>Cancel Edit</button>
+                            </div>
+                        </div>
+                        <div class="notes-item-list" id="notesItemList"></div>
+                        <div class="notes-item-empty" id="notesItemEmpty">No saved notes yet. Add one quick note to keep follow-ups visible.</div>
+                    </section>
                     <div class="notes-footer">
                         <span class="notes-saved-indicator" id="notesSavedIndicator">Ready</span>
                         <button type="button" class="secondary-btn notes-clear-btn" id="clearNotesButton">Clear All</button>
@@ -106,6 +131,7 @@
                 </div>
             </div>
         </aside>
+        {% endif %}
 
         {% if false %}
         <div
@@ -312,7 +338,7 @@
                 <article class="hero-insight-card">
                     <div class="top-insight-label">Hero Insight</div>
                     <h3 class="hero-insight-title" id="heroInsightTitle">What is the main problem?</h3>
-                    <div class="hero-insight-value" id="heroInsightValue">{% if summary %}${{ "%.2f"|format(summary.estimated_extra_spend) }}{% else %}$0.00{% endif %}</div>
+                    <div class="hero-insight-value" id="heroInsightValue">{% if summary %}{{ "%.2f"|format(summary.estimated_extra_spend) }}{% else %}0.00{% endif %}</div>
                     <p class="hero-insight-copy" id="heroInsightCopy">
                         {% if has_analysis %}
                             Your main opportunity is concentrated in the highest-leakage product and the supplier driving the weakest pricing signal.
@@ -532,7 +558,7 @@
                         <div class="status-mix-kpis">
                             <article class="status-mix-kpi">
                                 <div class="status-mix-kpi-label">Recoverable Spend</div>
-                                <div class="status-mix-kpi-value" id="statusMixRecoverableSpend">$0.00</div>
+                                <div class="status-mix-kpi-value" id="statusMixRecoverableSpend">0.00</div>
                                 <div class="status-mix-kpi-copy">Visible excess spend tied to current exceptions.</div>
                             </article>
                             <article class="status-mix-kpi">
@@ -613,11 +639,11 @@
                             <td data-column-key="supplier">{{ row["Supplier"] or "-" }}</td>
                             <td data-column-key="purchaseUnit">{{ row.get("Unit") or "-" }}</td>
                             <td data-column-key="quantity">{{ "%.2f"|format(row["Quantity"]) }}</td>
-                            <td data-column-key="unitPrice">${{ "%.2f"|format(row["Unit Price"]) }}</td>
-                            <td data-column-key="totalAmount">${{ "%.2f"|format(row["Total Amount"]) }}</td>
-                            <td data-column-key="averagePrice">${{ "%.2f"|format(row["Average Price"]) }}</td>
-                            <td data-column-key="overpay">${{ "%.2f"|format(row["Overpay"]) }}</td>
-                            <td data-column-key="savingsOpportunity">${{ "%.2f"|format(row["Savings Opportunity"]) }}</td>
+                            <td data-column-key="unitPrice">{{ "%.2f"|format(row["Unit Price"]) }}</td>
+                            <td data-column-key="totalAmount">{{ "%.2f"|format(row["Total Amount"]) }}</td>
+                            <td data-column-key="averagePrice">{{ "%.2f"|format(row["Average Price"]) }}</td>
+                            <td data-column-key="overpay">{{ "%.2f"|format(row["Overpay"]) }}</td>
+                            <td data-column-key="savingsOpportunity">{{ "%.2f"|format(row["Savings Opportunity"]) }}</td>
                             <td data-column-key="date">{{ row["Date"] }}</td>
                             <td data-column-key="status">
                                 {% if row["Status"] == "Overpay" %}
@@ -677,10 +703,9 @@
                 <div>
                     <div class="panel-label">Guide Workspace</div>
                     <h1 class="panel-title">A product assistant workspace for faster procurement decisions</h1>
-                    <p class="panel-copy">Ask product-use questions, reopen recent answers, and jump directly into the right part of the app without guessing where to go next.</p>
+                    <p class="panel-copy">Use left bars and ask product-use questions, reopen recent answers, and jump directly into the right part of the app without guessing where to go next.</p>
                 </div>
                 <div class="guide-workspace-hero-actions">
-                    <div class="result-chip">{% if has_analysis %}Analysis context available{% else %}Works with or without analysis{% endif %}</div>
                 </div>
             </section>
 
@@ -697,7 +722,7 @@
                             {% endif %}
                         </p>
                         <div class="guide-overview-actions guide-action-list">
-                            <a class="secondary-btn guide-action-button" href="/quote-compare">Quote Compare</a>
+                            <a class="secondary-btn guide-action-button" href="/quote-compare">Compare Prices</a>
                             <a class="secondary-btn guide-action-button" href="/recipes">Recipes</a>
                         </div>
                     </section>
@@ -706,22 +731,21 @@
                         <div class="guide-card-kicker">Beginner Flow</div>
                         <h2 class="guide-card-title">Common starting points</h2>
                         <div class="guide-topic-list guide-action-list">
-                            <button type="button" class="guide-topic-button guide-action-button" data-guide-question="What do I do first?" data-guide-topic="beginner-start">What do I do first?</button>
+                            <button type="button" class="guide-topic-button guide-action-button" data-guide-question="What should I do first?" data-guide-topic="beginner-start">What should I do first?</button>
                             <button type="button" class="guide-topic-button guide-action-button" data-guide-question="How do I upload a file?" data-guide-topic="upload-flow">How do I upload a file?</button>
-                            <button type="button" class="guide-topic-button guide-action-button" data-guide-question="How do I find overpay rows?" data-guide-topic="overpay-flow">How do I find overpay rows?</button>
                             <button type="button" class="guide-topic-button guide-action-button" data-guide-question="How do I compare suppliers?" data-guide-topic="supplier-flow">How do I compare suppliers?</button>
+                            <button type="button" class="guide-topic-button guide-action-button" data-guide-question="How do I confirm the column mappings?" data-guide-topic="upload-and-mapping">How do I confirm the column mappings?</button>
                         </div>
                     </section>
 
                     <section class="guide-surface guide-action-card">
                         <div class="guide-card-kicker">Suggested Topics</div>
-                        <h2 class="guide-card-title">Product-aware shortcuts</h2>
+                        <h2 class="guide-card-title">Product-use shortcuts</h2>
                         <div class="guide-topic-list guide-action-list">
-                            <button type="button" class="guide-topic-button guide-action-button" data-guide-question="How do I review supplier pricing?" data-guide-topic="supplier-pricing">Review supplier pricing</button>
-                            <button type="button" class="guide-topic-button guide-action-button" data-guide-question="Where are the savings opportunities?" data-guide-topic="savings-opportunities">Find savings opportunities</button>
-                            <button type="button" class="guide-topic-button guide-action-button" data-guide-question="How do I use filters?" data-guide-topic="filters">Use filters</button>
-                            <button type="button" class="guide-topic-button guide-action-button" data-guide-question="How do I use Ask Your Data?" data-guide-topic="ask-your-data">Use Ask Your Data</button>
-                            <button type="button" class="guide-topic-button guide-action-button" data-guide-question="How do I use Quote Compare?" data-guide-topic="quote-compare">Use Quote Compare</button>
+                            <button type="button" class="guide-topic-button guide-action-button" data-guide-question="What does Product History show?" data-guide-topic="product-history">What does Product History show?</button>
+                            <button type="button" class="guide-topic-button guide-action-button" data-guide-question="What does Reset all data remove?" data-guide-topic="reset-all-data">What does Reset all data remove?</button>
+                            <button type="button" class="guide-topic-button guide-action-button" data-guide-question="Do saved recipes stay after reset?" data-guide-topic="saved-recipes-reset">Do saved recipes stay after reset?</button>
+                            <button type="button" class="guide-topic-button guide-action-button" data-guide-question="What can I analyze from uploaded price data?" data-guide-topic="uploaded-price-data">What can I analyze from uploaded price data?</button>
                         </div>
                     </section>
 
@@ -740,57 +764,159 @@
 
                 <section class="guide-main">
                     <section class="guide-surface guide-assistant-shell">
-                        <div class="guide-assistant-head">
-                            <div>
-                                <div class="guide-card-kicker">Ask Guide</div>
-                                <h2 class="guide-card-title">Ask a product-use question</h2>
-                                <p class="guide-card-copy">Guide answers only from built-in product knowledge and the currently available analysis context.</p>
-                            </div>
-                        </div>
-
-                        <form class="guide-ask-form guide-ask-form-workspace" id="guideAskForm">
-                            <label class="guide-ask-label" for="guideAskInput">Question</label>
-                            <div class="guide-ask-row">
-                                <input
-                                    id="guideAskInput"
-                                    class="guide-ask-input"
-                                    type="text"
-                                    autocomplete="off"
-                                    placeholder="How can I analyse the suppliers?"
-                                    maxlength="180"
-                                >
-                                <button type="submit" class="action-btn guide-ask-button" id="guideAskButton">Ask Guide</button>
-                            </div>
-                        </form>
-
                         <div class="guide-result-stage guide-result-empty" id="guideResultStage" data-guide-result>
                             <section class="guide-answer-stage" id="guideAskAnswer" hidden>
                                 <div class="guide-answer-stage-head">
                                     <div class="guide-ask-answer-label">Guide Answer</div>
-                                    <div class="guide-answer-context-chip" id="guideAskContextChip" hidden>Analysis-aware</div>
+                                    <div class="guide-answer-context-chip" id="guideAskContextChip" hidden>Usage-only</div>
                                 </div>
                                 <div class="guide-answer-body" id="guideAskAnswerBody">
+                                    <div class="guide-answer-section-label">Direct Answer</div>
                                     <h3 class="guide-answer-title" id="guideAskAnswerTitle">Guide Answer</h3>
                                     <div class="guide-ask-answer-text" id="guideAskAnswerText"></div>
                                     <div class="guide-answer-context" id="guideAskContextNote" hidden></div>
+                                    <div class="guide-answer-section" id="guideAskWhyBlock" hidden>
+                                        <div class="guide-answer-subtitle">Why this matters</div>
+                                        <div class="guide-ask-answer-text guide-ask-answer-text-secondary" id="guideAskWhyText"></div>
+                                    </div>
                                     <div class="guide-answer-flow" id="guideAskWorkflowBlock" hidden>
                                         <div class="guide-answer-subtitle">Suggested workflow</div>
                                         <div class="guide-answer-steps" id="guideAskWorkflow"></div>
                                     </div>
                                     <div class="guide-ask-answer-meta" id="guideAskAnswerMeta" hidden>
-                                        <div class="guide-ask-answer-line" id="guideAskRelatedSection"></div>
+                                        <div class="guide-answer-subtitle guide-answer-subtitle-inline">Suggested next step</div>
                                         <div class="guide-ask-answer-line" id="guideAskNextStep"></div>
+                                        <div class="guide-ask-answer-line" id="guideAskRelatedSection"></div>
                                     </div>
                                     <div class="guide-answer-actions" id="guideAskActions" hidden></div>
                                 </div>
                             </section>
 
-                            <section class="guide-answer-empty" id="guideAskEmptyState">
-                                <div class="guide-card-kicker">Assistant Ready</div>
-                                <h3 class="guide-card-title">Ask a question to generate a guided answer.</h3>
-                                <p class="guide-card-copy">You&rsquo;ll see recommendations and workflow steps here.</p>
-                            </section>
                         </div>
+                    </section>
+                </section>
+            </section>
+        </section>
+        </div>
+        {% endif %}
+
+        {% if active_view == 'notes' %}
+        <div id="notesWorkspaceView">
+        <section class="guide-workspace notes-workspace" id="notesWorkspace" data-has-analysis="{{ 'true' if has_analysis else 'false' }}">
+            <section class="guide-workspace-hero notes-workspace-hero">
+                <div>
+                    <div class="panel-label">Notes Workspace</div>
+                    <h1 class="panel-title">Capture procurement decisions, supplier follow-ups, and product risks in one place</h1>
+                    <p class="panel-copy">Notes is now a full workspace tab. Keep persistent buyer notes, tag products or suppliers, and preserve your working context even after Reset all data.</p>
+                </div>
+                <div class="guide-workspace-hero-actions">
+                    <div class="result-chip">Persists after Reset all data</div>
+                </div>
+            </section>
+
+            <section class="guide-workspace-grid notes-workspace-grid">
+                <aside class="guide-sidebar notes-sidebar">
+                    <section class="guide-surface notes-overview-card">
+                        <div class="guide-card-kicker">Workspace Notes</div>
+                        <h2 class="guide-card-title">How to use this space</h2>
+                        <p class="guide-card-copy">Save negotiation points, supplier concerns, product follow-ups, and the next decision you want to revisit quickly.</p>
+                        <div class="notes-overview-pills">
+                            <div class="guide-context-hint">Use a title for note cards you may reopen later.</div>
+                            <div class="guide-context-hint">Use tags for products, suppliers, or negotiation themes.</div>
+                        </div>
+                    </section>
+
+                    <section class="guide-surface">
+                        <div class="guide-card-kicker">Sections</div>
+                        <h2 class="guide-card-title">Structured note sections</h2>
+                        <p class="guide-card-copy">Create dated notes directly inside the section where they belong. These saved notes remain available after Reset all data.</p>
+                        <div class="notes-sections-grid" id="notesSectionsGrid">
+                            <article class="notes-section-card" data-notes-section="quick_notes">
+                                <div class="notes-section-head">
+                                    <div>
+                                        <div class="notes-section-title">Quick Notes</div>
+                                        <div class="notes-section-copy">Fast takeaways from today&rsquo;s review.</div>
+                                    </div>
+                                    <div class="notes-section-actions">
+                                        <span class="notes-section-count" data-notes-section-count="quick_notes">0</span>
+                                        <button type="button" class="secondary-btn notes-section-create-btn" data-notes-create="quick_notes">Create Note</button>
+                                    </div>
+                                </div>
+                                <div class="notes-section-editor" data-notes-editor="quick_notes" hidden></div>
+                                <div class="notes-section-list" data-notes-list="quick_notes"></div>
+                                <div class="notes-item-empty" data-notes-empty="quick_notes">No saved notes in this section yet.</div>
+                            </article>
+                            <article class="notes-section-card" data-notes-section="supplier_notes">
+                                <div class="notes-section-head">
+                                    <div>
+                                        <div class="notes-section-title">Supplier Notes</div>
+                                        <div class="notes-section-copy">Keep vendor-specific context close at hand.</div>
+                                    </div>
+                                    <div class="notes-section-actions">
+                                        <span class="notes-section-count" data-notes-section-count="supplier_notes">0</span>
+                                        <button type="button" class="secondary-btn notes-section-create-btn" data-notes-create="supplier_notes">Create Note</button>
+                                    </div>
+                                </div>
+                                <div class="notes-section-editor" data-notes-editor="supplier_notes" hidden></div>
+                                <div class="notes-section-list" data-notes-list="supplier_notes"></div>
+                                <div class="notes-item-empty" data-notes-empty="supplier_notes">No saved notes in this section yet.</div>
+                            </article>
+                            <article class="notes-section-card" data-notes-section="follow_up_items">
+                                <div class="notes-section-head">
+                                    <div>
+                                        <div class="notes-section-title">Follow-Up Items</div>
+                                        <div class="notes-section-copy">Action reminders and review-next-order prompts.</div>
+                                    </div>
+                                    <div class="notes-section-actions">
+                                        <span class="notes-section-count" data-notes-section-count="follow_up_items">0</span>
+                                        <button type="button" class="secondary-btn notes-section-create-btn" data-notes-create="follow_up_items">Create Note</button>
+                                    </div>
+                                </div>
+                                <div class="notes-section-editor" data-notes-editor="follow_up_items" hidden></div>
+                                <div class="notes-section-list" data-notes-list="follow_up_items"></div>
+                                <div class="notes-item-empty" data-notes-empty="follow_up_items">No saved notes in this section yet.</div>
+                            </article>
+                            <article class="notes-section-card" data-notes-section="negotiation_reminders">
+                                <div class="notes-section-head">
+                                    <div>
+                                        <div class="notes-section-title">Negotiation Reminders</div>
+                                        <div class="notes-section-copy">Track leverage points before the next conversation.</div>
+                                    </div>
+                                    <div class="notes-section-actions">
+                                        <span class="notes-section-count" data-notes-section-count="negotiation_reminders">0</span>
+                                        <button type="button" class="secondary-btn notes-section-create-btn" data-notes-create="negotiation_reminders">Create Note</button>
+                                    </div>
+                                </div>
+                                <div class="notes-section-editor" data-notes-editor="negotiation_reminders" hidden></div>
+                                <div class="notes-section-list" data-notes-list="negotiation_reminders"></div>
+                                <div class="notes-item-empty" data-notes-empty="negotiation_reminders">No saved notes in this section yet.</div>
+                            </article>
+                        </div>
+                    </section>
+                </aside>
+
+                <section class="guide-main">
+                    <section class="guide-surface guide-assistant-shell notes-shell">
+                        <div class="guide-assistant-head">
+                            <div>
+                                <div class="guide-card-kicker">Saved Notes</div>
+                                <h2 class="guide-card-title">Review and reopen saved notes</h2>
+                                <p class="guide-card-copy">Notes created in the section cards appear here as one combined saved list so you can scan everything in one place.</p>
+                            </div>
+                            <span class="notes-saved-indicator" id="notesSavedIndicator">Ready</span>
+                        </div>
+
+                        <section class="notes-list-shell" aria-label="Saved note list">
+                            <div class="notes-list-head">
+                                <div>
+                                    <div class="notes-section-title">All Saved Notes</div>
+                                    <div class="notes-section-copy">Every note from Quick Notes, Supplier Notes, Follow-Up Items, and Negotiation Reminders appears here.</div>
+                                </div>
+                                <button type="button" class="secondary-btn notes-clear-btn" id="clearNotesButton">Clear All</button>
+                            </div>
+                            <div class="notes-item-list" id="notesItemList"></div>
+                            <div class="notes-item-empty" id="notesItemEmpty">No saved notes yet. Add one decision-ready note so your follow-up stays visible.</div>
+                        </section>
                     </section>
                 </section>
             </section>
@@ -820,9 +946,9 @@
                 <div class="recipes-empty-card">
                     <div class="panel-label">Pricing Data Needed</div>
                     <h2 class="panel-title">Analyze purchase data before pricing recipes</h2>
-                    <p class="panel-copy">Recipes uses analyzed purchasing data to supply product names, units, and pricing inputs. Open Quote Compare first, then come back to build recipe costs from real purchase history instead of manual estimates.</p>
+                    <p class="panel-copy">Recipes uses analyzed purchasing data to supply product names, units, and pricing inputs. Open Compare Prices first, then come back to build recipe costs from real purchase history instead of manual estimates.</p>
                     <div class="recipes-empty-actions">
-                        <a class="action-btn" id="recipesEmptyGoToAnalyzerButton" href="/quote-compare">Open Quote Compare</a>
+                        <a class="action-btn" id="recipesEmptyGoToAnalyzerButton" href="/quote-compare">Open Compare Prices</a>
                     </div>
                 </div>
             </section>
@@ -843,6 +969,9 @@
                             <div class="recipes-archive-summary">
                                 <div class="recipes-empty">Saved recipes live in a dedicated archive view so the builder stays focused on creating a fresh calculation from the current uploaded file.</div>
                                 <button type="button" class="action-btn recipes-archive-open-btn" id="openRecipeLibraryInlineButton">View Saved Snapshots</button>
+                            </div>
+                            <div class="recipes-sidebar-actions" id="recipesSidebarActions">
+                                <a class="secondary-btn recipes-back-home-btn" href="/?start=home">Back to Home</a>
                             </div>
                         </aside>
 
@@ -897,12 +1026,12 @@
                               <section class="recipes-summary-grid">
                                   <article class="summary-card">
                                       <div class="summary-card-title">Total Recipe Cost</div>
-                                      <div class="summary-card-value" id="recipeTotalCost">$0.00</div>
+                                      <div class="summary-card-value" id="recipeTotalCost">0.00</div>
                                     <div class="summary-card-insight">The full cost of the current recipe using your selected pricing mode.</div>
                                 </article>
                                 <article class="summary-card">
                                     <div class="summary-card-title">Cost Per Portion</div>
-                                    <div class="summary-card-value" id="recipeCostPerPortion">$0.00</div>
+                                    <div class="summary-card-value" id="recipeCostPerPortion">0.00</div>
                                     <div class="summary-card-insight">Use this to price portions clearly and protect margin.</div>
                                 </article>
                                 <article class="summary-card">
@@ -942,15 +1071,20 @@
                                 <div class="recipe-pricing-metrics">
                                     <article class="recipe-pricing-metric">
                                         <div class="recipe-pricing-metric-label">Total Recipe Cost</div>
-                                        <div class="recipe-pricing-metric-value" id="recipePricingTotalCost">$0.00</div>
+                                        <div class="recipe-pricing-metric-value" id="recipePricingTotalCost">0.00</div>
                                     </article>
                                     <article class="recipe-pricing-metric">
                                         <div class="recipe-pricing-metric-label">Cost Per Portion</div>
-                                        <div class="recipe-pricing-metric-value" id="recipePricingCostPerPortion">$0.00</div>
+                                        <div class="recipe-pricing-metric-value" id="recipePricingCostPerPortion">0.00</div>
+                                    </article>
+                                    <article class="recipe-pricing-metric">
+                                        <div class="recipe-pricing-metric-label">Selling Price per Portion</div>
+                                        <div class="recipe-pricing-metric-value" id="recipeSellingPricePerPortionValue">--</div>
                                     </article>
                                     <article class="recipe-pricing-metric recipe-pricing-metric-highlight">
                                         <div class="recipe-pricing-metric-label">Gross Profit</div>
                                         <div class="recipe-pricing-metric-value" id="recipeGrossProfitValue">--</div>
+                                        <div class="recipe-pricing-metric-subtext" id="recipeGrossProfitSubtext">Total: --</div>
                                     </article>
                                     <article class="recipe-pricing-metric recipe-pricing-metric-highlight">
                                         <div class="recipe-pricing-metric-label">Gross Margin %</div>
@@ -961,13 +1095,13 @@
                                         <div class="recipe-pricing-metric-value" id="recipeFoodCostValue">--</div>
                                     </article>
                                     <article class="recipe-pricing-metric recipe-pricing-metric-highlight recipe-pricing-metric-suggested">
-                                        <div class="recipe-pricing-metric-label">Suggested Selling Price</div>
+                                        <div class="recipe-pricing-metric-label">Suggested Selling Price (Total)</div>
                                         <div class="recipe-pricing-metric-value" id="recipeSuggestedPriceValue">--</div>
                                     </article>
                                 </div>
                             </section>
 
-                              <section class="recipe-breakdown-card">
+                              <section class="recipe-breakdown-card recipe-ingredient-breakdown-card">
                                   <div class="recipe-breakdown-head">
                                       <div class="recipe-breakdown-head-copy">
                                           <div class="panel-label">Ingredient Breakdown</div>
@@ -1022,15 +1156,18 @@
                 <div class="quote-compare-hero-top">
                     <div class="quote-compare-hero-copy">
                         <div class="panel-label">Supplier Price Analysis</div>
-                        <h1 class="panel-title">Quote Compare</h1>
-                        <p class="panel-copy">Compare supplier prices quickly, surface the best price by product, and move toward a cleaner sourcing decision without spreadsheet overload.</p>
+                        <h1 class="panel-title">Compare Prices</h1>
+                        <p class="panel-copy">Compare supplier prices quickly whether purchasing prices or offers, surface the best price by product, and move toward a cleaner sourcing decision without spreadsheet overload.</p>
                     </div>
                     <div class="quote-compare-hero-right">
                         <div class="shared-scope-card">
                             <div class="shared-scope-label">Current File</div>
                             <div class="shared-scope-summary" id="quoteDataScopeSummary">No analyzed file yet</div>
                             <div class="shared-scope-note">Uploading a new file replaces the current data.</div>
-                            <button type="button" class="secondary-btn shared-scope-reset-btn" data-reset-workspace>Reset all data</button>
+                            <div class="shared-scope-actions">
+                                <button type="button" class="secondary-btn shared-scope-continue-btn" id="quoteContinueAnalysisButton" data-qc-action="continue-analysis" hidden>Continue Analysis</button>
+                                <button type="button" class="secondary-btn shared-scope-reset-btn" data-reset-workspace>Reset all data</button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1050,8 +1187,8 @@
                 <div class="quote-compare-main">
                     <div class="quote-compare-editor-head">
                         <div>
-                            <div class="panel-label">Quote Compare</div>
-                            <h3 class="quote-compare-editor-title">Buyer Pricing Workflow</h3>
+                            <div class="panel-label">COMPARE PRICES</div>
+                            <h3 class="quote-compare-editor-title">Pricing Workflow</h3>
                             <p class="quote-results-copy">Move cleanly from upload or manual entry into mapping review and a sourcing-ready analysis summary.</p>
                         </div>
                     </div>
@@ -1134,7 +1271,7 @@
                     <li>All current analyses</li>
                     <li>All temporary working state</li>
                 </ul>
-                <p>Saved recipes remain available after reset. This action cannot be undone.</p>
+                <p>Saved recipes and notes remain available after reset. This action cannot be undone.</p>
             </div>
             <div class="workspace-reset-actions">
                 <button type="button" class="secondary-btn" id="workspaceResetCancelButton">Cancel</button>
@@ -1326,6 +1463,7 @@
     </script>
     <script defer src="{{ url_for('static', path='/js/access-code.js') }}"></script>
     <script defer src="{{ url_for('static', path='/js/workspace-reset.js') }}"></script>
+    <script defer src="{{ url_for('static', path='/js/workspace-notes.js') }}"></script>
     {% if active_view == 'guide' %}
     <script defer src="{{ url_for('static', path='/js/guide-assistant.js') }}"></script>
     {% endif %}

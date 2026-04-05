@@ -2,396 +2,306 @@
   "entries": [
     {
       "id": "beginner-flow",
-      "title": "Beginner workflow",
-      "related_section": "Guide Workspace",
+      "title": "Start with upload, then review the first useful screens",
+      "related_section": "Compare Prices",
       "intents": [
         "what do i do first",
         "where should i start",
-        "how do i use this tool",
-        "walk me through the workflow",
-        "beginner guide",
-        "step by step help"
+        "how do i begin",
+        "what should i do first in this product"
       ],
       "keywords": [
         "start",
-        "beginner",
-        "workflow",
-        "step by step",
-        "first"
+        "first",
+        "begin",
+        "workflow"
       ],
       "synonyms": [
         "getting started",
         "new user",
-        "how to begin"
+        "first steps"
       ],
       "example_questions": [
         "What do I do first?",
-        "How do I use this tool step by step?",
-        "Can you walk me through the workflow?"
+        "Where should I start?",
+        "How do I begin with this tool?"
       ],
-      "answer": "Use the analyzer in a simple decision flow: upload data first, review the biggest margin leaks next, compare suppliers where price gaps repeat, then finish with an executive-ready summary.",
-      "next_step": "Start in Upload & Analyze if you do not have results yet. If analysis already exists, go straight to Top Insights.",
+      "answer": "Begin in Compare Prices. The first job is simply to get a clean file into the product and make sure the required columns are mapped correctly. After that, move through the comparison view before using Product History or Recipes.",
+      "next_step": "Open Compare Prices and complete the upload and mapping flow first.",
       "actions": [
-        "go_upload",
-        "go_top_insights",
-        "go_workspace",
-        "go_ask_data"
-      ]
-    },
-    {
-      "id": "compare-suppliers",
-      "title": "Compare suppliers",
-      "related_section": "Top Insights",
-      "intents": [
-        "how do i compare suppliers",
-        "how to compare suppliers",
-        "compare supplier pricing",
-        "supplier comparison",
-        "how do i analyze suppliers",
-        "how can i analyse the suppliers",
-        "how can i find supplier differences"
-      ],
-      "intent_groups": [
-        "compare supplier",
-        "analyze supplier",
-        "supplier differences"
-      ],
-      "keywords": [
-        "compare suppliers",
-        "supplier pricing",
-        "supplier",
-        "pricing",
-        "vendor",
-        "supplier differences"
-      ],
-      "synonyms": [
-        "analyze supplier",
-        "compare vendor",
-        "supplier price",
-        "vendor price",
-        "price differences"
-      ],
-      "example_questions": [
-        "How can I analyse the suppliers?",
-        "How do I analyze suppliers?",
-        "How do I compare suppliers?",
-        "How can I find supplier differences?"
-      ],
-      "answer": "Use supplier comparison when you need to rank suppliers against each other for the same product. Focus on unit-price variance, identify the cheapest credible option, and use the gap to support a purchase decision or negotiation.",
-      "next_step": "Open the Workspace Table, isolate one product, then compare each supplier's unit price and savings opportunity side by side.",
-      "actions": [
-        "go_workspace"
+        "go_compare_prices"
       ],
       "workflow_steps": [
-        "Choose a product that appears from more than one supplier.",
-        "Open the Workspace Table and review all supplier rows for that product together.",
-        "Rank suppliers by unit price and savings opportunity to see the cheapest position clearly.",
-        "Use the price spread to decide whether to switch suppliers or renegotiate."
-      ]
-    },
-    {
-      "id": "review-supplier-pricing",
-      "title": "Review supplier pricing",
-      "related_section": "Top Insights",
-      "intents": [
-        "how do i review supplier pricing",
-        "how do i review a supplier",
-        "how do i inspect supplier pricing",
-        "how do i evaluate a supplier",
-        "how do i check supplier performance"
-      ],
-      "intent_groups": [
-        "review supplier",
-        "evaluate supplier",
-        "supplier pricing review"
-      ],
-      "keywords": [
-        "review supplier pricing",
-        "supplier review",
-        "supplier performance",
-        "price stability",
-        "consistency"
-      ],
-      "synonyms": [
-        "inspect supplier pricing",
-        "evaluate vendor pricing",
-        "supplier consistency",
-        "overpriced supplier"
-      ],
-      "example_questions": [
-        "How do I review supplier pricing?",
-        "How do I evaluate a supplier's pricing?",
-        "How do I check if one supplier is consistently expensive?"
-      ],
-      "answer": "Use supplier pricing review when you want to diagnose one supplier's overall behavior. Look for repeated overpay patterns, unstable pricing across similar items, and whether that supplier keeps appearing in the highest-risk rows.",
-      "next_step": "Start in Top Insights to see whether one supplier keeps driving margin leakage, then inspect that supplier across the Workspace Table.",
-      "actions": [
-        "go_top_insights",
-        "go_workspace"
-      ],
-      "workflow_steps": [
-        "Start in Top Insights and identify the supplier tied to the largest savings signal or risk pattern.",
-        "Open the Workspace Table and filter to that supplier only.",
-        "Review whether the supplier appears repeatedly in Overpay rows or unstable price ranges.",
-        "Use the pattern to decide whether the issue is isolated or part of a broader supplier performance problem."
-      ]
-    },
-    {
-      "id": "find-overpay-rows",
-      "title": "Find overpay rows",
-      "related_section": "Upload & Analyze",
-      "intents": [
-        "how do i find overpay rows",
-        "how to find overpay rows",
-        "find overpay rows",
-        "overpay rows"
-      ],
-      "keywords": [
-        "overpay",
-        "rows",
-        "status",
-        "savings"
-      ],
-      "synonyms": [
-        "paying too much",
-        "overspend rows",
-        "expensive lines"
-      ],
-      "example_questions": [
-        "How do I find rows where I am paying too much?",
-        "How can I spot overspend rows?"
-      ],
-      "answer": "Analyze a file first, then look for rows marked with an Overpay status and review their savings opportunity to see where current pricing sits above the visible benchmark.",
-      "next_step": "Run the analysis, then scan Top Insights and the Workspace Table for rows flagged as Overpay.",
-      "actions": [
-        "go_upload",
-        "go_top_insights",
-        "go_workspace"
-      ],
-      "workflow_steps": [
-        "Upload a file or open the saved analysis.",
-        "Review Top Insights for the biggest sources of margin leakage.",
-        "Open the Workspace Table and filter to Overpay status.",
-        "Sort by savings opportunity to see the most urgent rows first."
-      ]
-    },
-    {
-      "id": "use-quote-compare",
-      "title": "Use Quote Compare",
-      "related_section": "Quote Compare",
-      "intents": [
-        "how do i use quote compare",
-        "how to use quote compare",
-        "quote compare",
-        "compare quotes"
-      ],
-      "keywords": [
-        "quote compare",
-        "quotes",
-        "supplier offers",
-        "bids"
-      ],
-      "example_questions": [
-        "How do I use quote compare?",
-        "How do I compare supplier bids?"
-      ],
-      "answer": "Use Quote Compare to evaluate supplier offers side by side by product, then review the weighted recommendation based on price, delivery, and payment terms.",
-      "next_step": "Open Quote Compare, import supplier offers or use the demo, then review the recommended supplier by line item.",
-      "actions": [
-        "go_quote_compare"
-      ],
-      "workflow_steps": [
-        "Open Quote Compare and load supplier offers.",
-        "Review the weighted recommendation by product line.",
-        "Inspect delivery and payment terms before deciding.",
-        "Use the recommendation as a structured starting point, not as a blind automatic decision."
-      ]
-    },
-    {
-      "id": "use-recipes",
-      "title": "Use Recipes",
-      "related_section": "Recipes",
-      "intents": [
-        "how can i calculate recipe",
-        "how do i calculate a recipe",
-        "how do i calculate recipe cost",
-        "how do i calculate cost per recipe",
-        "how do i calculate ingredient cost",
-        "how do i calculate menu cost",
-        "recipe cost",
-        "food cost"
-      ],
-      "intent_groups": [
-        "recipe calculate",
-        "recipe cost",
-        "ingredient cost",
-        "menu cost"
-      ],
-      "keywords": [
-        "recipe",
-        "recipe cost",
-        "ingredient cost",
-        "menu cost",
-        "food cost"
-      ],
-      "synonyms": [
-        "calculate recipe",
-        "cost per recipe",
-        "recipe pricing",
-        "ingredient pricing"
-      ],
-      "example_questions": [
-        "How can I calculate recipe?",
-        "How do I calculate recipe cost?",
-        "How do I calculate cost per recipe?",
-        "How do I price ingredients in a recipe?"
-      ],
-      "answer": "Use Recipes to calculate the cost of a finished recipe from your analyzed purchasing data. Add each ingredient, choose the pricing mode, and the tool totals ingredient costs into a reusable recipe-level cost view.",
-      "next_step": "Open Recipes, create a new recipe, add ingredients from the analyzed product list, then review the total and per-ingredient cost breakdown.",
-      "actions": [
-        "go_recipes"
-      ],
-      "workflow_steps": [
-        "Open Recipes after you have analyzed purchasing data.",
-        "Create a new recipe and add each ingredient from the available product catalog.",
-        "Set quantities and choose the pricing mode you want to use.",
-        "Review the total recipe cost and the per-ingredient contribution before saving."
-      ]
-    },
-    {
-      "id": "use-filters",
-      "title": "Use filters",
-      "related_section": "Advanced Filters",
-      "intents": [
-        "how do i use filters",
-        "how to use filters",
-        "advanced filters",
-        "filter results"
-      ],
-      "keywords": [
-        "filters",
-        "advanced filters",
-        "product filter",
-        "supplier filter"
-      ],
-      "example_questions": [
-        "How do I filter the results?",
-        "How do I use supplier filters?"
-      ],
-      "answer": "Use filters after you identify the main cost drivers so you can narrow the view by product, supplier, or status without losing the larger pricing story.",
-      "next_step": "Start in Top Insights, then open the Workspace Table filters to isolate the product or supplier you want to inspect further.",
-      "actions": [
-        "go_top_insights",
-        "go_workspace"
-      ],
-      "workflow_steps": [
-        "Review Top Insights first so you know what you are narrowing toward.",
-        "Open Advanced Filters inside the Workspace Table.",
-        "Filter by product, supplier, or status based on the question you need to answer.",
-        "Reset filters after each drill-down so you keep context."
-      ]
-    },
-    {
-      "id": "ask-your-data",
-      "title": "Use Ask Your Data",
-      "related_section": "Ask Your Data",
-      "intents": [
-        "how do i use ask your data",
-        "how to use ask your data",
-        "ask your data",
-        "executive summary"
-      ],
-      "keywords": [
-        "ask your data",
-        "executive summary",
-        "questions",
-        "insights"
-      ],
-      "example_questions": [
-        "How do I use Ask Your Data?",
-        "Can I get an executive summary from the analysis?"
-      ],
-      "answer": "Ask Your Data is designed for analyzed results only. It turns the current visible dataset into short executive-style answers, recommended actions, and follow-up questions.",
-      "next_step": "Analyze a dataset first, then open Ask Your Data and ask about margin pressure, supplier risk, or renegotiation priorities.",
-      "actions": [
-        "go_ask_data"
-      ],
-      "workflow_steps": [
-        "Complete the analysis first so the assistant has real pricing evidence to summarize.",
-        "Open Ask Your Data after filtering the slice you care about.",
-        "Ask decision-focused questions such as margin pressure, supplier risk, or renegotiation priority.",
-        "Use the summary as an executive briefing layer above the row-level evidence."
+        "Upload a CSV or Excel pricing file in Compare Prices.",
+        "Confirm Product Name, Supplier, Unit, Quantity, Unit Price, and Date before continuing.",
+        "Use the comparison screen to review like-for-like supplier rows.",
+        "Open Product History only when you want extra trend context for a product."
       ]
     },
     {
       "id": "upload-and-mapping",
-      "title": "Upload and map data",
-      "related_section": "Upload & Analyze",
+      "title": "Upload a file and confirm the mapping",
+      "related_section": "Compare Prices",
       "intents": [
         "how do i upload a file",
-        "how to upload data",
-        "review mappings",
-        "column mappings",
-        "import a file",
-        "add a file"
+        "how do i upload data",
+        "how do i import a file",
+        "how do i confirm the mapping",
+        "how do i review mappings"
       ],
       "keywords": [
         "upload",
         "file",
-        "mappings",
+        "mapping",
         "columns",
         "import"
+      ],
+      "synonyms": [
+        "upload data",
+        "column mapping",
+        "import pricing file"
       ],
       "example_questions": [
         "How do I upload a file?",
         "How do I confirm the column mappings?",
-        "How do I import purchasing data?"
+        "How do I import pricing data?"
       ],
-      "answer": "Upload a CSV or Excel file, review the detected column mappings, and confirm them before analysis so the tool can align your fields to the required purchasing structure.",
-      "next_step": "Use Upload & Analyze, confirm the suggested mappings, then continue into the results view.",
+      "answer": "Treat upload and mapping as a setup task. Add the file, review the detected columns, and make sure each required field points to the correct source before you trust anything else on the screen.",
+      "next_step": "Upload the file and review each required mapping one by one.",
       "actions": [
-        "go_upload"
+        "go_quote_compare"
       ],
       "workflow_steps": [
-        "Open Upload & Analyze and add a CSV or Excel file.",
-        "Review the suggested field matches before running the analysis.",
-        "Confirm the mappings so product, supplier, quantity, unit price, and date fields are correct.",
-        "Continue into the results view once the file is validated."
+        "Upload the supplier pricing file in Compare Prices.",
+        "Review the required field mapping before analysis.",
+        "Fix any wrong matches for product, supplier, unit, quantity, unit price, or date.",
+        "Start analysis only after the required fields are correct."
       ]
     },
     {
-      "id": "savings-opportunities",
-      "title": "Find savings opportunities",
-      "related_section": "Top Insights",
+      "id": "compare-suppliers",
+      "title": "Compare suppliers on the same product and unit",
+      "related_section": "Compare Prices",
       "intents": [
-        "how do i find savings opportunities",
-        "how to find savings opportunities",
-        "savings opportunities",
-        "where are the savings"
+        "how do i compare suppliers",
+        "how should i compare suppliers here",
+        "how do i compare supplier pricing",
+        "supplier comparison"
       ],
       "keywords": [
-        "savings",
-        "opportunities",
-        "recoverable spend",
-        "overpay",
-        "margin"
+        "compare suppliers",
+        "supplier",
+        "pricing",
+        "unit price"
+      ],
+      "synonyms": [
+        "compare vendor pricing",
+        "supplier price comparison",
+        "supplier differences"
       ],
       "example_questions": [
-        "Where are the savings opportunities?",
-        "How do I find the biggest recoverable spend?",
-        "How do I identify margin opportunities?"
+        "How do I compare suppliers?",
+        "How should I compare suppliers here?",
+        "How do I compare supplier pricing?"
       ],
-      "answer": "Focus on the products and suppliers with the largest visible savings opportunity first because those represent the clearest recoverable spend in the current dataset.",
-      "next_step": "Use Top Insights to identify the highest-value opportunity, then confirm the supporting rows in the Workspace Table.",
+      "answer": "The key idea is consistency. Supplier comparison is useful only when the same item is being viewed on the same unit and buying basis. Once that is true, you can read the comparison screen as a direct price check instead of guessing whether the rows are really equivalent.",
+      "next_step": "Use the comparison view and check unit consistency before comparing prices.",
       "actions": [
-        "go_top_insights",
-        "go_workspace"
+        "go_quote_compare"
       ],
       "workflow_steps": [
-        "Start with Top Insights to see the largest recoverable spend first.",
-        "Confirm the underlying rows in the Workspace Table.",
-        "Prioritize high-volume items before chasing small isolated price gaps.",
-        "Use the evidence to plan supplier renegotiation or buying decisions."
+        "Open a product that appears across multiple suppliers.",
+        "Confirm the same unit and quantity basis before trusting the price gap.",
+        "Rank suppliers by unit price for that product.",
+        "Use the result to decide whether to switch suppliers or renegotiate."
+      ]
+    },
+    {
+      "id": "comparison-gaps",
+      "title": "Rows are not comparable when the buying basis is different",
+      "related_section": "Compare Prices",
+      "intents": [
+        "why are some rows not comparable",
+        "why are rows not comparable",
+        "why cant some rows be compared",
+        "why do some rows not compare"
+      ],
+      "keywords": [
+        "not comparable",
+        "compare",
+        "unit mismatch",
+        "quantity"
+      ],
+      "synonyms": [
+        "comparison gaps",
+        "rows cannot be compared",
+        "unit mismatch"
+      ],
+      "example_questions": [
+        "Why are some rows not comparable?",
+        "Why can't some rows be compared?"
+      ],
+      "answer": "A row becomes non-comparable when the buying basis changes. That usually means the unit, quantity, or mapping is different enough that the screen cannot safely present the rows as a direct side-by-side supplier decision.",
+      "next_step": "Review the unit, quantity basis, and mapped fields before treating the rows as directly comparable.",
+      "actions": [
+        "go_quote_compare"
+      ],
+      "workflow_steps": [
+        "Review the product name and unit together.",
+        "Check whether the quantity basis is the same across suppliers.",
+        "Confirm the required fields were mapped correctly.",
+        "Only treat normalized rows as direct supplier comparisons."
+      ]
+    },
+    {
+      "id": "product-history",
+      "title": "Product History shows price movement for one product over time",
+      "related_section": "Product History",
+      "intents": [
+        "what does product history show",
+        "what does the product history show",
+        "how does product history help",
+        "what is product history for"
+      ],
+      "keywords": [
+        "product history",
+        "history",
+        "price movement",
+        "trend"
+      ],
+      "synonyms": [
+        "price history",
+        "product trend",
+        "history view"
+      ],
+      "example_questions": [
+        "What does Product History show?",
+        "How does Product History help?"
+      ],
+      "answer": "Product History is a context screen. It helps you read how one product’s visible price changes over time so you can tell whether you are looking at a repeated pattern, a temporary spike, or something that needs a second look before you act.",
+      "next_step": "Open Product History when you want time-based context for a product you are already reviewing.",
+      "actions": [
+        "go_quote_compare"
+      ],
+      "workflow_steps": [
+        "Choose a product that stands out in Step 3-Full table section.",
+        "Open Product History for that product. You can also double click a product name in the product history screen to open Product History for that product.",
+        "Check whether the higher price repeats across dates or suppliers.",
+        "Use that pattern to decide whether you are seeing drift, timing, or a one-off purchase."
+        
+      ]
+    },
+    {
+      "id": "reset-all-data",
+      "title": "Reset all data clears active analysis, not every saved workspace record",
+      "related_section": "Compare Prices",
+      "intents": [
+        "what does reset all data remove",
+        "what does reset all data do",
+        "what happens when i reset all data",
+        "what does reset remove"
+      ],
+      "keywords": [
+        "reset all data",
+        "reset",
+        "remove",
+        "clear"
+      ],
+      "synonyms": [
+        "clear analysis",
+        "reset workspace",
+        "reset current data"
+      ],
+      "example_questions": [
+        "What does Reset all data remove?",
+        "What happens when I use Reset all data?"
+      ],
+      "answer": "Use Reset all data when you want a clean working state for a new upload. Think of it as clearing the active comparison session rather than erasing every saved item across the product.",
+      "next_step": "Choose Reset all data only when you are ready to replace the current active analysis session.",
+      "actions": [
+        "go_quote_compare",
+        "go_recipes"
+      ],
+      "workflow_steps": [
+        "Use Reset all data when the current uploaded pricing set is no longer the one you want to analyze.",
+        "Expect the active analysis context to clear.",
+        "Re-upload a new file if you want fresh comparison results.",
+        "Check separately saved workspaces like Notes or Recipes if you want to confirm what still remains."
+      ]
+    },
+    {
+      "id": "saved-recipes-reset",
+      "title": "Saved recipes stay available after reset",
+      "related_section": "Recipes",
+      "intents": [
+        "do saved recipes stay after reset",
+        "are saved recipes kept after reset",
+        "does reset remove saved recipes",
+        "what happens to saved recipes after reset"
+      ],
+      "keywords": [
+        "saved recipes",
+        "recipes",
+        "reset",
+        "stay"
+      ],
+      "synonyms": [
+        "recipe archive after reset",
+        "reset recipes",
+        "saved recipe records"
+      ],
+      "example_questions": [
+        "Do saved recipes stay after reset?",
+        "Does Reset all data remove saved recipes?"
+      ],
+      "answer": "Yes. Saved recipes remain in the Recipe Archive after reset. Reset affects the active analysis workspace, while the archive keeps recipe snapshots available for reopening later.",
+      "next_step": "Open Recipes and use the archive if you want to revisit a saved recipe after reset.",
+      "actions": [
+        "go_recipes"
+      ],
+      "workflow_steps": [
+        "Reset the active analysis only when you want a fresh pricing source.",
+        "Return to Recipes after reset.",
+        "Open the saved snapshot archive to find existing recipes.",
+        "Recalculate later if you want those recipes against a new uploaded price set."
+      ]
+    },
+    {
+      "id": "analyze-uploaded-price-data",
+      "title": "Uploaded price data supports comparison, history, and recipe costing",
+      "related_section": "Compare Prices",
+      "intents": [
+        "what can i analyze from uploaded price data",
+        "what can i learn from uploaded price data",
+        "what does uploaded pricing data show",
+        "what can this product analyze from my uploaded file"
+      ],
+      "keywords": [
+        "uploaded price data",
+        "analyze",
+        "pricing data",
+        "file"
+      ],
+      "synonyms": [
+        "uploaded pricing file",
+        "price analysis",
+        "what can i analyze"
+      ],
+      "example_questions": [
+        "What can I analyze from uploaded price data?",
+        "What can I learn from my uploaded pricing file?"
+      ],
+      "answer": "Uploaded price data powers three main kinds of work in the product: supplier comparison in Compare Prices, time-based review in Product History, and recipe costing in Recipes. In other words, one upload can support comparison, interpretation, and recipe pricing workflows.",
+      "next_step": "Start in Compare Prices, then branch into Product History or Recipes depending on the task you want to do.",
+      "actions": [
+        "go_compare_prices",
+        "go_recipes"
+      ],
+      "workflow_steps": [
+        "Use Step 3 to review comparable supplier price gaps.",
+        "Check non-comparable rows before trusting a savings number.",
+        "Use Product History to inspect movement over time for one product.",
+        "Open Recipes if you want to apply the uploaded pricing data to recipe costing."
       ]
     }
   ]

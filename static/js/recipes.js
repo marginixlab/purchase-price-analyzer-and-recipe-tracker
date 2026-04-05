@@ -100,7 +100,7 @@
     const PRICING_GOAL_HELPERS = {
         food_cost_pct: "Target Food Cost % estimates the menu price by keeping food cost at your chosen percentage.",
         gross_margin_pct: "Target Gross Margin % estimates the menu price needed to protect your preferred gross margin.",
-        markup_pct: "Markup % estimates the menu price by adding your chosen percentage on top of cost per portion."
+        markup_pct: "Markup % estimates the menu price by adding your chosen percentage on top of total recipe cost."
     };
 
     function getElements() {
@@ -138,7 +138,9 @@
             recipePricingGoalHelper: document.getElementById("recipePricingGoalHelper"),
             recipePricingTotalCost: document.getElementById("recipePricingTotalCost"),
             recipePricingCostPerPortion: document.getElementById("recipePricingCostPerPortion"),
+            recipeSellingPricePerPortionValue: document.getElementById("recipeSellingPricePerPortionValue"),
             recipeGrossProfitValue: document.getElementById("recipeGrossProfitValue"),
+            recipeGrossProfitSubtext: document.getElementById("recipeGrossProfitSubtext"),
             recipeGrossMarginValue: document.getElementById("recipeGrossMarginValue"),
             recipeFoodCostValue: document.getElementById("recipeFoodCostValue"),
             recipeSuggestedPriceValue: document.getElementById("recipeSuggestedPriceValue"),
@@ -165,7 +167,13 @@
     }
 
     function formatCurrency(value) {
-        return `$${Number(value || 0).toFixed(2)}`;
+        const numericValue = Number(value || 0);
+        return Number.isFinite(numericValue)
+            ? numericValue.toLocaleString("en-US", {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            })
+            : "0.00";
     }
 
     function formatPercent(value) {
@@ -216,8 +224,8 @@
         return Number.isFinite(parsedValue) && parsedValue >= 0 ? parsedValue : null;
     }
 
-    function getSuggestedPriceFromGoal(costPerPortion, goalType, goalValue) {
-        const safeCost = parsePositiveNumber(costPerPortion);
+    function getSuggestedPriceFromGoal(totalRecipeCost, goalType, goalValue) {
+        const safeCost = parsePositiveNumber(totalRecipeCost);
         const safeGoalValue = parseGoalRatePercent(goalValue);
         const normalizedGoalType = getValidPricingGoalType(goalType);
         if (safeCost === null || safeGoalValue === null) {
@@ -525,8 +533,8 @@
     }
 
     function resetCalculationView(elements) {
-        if (elements.recipeTotalCost) elements.recipeTotalCost.textContent = "$0.00";
-        if (elements.recipeCostPerPortion) elements.recipeCostPerPortion.textContent = "$0.00";
+        if (elements.recipeTotalCost) elements.recipeTotalCost.textContent = "0.00";
+        if (elements.recipeCostPerPortion) elements.recipeCostPerPortion.textContent = "0.00";
         if (elements.recipeMainCostDriver) elements.recipeMainCostDriver.textContent = "No recipe yet";
         if (elements.recipeMainCostDriverCopy) {
             elements.recipeMainCostDriverCopy.textContent = "The ingredient driving the largest share of recipe cost will appear here.";
@@ -537,6 +545,7 @@
         }
         renderPricingPanel(elements, {
             calculation: null,
+            draft: createEmptyRecipe(),
             sellingPrice: "",
             pricingGoalType: DEFAULT_PRICING_GOAL_TYPE,
             pricingGoalValue: "",
@@ -548,6 +557,7 @@
         const calculation = state?.calculation || null;
         const totalRecipeCost = Number(calculation?.total_recipe_cost || 0);
         const costPerPortion = Number(calculation?.cost_per_portion || 0);
+        const yieldPortions = Number(state?.draft?.yield_portions || 0);
         const sellingPriceValue = state?.sellingPrice ?? elements?.recipeSellingPriceInput?.value ?? "";
         const pricingGoalType = getValidPricingGoalType(
             state?.pricingGoalType
@@ -556,14 +566,23 @@
         );
         const goalValue = state?.pricingGoalValue ?? state?.targetFoodCostPct ?? elements?.recipeTargetFoodCostInput?.value ?? "";
         const sellingPrice = parsePositiveNumber(sellingPriceValue);
-        const grossProfit = sellingPrice === null ? null : sellingPrice - costPerPortion;
-        const grossMarginPct = sellingPrice === null ? null : ((sellingPrice - costPerPortion) / sellingPrice) * 100;
-        const foodCostPct = sellingPrice === null ? null : (costPerPortion / sellingPrice) * 100;
-        const suggestedSellingPrice = getSuggestedPriceFromGoal(costPerPortion, pricingGoalType, goalValue);
+        const suggestedSellingPrice = getSuggestedPriceFromGoal(totalRecipeCost, pricingGoalType, goalValue);
+        const effectiveSellingPriceTotal = suggestedSellingPrice ?? sellingPrice;
+        const sellingPricePerPortion = effectiveSellingPriceTotal === null || !Number.isFinite(yieldPortions) || yieldPortions <= 0
+            ? null
+            : effectiveSellingPriceTotal / yieldPortions;
+        const grossProfitPerPortion = sellingPricePerPortion === null ? null : sellingPricePerPortion - costPerPortion;
+        const grossProfit = grossProfitPerPortion === null || !Number.isFinite(yieldPortions) || yieldPortions <= 0
+            ? null
+            : grossProfitPerPortion * yieldPortions;
+        const grossMarginPct = effectiveSellingPriceTotal === null || grossProfit === null ? null : ((grossProfit / effectiveSellingPriceTotal) * 100);
+        const foodCostPct = effectiveSellingPriceTotal === null ? null : ((totalRecipeCost / effectiveSellingPriceTotal) * 100);
 
         return {
             totalRecipeCost,
             costPerPortion,
+            sellingPricePerPortion,
+            grossProfitPerPortion,
             grossProfit,
             grossMarginPct,
             foodCostPct,
@@ -610,8 +629,18 @@
         if (elements.recipePricingCostPerPortion) {
             elements.recipePricingCostPerPortion.textContent = formatCurrency(metrics.costPerPortion);
         }
+        if (elements.recipeSellingPricePerPortionValue) {
+            elements.recipeSellingPricePerPortionValue.textContent = metrics.sellingPricePerPortion === null
+                ? "--"
+                : formatCurrency(metrics.sellingPricePerPortion);
+        }
         if (elements.recipeGrossProfitValue) {
-            elements.recipeGrossProfitValue.textContent = metrics.grossProfit === null ? "--" : formatCurrency(metrics.grossProfit);
+            elements.recipeGrossProfitValue.textContent = metrics.grossProfitPerPortion === null ? "--" : formatCurrency(metrics.grossProfitPerPortion);
+        }
+        if (elements.recipeGrossProfitSubtext) {
+            elements.recipeGrossProfitSubtext.textContent = metrics.grossProfit === null
+                ? "Total: --"
+                : `Total: ${formatCurrency(metrics.grossProfit)}`;
         }
         if (elements.recipeGrossMarginValue) {
             elements.recipeGrossMarginValue.textContent = metrics.grossMarginPct === null ? "--" : formatPercent(metrics.grossMarginPct);
@@ -742,11 +771,11 @@
         const normalizedQuery = String(query || "").trim().toLowerCase();
         const products = Array.isArray(state.products) ? state.products : [];
         if (!normalizedQuery) {
-            return products.slice(0, 80);
+            return products;
         }
         return products.filter((product) => (
             String(product.product_name || "").toLowerCase().includes(normalizedQuery)
-        )).slice(0, 80);
+        ));
     }
 
     function formatRecipeUpdatedAt(value) {
@@ -784,6 +813,51 @@
             ? state.recipes.filter((recipe) => String(recipe.name || "").toLowerCase().includes(query))
             : state.recipes;
         return getSortedRecipes(recipes, state.recipeLibrarySort);
+    }
+
+    function getArchivePricingMetrics(recipe) {
+        const costPerPortion = Number(recipe?.cost_per_portion || 0);
+        const yieldPortions = Number(recipe?.yield_portions || 0);
+        const pricingGoalType = getValidPricingGoalType(recipe?.pricing_goal_type || DEFAULT_PRICING_GOAL_TYPE);
+        const pricingGoalValue = Number(recipe?.pricing_goal_value || recipe?.target_food_cost_pct || 0);
+        const savedSellingPriceTotal = Number(recipe?.selling_price || 0);
+        const savedSellingPricePerPortion = savedSellingPriceTotal > 0 && yieldPortions > 0
+            ? savedSellingPriceTotal / yieldPortions
+            : null;
+        const markupDerivedSellingPricePerPortion = pricingGoalType === "markup_pct" && pricingGoalValue >= 0 && costPerPortion > 0
+            ? costPerPortion * (1 + (pricingGoalValue / 100))
+            : null;
+        const profitabilitySellingPricePerPortion = savedSellingPricePerPortion !== null
+            ? savedSellingPricePerPortion
+            : markupDerivedSellingPricePerPortion;
+        const suggestedSellingPricePerPortion = pricingGoalValue >= 0 && costPerPortion > 0
+            ? Number(getSuggestedPriceFromGoal(costPerPortion, pricingGoalType, pricingGoalValue) || 0)
+            : 0;
+        const suggestedSellingPriceTotal = suggestedSellingPricePerPortion > 0 && yieldPortions > 0
+            ? suggestedSellingPricePerPortion * yieldPortions
+            : 0;
+        const hasValidProfitabilityPrice = profitabilitySellingPricePerPortion !== null && profitabilitySellingPricePerPortion > 0;
+        const grossProfitPerPortion = hasValidProfitabilityPrice
+            ? profitabilitySellingPricePerPortion - costPerPortion
+            : null;
+        const grossProfitTotal = grossProfitPerPortion !== null && yieldPortions > 0
+            ? grossProfitPerPortion * yieldPortions
+            : null;
+        const grossMarginPct = hasValidProfitabilityPrice && grossProfitPerPortion !== null
+            ? (grossProfitPerPortion / profitabilitySellingPricePerPortion) * 100
+            : null;
+        const foodCostPct = hasValidProfitabilityPrice
+            ? (costPerPortion / profitabilitySellingPricePerPortion) * 100
+            : null;
+
+        return {
+            suggestedSellingPriceTotal: suggestedSellingPriceTotal > 0 ? suggestedSellingPriceTotal : null,
+            suggestedSellingPricePerPortion: suggestedSellingPricePerPortion > 0 ? suggestedSellingPricePerPortion : null,
+            grossProfitPerPortion,
+            grossProfitTotal,
+            grossMarginPct,
+            foodCostPct
+        };
     }
 
     function renderIngredients(elements, state) {
@@ -989,6 +1063,7 @@
         const archivedGoalType = getValidPricingGoalType(selectedRecipe.pricing_goal_type || DEFAULT_PRICING_GOAL_TYPE);
         const archivedGoalLabel = PRICING_GOAL_LABELS[archivedGoalType] || PRICING_GOAL_LABELS[DEFAULT_PRICING_GOAL_TYPE];
         const archivedGoalValue = Number(selectedRecipe.pricing_goal_value || selectedRecipe.target_food_cost_pct || 0);
+        const archivePricingMetrics = getArchivePricingMetrics(selectedRecipe);
         elements.recipeLibraryDetail.innerHTML = `
             <div class="recipes-library-detail-card">
                 <div class="panel-label">Archived Snapshot</div>
@@ -1005,31 +1080,36 @@
                     </div>
                 </div>
                 <div class="recipes-library-detail-section">
-                    <div class="panel-label">Pricing Snapshot</div>
+                    <div class="panel-label">Profitability Outputs</div>
                     <div class="recipes-library-detail-pricing-grid">
                         <div class="recipes-library-detail-row">
-                            <strong>Selling Price</strong>
-                            <span>${formatOptionalCurrency(selectedRecipe.selling_price)}</span>
-                        </div>
-                        <div class="recipes-library-detail-row">
                             <strong>Gross Profit</strong>
-                            <span>${formatOptionalCurrency(selectedRecipe.gross_profit)}</span>
+                            <span>${archivePricingMetrics.grossProfitPerPortion === null ? "--" : `${formatCurrency(archivePricingMetrics.grossProfitPerPortion)} / portion | Total: ${formatCurrency(archivePricingMetrics.grossProfitTotal)}`}</span>
                         </div>
                         <div class="recipes-library-detail-row">
                             <strong>Gross Margin %</strong>
-                            <span>${formatOptionalPercent(selectedRecipe.gross_margin_pct)}</span>
+                            <span>${archivePricingMetrics.grossMarginPct === null ? "--" : formatPercent(archivePricingMetrics.grossMarginPct)}</span>
                         </div>
                         <div class="recipes-library-detail-row">
                             <strong>Food Cost %</strong>
-                            <span>${formatOptionalPercent(selectedRecipe.food_cost_pct)}</span>
+                            <span>${archivePricingMetrics.foodCostPct === null ? "--" : formatPercent(archivePricingMetrics.foodCostPct)}</span>
                         </div>
+                    </div>
+                </div>
+                <div class="recipes-library-detail-section">
+                    <div class="panel-label">Target &amp; Suggested Pricing</div>
+                    <div class="recipes-library-detail-pricing-grid">
                         <div class="recipes-library-detail-row">
                             <strong>${escapeHtml(archivedGoalLabel)}</strong>
                             <span>${formatOptionalPercent(archivedGoalValue)}</span>
                         </div>
                         <div class="recipes-library-detail-row">
-                            <strong>Suggested Selling Price</strong>
-                            <span>${formatOptionalCurrency(selectedRecipe.suggested_selling_price)}</span>
+                            <strong>Suggested Selling Price (Total)</strong>
+                            <span>${archivePricingMetrics.suggestedSellingPriceTotal === null ? "--" : formatCurrency(archivePricingMetrics.suggestedSellingPriceTotal)}</span>
+                        </div>
+                        <div class="recipes-library-detail-row">
+                            <strong>Suggested Selling Price Per Portion</strong>
+                            <span>${archivePricingMetrics.suggestedSellingPricePerPortion === null ? "--" : formatCurrency(archivePricingMetrics.suggestedSellingPricePerPortion)}</span>
                         </div>
                     </div>
                 </div>
@@ -1044,7 +1124,10 @@
                         `).join("") : '<div class="recipes-library-empty-copy">No archived ingredients saved for this recipe.</div>'}
                     </div>
                 </div>
-                <div class="recipes-library-detail-note">Archived recipes are view-only in V1. Use the live builder to calculate a fresh version from the current uploaded file.</div>
+                <div class="recipes-library-actions">
+                    <button type="button" class="action-btn" data-load-recipe-builder="${escapeHtml(selectedRecipe.recipe_id)}">Open in Builder</button>
+                </div>
+                <div class="recipes-library-detail-note">Open this snapshot in Recipe Builder to continue editing and save updated values.</div>
             </div>
         `;
     }
@@ -1081,7 +1164,6 @@
                             <div class="recipes-library-main-copy">
                                 <div class="recipes-library-name">${escapeHtml(recipe.name || "Untitled recipe")}</div>
                                 <div class="recipes-library-meta">Updated ${escapeHtml(updatedLabel)} | ${ingredientCount} ingredient${ingredientCount === 1 ? "" : "s"}</div>
-                                <div class="recipes-library-preview">Quick preview: ${escapeHtml(previewIngredient)} | Sell ${formatOptionalCurrency(recipe.selling_price)} | Last cost ${formatCurrency(recipe.total_recipe_cost || 0)}</div>
                             </div>
                         </div>
                         <div class="recipes-library-metric">
@@ -1130,8 +1212,9 @@
             state.draft.ingredients = [createEmptyIngredient()];
         }
         if (elements.recipeEditorTitle) {
-            elements.recipeEditorTitle.textContent = "Create a recipe";
-            elements.recipeEditorTitle.classList.remove("is-editing");
+            const isEditing = Boolean(state.draft.recipe_id);
+            elements.recipeEditorTitle.textContent = isEditing ? "Edit recipe" : "Create a recipe";
+            elements.recipeEditorTitle.classList.toggle("is-editing", isEditing);
         }
         if (elements.recipeNameInput) elements.recipeNameInput.value = state.draft.name || "";
         if (elements.recipeYieldInput) elements.recipeYieldInput.value = state.draft.yield_portions || 1;
@@ -1391,6 +1474,36 @@
         setStatus(elements, `Viewing archived recipe: ${recipe.name}`, "info", state);
     }
 
+    function loadRecipeIntoBuilder(elements, state, recipeId) {
+        const recipe = state.recipes.find((item) => item.recipe_id === recipeId);
+        if (!recipe) {
+            return;
+        }
+        state.activeRecipeId = recipeId;
+        state.deleteConfirmVisible = false;
+        state.deleteTargetRecipeId = null;
+        state.openProductDropdownIndex = null;
+        state.recipeLibraryOpen = false;
+        state.draft = normalizeRecipeDraft(recipe, state);
+        state.calculation = {
+            pricing_mode: state.draft.pricing_mode,
+            pricing_mode_label: (state.pricingModes.find((mode) => mode.value === state.draft.pricing_mode)?.label) || "Pricing mode",
+            total_recipe_cost: Number(state.draft.total_recipe_cost || 0),
+            cost_per_portion: Number(state.draft.cost_per_portion || 0),
+            main_cost_driver: null,
+            ingredient_breakdown: []
+        };
+        state.sellingPrice = state.draft.selling_price > 0 ? String(state.draft.selling_price) : "";
+        state.pricingGoalType = getValidPricingGoalType(state.draft.pricing_goal_type || DEFAULT_PRICING_GOAL_TYPE);
+        state.pricingGoalValue = state.draft.pricing_goal_value > 0 ? String(state.draft.pricing_goal_value) : "";
+        state.targetFoodCostPct = state.pricingGoalValue;
+        renderRecipeCollections(elements, state);
+        renderEditor(elements, state);
+        renderCalculation(elements, state.calculation);
+        scheduleCalculation(elements, state);
+        setStatus(elements, `Loaded "${recipe.name}" into Recipe Builder for editing.`, "success", state);
+    }
+
     function resetDraftAfterDelete(elements, state) {
         state.activeRecipeId = null;
         state.deleteConfirmVisible = false;
@@ -1434,20 +1547,30 @@
                 method: "POST",
                 body: JSON.stringify(payload)
             });
-            state.recipes = data.recipes || [];
+            state.recipes = (data.recipes || []).map((recipe) => normalizeRecipeDraft(recipe, state));
             state.activeRecipeId = data.recipe?.recipe_id || null;
             state.deleteConfirmVisible = false;
             state.deleteTargetRecipeId = null;
-            state.draft = createEmptyRecipe();
-            state.calculation = null;
-            state.sellingPrice = "";
-            state.pricingGoalType = DEFAULT_PRICING_GOAL_TYPE;
-            state.pricingGoalValue = "";
-            state.targetFoodCostPct = "";
+            state.openProductDropdownIndex = null;
+            state.recipeLibraryOpen = false;
+            state.draft = normalizeRecipeDraft(data.recipe || payload, state);
+            state.calculation = {
+                pricing_mode: state.draft.pricing_mode,
+                pricing_mode_label: (state.pricingModes.find((mode) => mode.value === state.draft.pricing_mode)?.label) || "Pricing mode",
+                total_recipe_cost: Number(state.draft.total_recipe_cost || 0),
+                cost_per_portion: Number(state.draft.cost_per_portion || 0),
+                main_cost_driver: null,
+                ingredient_breakdown: []
+            };
+            state.sellingPrice = state.draft.selling_price > 0 ? String(state.draft.selling_price) : "";
+            state.pricingGoalType = getValidPricingGoalType(state.draft.pricing_goal_type || DEFAULT_PRICING_GOAL_TYPE);
+            state.pricingGoalValue = state.draft.pricing_goal_value > 0 ? String(state.draft.pricing_goal_value) : "";
+            state.targetFoodCostPct = state.pricingGoalValue;
             renderRecipeCollections(elements, state);
             renderEditor(elements, state);
-            renderCalculation(elements, null);
-            setStatus(elements, `${data.message || "Recipe saved successfully"}. Open View All Recipes to review the archived snapshot.`, "success", state);
+            renderCalculation(elements, state.calculation);
+            scheduleCalculation(elements, state);
+            setStatus(elements, data.message || "Recipe saved successfully.", "success", state);
         } catch (error) {
             setStatus(elements, error.message, "error", state);
         }
@@ -1925,6 +2048,12 @@
                     return;
                 }
 
+                const loadButton = event.target.closest("[data-load-recipe-builder]");
+                if (loadButton) {
+                    loadRecipeIntoBuilder(elements, state, loadButton.dataset.loadRecipeBuilder || "");
+                    return;
+                }
+
                 const openButton = event.target.closest("[data-open-library-recipe]");
                 if (!openButton) {
                     return;
@@ -1942,6 +2071,29 @@
                 }
                 event.preventDefault();
                 openRecipe(elements, state, openTarget.dataset.openLibraryRecipe || "");
+            });
+        }
+
+        if (elements.recipeLibraryDetail && elements.recipeLibraryDetail.dataset.bound !== "true") {
+            elements.recipeLibraryDetail.dataset.bound = "true";
+            elements.recipeLibraryDetail.addEventListener("click", (event) => {
+                const loadButton = event.target.closest("[data-load-recipe-builder]");
+                if (!loadButton) {
+                    return;
+                }
+                loadRecipeIntoBuilder(elements, state, loadButton.dataset.loadRecipeBuilder || "");
+            });
+
+            elements.recipeLibraryDetail.addEventListener("keydown", (event) => {
+                if (event.key !== "Enter" && event.key !== " ") {
+                    return;
+                }
+                const loadButton = event.target.closest("[data-load-recipe-builder]");
+                if (!loadButton) {
+                    return;
+                }
+                event.preventDefault();
+                loadRecipeIntoBuilder(elements, state, loadButton.dataset.loadRecipeBuilder || "");
             });
         }
 

@@ -10,7 +10,7 @@
         "Which supplier has the highest pricing risk?"
     ];
 
-    const parseMoney = (value) => parseFloat(String(value || "").replace(/\$/g, "").replace(/,/g, "").trim()) || 0;
+    const parseMoney = (value) => parseFloat(String(value || "").replace(/[^0-9.-]/g, "").trim()) || 0;
     const parsePct = (value) => parseFloat(String(value || "").replace(/%/g, "").trim()) || 0;
 
     function getCellByKey(cells, key, fallbackIndex) {

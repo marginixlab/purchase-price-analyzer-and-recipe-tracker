@@ -18,8 +18,16 @@
     const QUOTE_COMPARE_SCROLL_KEY = "quote_compare_scroll_v1";
     const QUOTE_COMPARE_STATE_KEY = "quote_compare_state_v1";
     const QUOTE_COMPARE_ACTIVE_SESSION_KEY = "quote_compare_active_session_v1";
+    const QUOTE_COMPARE_LAST_SCREEN_KEY = "quote_compare_last_screen_v1";
+    const QUOTE_COMPARE_MAPPING_MEMORY_KEY = "quote_compare_mapping_memory_v1";
     const QUOTE_COMPARE_HISTORY_COLUMNS_KEY = "quote_compare_history_columns_v1";
     const QUOTE_COMPARE_HISTORY_COLUMNS_ORDER_KEY = "quote_compare_history_columns_order_v1";
+    const OPPORTUNITY_CARD_BATCH_SIZE = 24;
+    const ANALYSIS_ROW_HEIGHT = 132;
+    const ANALYSIS_ROW_EXPANDED_HEIGHT = 324;
+    const ANALYSIS_VIRTUAL_OVERSCAN = 6;
+    const HISTORY_ROW_HEIGHT = 46;
+    const HISTORY_VIRTUAL_OVERSCAN = 14;
     const HISTORY_COLUMN_DEFINITIONS = [
         { key: "quoteDate", label: "Date", essential: true, headerClassName: "qc2-history-cell-date", cellClassName: "qc2-history-cell-date", render: (row) => escapeHtml(formatDate(row.quoteDate || row.createdAt)) },
         { key: "productName", label: "Product", essential: true, headerClassName: "qc2-history-cell-product", cellClassName: "qc2-history-cell-product", render: (row) => escapeHtml(row.productName) },
@@ -105,7 +113,8 @@
             workspace: document.getElementById("quoteCompareWorkspaceView"),
             shell: document.getElementById("quoteCompareShell"),
             app: document.getElementById("quoteCompareApp"),
-            quoteDataScopeSummary: document.getElementById("quoteDataScopeSummary")
+            quoteDataScopeSummary: document.getElementById("quoteDataScopeSummary"),
+            continueAnalysisButton: document.getElementById("quoteContinueAnalysisButton")
         };
     }
 
@@ -121,13 +130,52 @@
         elements.workspace.setAttribute("data-qc-ready", isReady ? "true" : "false");
     }
 
+    function updateCurrentFileSummary(elements, state) {
+        if (!elements.quoteDataScopeSummary) return;
+        const fileName = String(state.file?.name || state.uploadReview?.filename || "").trim();
+        if (!fileName) return;
+        if (state.currentScreen === "review" || Number(state.currentStep || 0) === 2) {
+            elements.quoteDataScopeSummary.textContent = `Current File • ${fileName}`;
+            return;
+        }
+        const summary = state.dataScopeSummary || {};
+        const rowCount = Number(summary.row_count || 0);
+        const productCount = Number(summary.product_count || 0);
+        if (rowCount) {
+            elements.quoteDataScopeSummary.textContent = `${fileName} • ${productCount} products • ${rowCount} rows`;
+        }
+    }
+
+    function shouldResumeQuoteCompareSession() {
+        try {
+            return new URLSearchParams(window.location.search || "").get("resume") === "1";
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function clearQuoteCompareResumeFlag() {
+        try {
+            const url = new URL(window.location.href);
+            if (url.searchParams.get("resume") !== "1") {
+                return;
+            }
+            url.searchParams.delete("resume");
+            window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+        } catch (error) {
+            // Ignore URL cleanup failures.
+        }
+    }
+
     async function refreshSharedScopeSummary(elements, state) {
         if (!elements.quoteDataScopeSummary) {
+            updateContinueAnalysisButton(elements, state);
             return;
         }
         try {
             const data = await fetchJson("/analysis/scope-bootstrap");
             state.dataScopeSummary = data.scope_summary || null;
+            state.hasSharedScopeAnalysis = Boolean(data?.has_analysis);
             const summary = state.dataScopeSummary || {};
             const rowCount = Number(summary.row_count || 0);
             const productCount = Number(summary.product_count || 0);
@@ -136,8 +184,57 @@
                 ? `${scopeLabel} • ${productCount} products • ${rowCount} rows`
                 : `${scopeLabel} • No analyzed file yet`;
         } catch (error) {
+            state.hasSharedScopeAnalysis = false;
             elements.quoteDataScopeSummary.textContent = "Current File";
         }
+        updateCurrentFileSummary(elements, state);
+        updateContinueAnalysisButton(elements, state);
+    }
+
+    function hasResumableContinueAnalysisContext(state) {
+        return Boolean(
+            state
+            && state.hasSharedScopeAnalysis
+            && hasRestorableAnalyzeContext(state)
+        );
+    }
+
+    function updateContinueAnalysisButton(elements, state) {
+        if (!elements.continueAnalysisButton) return;
+        const canContinueAnalysis = state.currentScreen === "start" && hasResumableContinueAnalysisContext(state);
+        elements.continueAnalysisButton.hidden = !canContinueAnalysis;
+    }
+
+    function resumeQuoteCompareAnalysis(elements, state) {
+        if (!hasResumableContinueAnalysisContext(state)) {
+            updateContinueAnalysisButton(elements, state);
+            return false;
+        }
+        closeProductSummary(state);
+        state.currentScreen = "analyze";
+        state.currentStep = 3;
+        renderApp(elements, state);
+        return true;
+    }
+
+    async function handleQuoteCompareAction(action, actionTarget, elements, state) {
+        if (action === "continue-analysis") {
+            return resumeQuoteCompareAnalysis(elements, state);
+        }
+        if (action === "start-analysis" || action === "manual-analyze") {
+            await triggerStep2StartAnalysis(elements, state);
+            return true;
+        }
+        if (action === "back-home") {
+            closeProductSummary(state);
+            closeHistoryDetailModal(state);
+            state.currentScreen = "start";
+            state.currentStep = 1;
+            setStatus(state, "", "");
+            renderApp(elements, state);
+            return true;
+        }
+        return null;
     }
 
     function setSharedAnalysisAvailability(hasAnalysis) {
@@ -493,6 +590,7 @@
             if (left.effectiveTimestamp !== right.effectiveTimestamp) return left.effectiveTimestamp - right.effectiveTimestamp;
             return left.supplier.localeCompare(right.supplier);
         }) : [];
+        state.historyDetailSuppliersExpanded = false;
         state.historyDetailModalOpen = rows.length > 0;
         state.historyDetailModalSeries = rows.length ? {
             key: getHistorySeriesKey(rows[0].productName, rows[0].unit),
@@ -506,6 +604,7 @@
     function closeHistoryDetailModal(state) {
         state.historyDetailModalOpen = false;
         state.historyDetailModalSeries = null;
+        state.historyDetailSuppliersExpanded = false;
     }
 
     function getHistoryTableScroller(elements) {
@@ -564,9 +663,6 @@
                 latestUnitPrice: null,
                 latestUnitPriceSupplier: "",
                 latestUnitPriceDate: "",
-                earliestUnitPrice: null,
-                earliestUnitPriceSupplier: "",
-                earliestUnitPriceDate: "",
                 lowestUnitPrice: null,
                 lowestUnitPriceSupplier: "",
                 lowestUnitPriceDate: "",
@@ -611,9 +707,6 @@
             latestUnitPrice: latest.unitPrice,
             latestUnitPriceSupplier: latest.supplier || "",
             latestUnitPriceDate: formatDate(latest.quoteDate || latest.createdAt),
-            earliestUnitPrice: first.unitPrice,
-            earliestUnitPriceSupplier: first.supplier || "",
-            earliestUnitPriceDate: formatDate(first.quoteDate || first.createdAt),
             lowestUnitPrice,
             lowestUnitPriceSupplier: lowestPriceRow?.supplier || "",
             lowestUnitPriceDate: lowestPriceRow ? formatDate(lowestPriceRow.quoteDate || lowestPriceRow.createdAt) : "",
@@ -952,8 +1045,12 @@
     }
 
     function buildPersistedState(state) {
+        syncQuoteCompareStepState(state);
+        updateLastQuoteCompareScreen(state);
         return {
+            currentStep: state.currentStep,
             currentScreen: state.currentScreen,
+            lastQuoteCompareScreen: state.lastQuoteCompareScreen,
             lastFlowScreen: state.lastFlowScreen,
             mode: state.mode,
             analyzeMode: state.analyzeMode,
@@ -981,6 +1078,7 @@
             selectedAnalysisRowKey: state.selectedAnalysisRowKey,
             analysisTableFilter: state.analysisTableFilter,
             analysisTableSearch: state.analysisTableSearch,
+            analysisTableSort: state.analysisTableSort,
             activeAnalyzeTab: state.activeAnalyzeTab,
             showOpportunitySection: state.showOpportunitySection,
             showFullComparison: state.showFullComparison,
@@ -1013,8 +1111,84 @@
             sessionStorage.removeItem(QUOTE_COMPARE_ACTIVE_SESSION_KEY);
             sessionStorage.removeItem(QUOTE_COMPARE_STATE_KEY);
             sessionStorage.removeItem(QUOTE_COMPARE_SCROLL_KEY);
+            sessionStorage.removeItem(QUOTE_COMPARE_LAST_SCREEN_KEY);
         } catch (error) {
             // Ignore storage failures.
+        }
+    }
+
+    function updateLastQuoteCompareScreen(state) {
+        if (!state || !state.currentScreen) return;
+        const snapshot = {
+            currentScreen: state.currentScreen,
+            currentStep: Number(state.currentStep || getQuoteCompareStepForScreen(state) || 1)
+        };
+        state.lastQuoteCompareScreen = snapshot;
+        try {
+            sessionStorage.setItem(QUOTE_COMPARE_LAST_SCREEN_KEY, JSON.stringify(snapshot));
+        } catch (error) {
+            // Ignore storage failures.
+        }
+    }
+
+    function readLastQuoteCompareScreen() {
+        try {
+            const parsed = JSON.parse(sessionStorage.getItem(QUOTE_COMPARE_LAST_SCREEN_KEY) || "null");
+            if (!parsed || typeof parsed !== "object") return null;
+            return {
+                currentScreen: String(parsed.currentScreen || "").trim(),
+                currentStep: Number(parsed.currentStep || 0)
+            };
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function applyLastQuoteCompareScreen(state, snapshot) {
+        if (!snapshot?.currentScreen) return false;
+        const targetScreen = snapshot.currentScreen;
+        const targetStep = Number(snapshot.currentStep || 0);
+        if (targetScreen === "history" && hasRestorableAnalyzeContext(state)) {
+            state.currentScreen = "history";
+            state.currentStep = 4;
+            return true;
+        }
+        if (targetScreen === "analyze" && hasRestorableAnalyzeContext(state)) {
+            state.currentScreen = "analyze";
+            state.currentStep = 3;
+            return true;
+        }
+        if (targetScreen === "review" && hasRestorableReviewContext(state)) {
+            state.currentScreen = "review";
+            state.currentStep = 2;
+            return true;
+        }
+        if (targetScreen === "start" || targetStep === 1) {
+            state.currentScreen = "start";
+            state.currentStep = 1;
+            return true;
+        }
+        return false;
+    }
+
+    function shouldForceQuoteCompareStart() {
+        try {
+            return new URLSearchParams(window.location.search || "").get("start") === "home";
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function clearForcedQuoteCompareStartFlag() {
+        try {
+            const url = new URL(window.location.href);
+            if (url.searchParams.get("start") !== "home") {
+                return;
+            }
+            url.searchParams.delete("start");
+            window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+        } catch (error) {
+            // Ignore URL cleanup failures.
         }
     }
 
@@ -1034,7 +1208,10 @@
         state.parseError = "";
         state.isParsing = false;
         state.isSubmitting = false;
+        state.selectedAnalysisRowKey = "";
         state.currentScreen = "start";
+        state.currentStep = 1;
+        state.lastQuoteCompareScreen = { currentScreen: "start", currentStep: 1 };
         state.lastFlowScreen = "review";
         clearPersistedQuoteCompareState();
         if (message) {
@@ -1044,7 +1221,9 @@
 
     function hydratePersistedState(state, snapshot) {
         if (!snapshot || typeof snapshot !== "object") return;
+        state.currentStep = Number(snapshot.currentStep || state.currentStep || 1);
         state.currentScreen = snapshot.currentScreen || state.currentScreen;
+        state.lastQuoteCompareScreen = snapshot.lastQuoteCompareScreen || state.lastQuoteCompareScreen;
         state.lastFlowScreen = snapshot.lastFlowScreen || state.lastFlowScreen;
         state.mode = snapshot.mode || state.mode;
         state.analyzeMode = snapshot.analyzeMode || state.analyzeMode;
@@ -1069,9 +1248,12 @@
         state.historyDetailModalSeries = snapshot.historyDetailModalSeries || state.historyDetailModalSeries;
         state.savedComparisons = Array.isArray(snapshot.savedComparisons) ? snapshot.savedComparisons : state.savedComparisons;
         state.collapsedDecisionCards = snapshot.collapsedDecisionCards || state.collapsedDecisionCards;
-        state.selectedAnalysisRowKey = snapshot.selectedAnalysisRowKey || state.selectedAnalysisRowKey;
+        state.selectedAnalysisRowKey = snapshot.currentScreen === "analyze"
+            ? ""
+            : (snapshot.selectedAnalysisRowKey || state.selectedAnalysisRowKey);
         state.analysisTableFilter = snapshot.analysisTableFilter || state.analysisTableFilter;
         state.analysisTableSearch = snapshot.analysisTableSearch || state.analysisTableSearch;
+        state.analysisTableSort = snapshot.analysisTableSort || state.analysisTableSort;
         state.activeAnalyzeTab = snapshot.activeAnalyzeTab || state.activeAnalyzeTab;
         state.showOpportunitySection = snapshot.showOpportunitySection !== false;
         state.showFullComparison = Boolean(snapshot.showFullComparison);
@@ -1081,6 +1263,7 @@
         state.manualRows = Array.isArray(snapshot.manualRows) && snapshot.manualRows.length ? snapshot.manualRows : state.manualRows;
         state.status = snapshot.status || state.status;
         state.qcHistoryData = [];
+        sanitizeQuoteCompareStepState(state);
     }
 
     function restoreQuoteCompareSession(state) {
@@ -1090,6 +1273,53 @@
         } catch (error) {
             // Ignore invalid session payloads.
         }
+        sanitizeQuoteCompareStepState(state);
+    }
+
+    function getQuoteCompareStepForScreen(state) {
+        if (state.currentScreen === "history") return 4;
+        if (state.currentScreen === "analyze") return 3;
+        if (state.currentScreen === "review") return 2;
+        return 1;
+    }
+
+    function syncQuoteCompareStepState(state) {
+        state.currentStep = getQuoteCompareStepForScreen(state);
+    }
+
+    function sanitizeQuoteCompareStepState(state) {
+        const hasReviewContext = hasRestorableReviewContext(state);
+        const hasAnalyzeContext = hasRestorableAnalyzeContext(state);
+        const step = Number(state.currentStep || getQuoteCompareStepForScreen(state) || 1);
+
+        if (step === 2) {
+            if (state.mode === "upload" && !hasReviewContext) {
+                state.currentScreen = "start";
+                state.currentStep = 1;
+                return;
+            }
+            state.currentScreen = "review";
+            state.currentStep = 2;
+            return;
+        }
+
+        if (step >= 3 || state.currentScreen === "analyze" || state.currentScreen === "history") {
+            if (!hasAnalyzeContext) {
+                if (state.mode === "upload" && hasReviewContext) {
+                    state.currentScreen = "review";
+                    state.currentStep = 2;
+                } else {
+                    state.currentScreen = "start";
+                    state.currentStep = 1;
+                }
+                return;
+            }
+            state.currentScreen = step === 4 ? "history" : "analyze";
+            state.currentStep = step === 4 ? 4 : 3;
+            return;
+        }
+
+        syncQuoteCompareStepState(state);
     }
 
     function restoreHistoryUiPreferences(state) {
@@ -1199,20 +1429,25 @@
 
     function formatCurrency(value, currency = "USD") {
         const numericValue = Number(value || 0);
-        try {
-            return new Intl.NumberFormat("en-US", {
-                style: "currency",
-                currency: currency || "USD",
+        return Number.isFinite(numericValue)
+            ? numericValue.toLocaleString("en-US", {
                 minimumFractionDigits: 2,
                 maximumFractionDigits: 2
-            }).format(numericValue);
-        } catch (error) {
-            return `$${numericValue.toFixed(2)}`;
-        }
+            })
+            : "0.00";
     }
 
     function formatPercent(value) {
         return `${Number(value || 0).toFixed(1)}%`;
+    }
+
+    function formatQuantity(value) {
+        const numericValue = Number(value || 0);
+        if (!Number.isFinite(numericValue)) return "0";
+        if (Math.abs(numericValue % 1) < 0.0000001) {
+            return String(Math.trunc(numericValue));
+        }
+        return numericValue.toFixed(2);
     }
 
     function parseDateValue(value, options = {}) {
@@ -1274,7 +1509,9 @@
 
     function createState() {
         return {
+            currentStep: 1,
             currentScreen: "start",
+            lastQuoteCompareScreen: { currentScreen: "start", currentStep: 1 },
             lastFlowScreen: "review",
             mode: "upload",
             analyzeMode: "compare",
@@ -1284,10 +1521,14 @@
             detectedMappings: {},
             selectedMappings: {},
             validation: { mappedCount: 0, missingFields: [...REQUIRED_FIELDS], duplicateColumns: [], ready: false },
+            mappingReuseNotice: null,
+            mappingReuseCandidate: null,
+            normalizedRowsCache: null,
             analysisResult: null,
             uploadReview: null,
             activeSessionId: "",
             manualUploadId: createManualUploadId(),
+            hasSharedScopeAnalysis: false,
             dataScopeSummary: null,
             parseError: "",
             status: { message: "", tone: "" },
@@ -1303,10 +1544,13 @@
             selectedAnalysisRowKey: "",
             analysisTableFilter: "all",
             analysisTableSearch: "",
+            analysisTableSort: { key: "", direction: "" },
+            analysisViewport: { start: 0, end: 80, scrollTop: 0 },
             activeAnalyzeTab: "savings",
             showOpportunitySection: true,
             showFullComparison: false,
             showOptimizedSummary: false,
+            opportunityRenderCount: OPPORTUNITY_CARD_BATCH_SIZE,
             fullComparisonTableScroll: { top: 0, left: 0 },
             previousAnalyzeTab: "savings",
             historyColumnVisibility: getDefaultHistoryColumnKeys(),
@@ -1321,6 +1565,7 @@
             historySelectedRows: [],
             historyDetailModalOpen: false,
             historyDetailModalSeries: null,
+            historyDetailSuppliersExpanded: false,
             productSummaryModalOpen: false,
             productSummaryModalData: null,
             historyDetailChart: null,
@@ -1334,13 +1579,16 @@
             persistSessionTimer: null,
             analysisFilterTimer: null,
             historyRefreshFrame: 0,
-            historyMemo: null
+            historyMemo: null,
+            analysisMemo: null,
+            historyViewport: { start: 0, end: 120, scrollTop: 0 },
+            progressPhase: ""
         };
     }
 
     async function fetchJson(url, options = {}) {
         const fetchStartedAt = performance.now();
-        console.info("[quote compare fetch start]", {
+        console.info("[compare prices fetch start]", {
             url,
             method: options.method || "GET"
         });
@@ -1362,7 +1610,7 @@
         if (!response.ok || data.success === false) {
             throw new Error(data.message || "Request failed.");
         }
-        console.info("[quote compare fetch end]", {
+        console.info("[compare prices fetch end]", {
             url,
             method: options.method || "GET",
             durationMs: Number((performance.now() - fetchStartedAt).toFixed(1))
@@ -1383,6 +1631,12 @@
         return new Promise((resolve) => {
             requestAnimationFrame(() => resolve());
         });
+    }
+
+    async function setProgressPhase(state, phaseLabel) {
+        state.progressPhase = phaseLabel;
+        setStatus(state, phaseLabel, "info");
+        await waitForNextPaint();
     }
 
     function computeValidation(state) {
@@ -1445,7 +1699,83 @@
         state.selectedMappings = Object.fromEntries(
             [...REQUIRED_FIELDS, ...OPTIONAL_FIELDS].map((fieldName) => [fieldName, ""])
         );
+        state.mappingReuseNotice = null;
         computeValidation(state);
+    }
+
+    function buildHeadersSignature(headers) {
+        return (Array.isArray(headers) ? headers : [])
+            .map((header) => String(header || "").trim().toLowerCase())
+            .join("|");
+    }
+
+    function buildMappingMemoryRecord(fileName, headers, mapping) {
+        return {
+            fileName: String(fileName || "").trim().toLowerCase(),
+            headerSignature: buildHeadersSignature(headers),
+            headers: Array.isArray(headers) ? headers.slice() : [],
+            mapping: { ...(mapping || {}) },
+            updatedAt: new Date().toISOString()
+        };
+    }
+
+    function readMappingMemoryStore() {
+        try {
+            const parsed = JSON.parse(window.localStorage.getItem(QUOTE_COMPARE_MAPPING_MEMORY_KEY) || "[]");
+            return Array.isArray(parsed) ? parsed : [];
+        } catch (error) {
+            return [];
+        }
+    }
+
+    function writeMappingMemoryStore(records) {
+        try {
+            window.localStorage.setItem(QUOTE_COMPARE_MAPPING_MEMORY_KEY, JSON.stringify((records || []).slice(0, 24)));
+        } catch (error) {
+            return;
+        }
+    }
+
+    function getSavedMappingCandidate(fileName, headers) {
+        const normalizedName = String(fileName || "").trim().toLowerCase();
+        if (!normalizedName) return null;
+        const records = readMappingMemoryStore()
+            .filter((record) => String(record?.fileName || "") === normalizedName)
+            .sort((left, right) => String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")));
+        if (!records.length) return null;
+        const headerSignature = buildHeadersSignature(headers);
+        const exactMatch = records.find((record) => record.headerSignature === headerSignature);
+        if (exactMatch) {
+            return { type: "exact", record: exactMatch };
+        }
+        const headerSet = new Set((headers || []).map((header) => String(header || "").trim()));
+        const partialRecord = records.find((record) => Array.isArray(record.headers) && record.headers.some((header) => headerSet.has(String(header || "").trim())));
+        return partialRecord ? { type: "partial", record: partialRecord } : null;
+    }
+
+    function applySavedMappingsToState(state, record, { partial = false } = {}) {
+        if (!record?.mapping || typeof record.mapping !== "object") return false;
+        const availableHeaders = new Set(Array.isArray(state.headers) ? state.headers : []);
+        const nextMappings = { ...(state.selectedMappings || {}) };
+        let appliedCount = 0;
+        [...REQUIRED_FIELDS, ...OPTIONAL_FIELDS].forEach((fieldName) => {
+            const mappedColumn = String(record.mapping[fieldName] || "").trim();
+            if (!mappedColumn || !availableHeaders.has(mappedColumn)) return;
+            if (partial && nextMappings[fieldName]) return;
+            nextMappings[fieldName] = mappedColumn;
+            appliedCount += 1;
+        });
+        if (!appliedCount) return false;
+        state.selectedMappings = nextMappings;
+        computeValidation(state);
+        return true;
+    }
+
+    function persistMappingMemory(state) {
+        if (!state.file?.name || !state.headers.length) return;
+        const nextRecord = buildMappingMemoryRecord(state.file.name, state.headers, state.selectedMappings);
+        const existing = readMappingMemoryStore().filter((record) => !(record.fileName === nextRecord.fileName && record.headerSignature === nextRecord.headerSignature));
+        writeMappingMemoryStore([nextRecord, ...existing]);
     }
 
     function initializeReviewState(state, payload) {
@@ -1453,12 +1783,41 @@
         state.headers = payload.available_columns || payload.headers || [];
         state.detectedMappings = { ...(payload.mapping || {}) };
         applyAutoMappings(state);
+        state.mappingReuseNotice = null;
+        state.mappingReuseCandidate = null;
+        if (state.file?.name) {
+            const candidate = getSavedMappingCandidate(state.file.name, state.headers);
+            if (candidate?.type === "exact" && applySavedMappingsToState(state, candidate.record)) {
+                state.mappingReuseNotice = {
+                    tone: "warning",
+                    message: "Previous column mappings applied. Please verify before continuing."
+                };
+            } else if (candidate?.type === "partial") {
+                state.mappingReuseCandidate = candidate.record;
+                state.mappingReuseNotice = {
+                    tone: "warning",
+                    message: "A previous mapping exists for this file name, but the headers changed. Review the mapping or apply matching fields only."
+                };
+            }
+        }
     }
 
     async function inspectUpload(state) {
         if (!state.file) {
             setStatus(state, "Choose a supplier file before reviewing mappings.", "error");
             return false;
+        }
+        const inspectCacheKey = `${state.file.name}__${state.file.size || 0}__${state.file.lastModified || 0}`;
+        window.__quoteCompareInspectCache = window.__quoteCompareInspectCache || new Map();
+        const cachedPayload = window.__quoteCompareInspectCache.get(inspectCacheKey);
+        if (cachedPayload) {
+            initializeReviewState(state, cachedPayload);
+            state.activeSessionId = cachedPayload.session_id || state.activeSessionId || "";
+            if (state.activeSessionId) {
+                sessionStorage.setItem(QUOTE_COMPARE_ACTIVE_SESSION_KEY, state.activeSessionId);
+            }
+            setStatus(state, `Headers detected for ${state.file.name}.`, "success");
+            return true;
         }
         const inspectStartedAt = performance.now();
         state.isParsing = true;
@@ -1486,6 +1845,7 @@
             if (!response.ok || data.success === false) {
                 throw new Error(data.message || "Request failed.");
             }
+            window.__quoteCompareInspectCache.set(inspectCacheKey, data);
             initializeReviewState(state, data);
             const reviewInitializedAt = performance.now();
             state.activeSessionId = data.session_id || "";
@@ -1494,7 +1854,7 @@
             }
             state.isParsing = false;
             setStatus(state, `Headers detected for ${state.file.name}.`, "success");
-            console.info("[quote compare inspect timing]", {
+            console.info("[compare prices inspect timing]", {
                 fileName: state.file.name,
                 fetchMs: Number((fetchFinishedAt - fetchStartedAt).toFixed(1)),
                 jsonParseMs: Number((jsonFinishedAt - fetchFinishedAt).toFixed(1)),
@@ -1564,6 +1924,10 @@
         return String(value || "").trim().toLowerCase();
     }
 
+    function getOfferSupplierLabel(offer) {
+        return String(offer?.supplier_name || offer?.supplier || "").trim();
+    }
+
     function compareOffersByRecency(left, right) {
         const leftDate = parseDateValue(left.quote_date);
         const rightDate = parseDateValue(right.quote_date);
@@ -1601,12 +1965,10 @@
 
     function buildProductSummaryStats(offers, productName, unit) {
         const offersByRecency = [...offers].sort(compareOffersByRecency);
-        const offersByOldest = [...offers].sort((left, right) => compareOffersByRecency(right, left));
         const offersByUnitPrice = [...offers].sort(compareOffersByUnitPrice);
         const lowestObservedOffer = offersByUnitPrice[0] || null;
         const highestObservedOffer = [...offersByUnitPrice].reverse()[0] || null;
         const latestObservedOffer = offersByRecency[0] || null;
-        const earliestObservedOffer = offersByOldest[0] || null;
         const averageObservedUnitPrice = offers.length
             ? offers.reduce((sum, offer) => sum + Number(offer.unit_price || 0), 0) / offers.length
             : 0;
@@ -1619,16 +1981,56 @@
             lowestObservedOffer,
             highestObservedOffer,
             latestObservedOffer,
-            earliestObservedOffer,
             averageObservedUnitPrice,
             supplierCount: new Set(offers.map((offer) => getSupplierKey(offer.supplier_name)).filter(Boolean)).size
         };
     }
 
+    function getOfferMonthKey(offer) {
+        const date = parseDateValue(offer?.quote_date);
+        if (!date) return "";
+        return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+    }
+
+    function buildMonthlyAnalysisRows(offers, currentOffer) {
+        const monthMap = new Map();
+        offers.forEach((offer) => {
+            const monthKey = getOfferMonthKey(offer);
+            if (!monthKey) return;
+            if (!monthMap.has(monthKey)) monthMap.set(monthKey, []);
+            monthMap.get(monthKey).push(offer);
+        });
+        return Array.from(monthMap.entries())
+            .sort((left, right) => left[0].localeCompare(right[0]))
+            .map(([monthKey, monthOffers]) => {
+                const sortedByDate = monthOffers.slice().sort(compareOffersByRecency).reverse();
+                const prices = monthOffers.map((offer) => Number(offer.unit_price || 0)).filter(Number.isFinite);
+                const avgPrice = prices.length ? prices.reduce((sum, value) => sum + value, 0) / prices.length : 0;
+                const minPrice = prices.length ? Math.min(...prices) : 0;
+                const maxPrice = prices.length ? Math.max(...prices) : 0;
+                const firstOffer = sortedByDate[0] || null;
+                const lastOffer = sortedByDate[sortedByDate.length - 1] || null;
+                const quantityBasis = Number(currentOffer?.quantity || lastOffer?.quantity || firstOffer?.quantity || 0);
+                const savingsAmount = lastOffer && minPrice < Number(lastOffer.unit_price || 0)
+                    ? Math.max((Number(lastOffer.unit_price || 0) - minPrice) * quantityBasis, 0)
+                    : 0;
+                return {
+                    monthKey,
+                    label: new Date(`${monthKey}-01T00:00:00`).toLocaleDateString("en-US", { month: "short", year: "numeric" }),
+                    avgPrice,
+                    minPrice,
+                    maxPrice,
+                    savingsAmount,
+                    movementCount: monthOffers.length,
+                    latestSupplier: lastOffer?.supplier_name || "",
+                    latestPrice: Number(lastOffer?.unit_price || 0)
+                };
+            });
+    }
+
     function buildDecisionCards(comparison) {
         const bids = comparison?.bids || [];
         const grouped = new Map();
-        const productOfferMap = new Map();
 
         bids.forEach((bid, index) => {
             const product = String(bid.product_name || "").trim();
@@ -1641,85 +2043,72 @@
                 unit_price: Number(bid.unit_price || 0),
                 total_price: Number(bid.total_price || 0) || Number(bid.quantity || 0) * Number(bid.unit_price || 0)
             };
-            const productUnitKey = getProductUnitKey(product, unit);
-            if (!productOfferMap.has(productUnitKey)) productOfferMap.set(productUnitKey, []);
-            productOfferMap.get(productUnitKey).push(normalizedBid);
-            const quantityKey = normalizeQuantityContext(bid.quantity);
-            const key = `${product}__${unit}__${quantityKey}`;
+            const key = getProductUnitKey(product, unit);
             if (!grouped.has(key)) grouped.set(key, []);
             grouped.get(key).push(normalizedBid);
         });
-
-        const productSummaries = new Map(
-            Array.from(productOfferMap.entries()).map(([key, offers]) => {
-                const [productName, unit] = key.split("__");
-                return [key, buildProductSummaryStats(offers, productName, unit)];
-            })
-        );
 
         return Array.from(grouped.values())
             .map((offers) => {
                 const offersByRecency = [...offers].sort(compareOffersByRecency);
                 const currentOffer = offersByRecency[0] || null;
-                const productSummary = productSummaries.get(getProductUnitKey(currentOffer?.product_name, currentOffer?.unit)) || buildProductSummaryStats(offers, currentOffer?.product_name || "", currentOffer?.unit || "");
+                const productSummary = buildProductSummaryStats(offers, currentOffer?.product_name || "", currentOffer?.unit || "");
                 const productOffers = productSummary.offers || offersByRecency;
                 const lowestObservedOffer = productSummary.lowestObservedOffer || null;
-                const currentSupplierKey = getSupplierKey(currentOffer?.supplier_name);
+                const currentSupplierKey = getSupplierKey(getOfferSupplierLabel(currentOffer));
                 const currentQuantityKey = normalizeQuantityContext(currentOffer?.quantity);
-                const quantityMatchedOffers = offers
+                const comparableOffers = productOffers
                     .filter((offer) => {
                         if (isSameOffer(offer, currentOffer)) return false;
-                        if (normalizeQuantityContext(offer?.quantity) !== currentQuantityKey) return false;
                         if (currentOffer?.currency && offer?.currency && offer.currency !== currentOffer.currency) return false;
                         return true;
-                    })
+                    });
+                const quantityMatchedOffers = comparableOffers
+                    .filter((offer) => normalizeQuantityContext(offer?.quantity) === currentQuantityKey)
                     .sort(compareOffersByUnitPrice);
                 const currentUnitPrice = Number(currentOffer?.unit_price || 0);
                 const quantityBasis = Number(currentOffer?.quantity || 0);
                 const currentTotalBasis = Number(currentOffer?.total_price || 0) > 0
                     ? Number(currentOffer?.total_price || 0)
                     : currentUnitPrice * quantityBasis;
-                const sameSupplierOffers = productOffers
-                    .filter((offer) => getSupplierKey(offer?.supplier_name) === currentSupplierKey)
-                    .filter((offer) => !isSameOffer(offer, currentOffer))
+                const sameSupplierOffers = comparableOffers
+                    .filter((offer) => getSupplierKey(getOfferSupplierLabel(offer)) === currentSupplierKey)
                     .sort(compareOffersByUnitPrice);
-                const lowerPriceWithAnotherSupplier = productOffers
-                    .filter((offer) => getSupplierKey(offer?.supplier_name) !== currentSupplierKey)
+                const lowerPriceWithAnotherSupplier = comparableOffers
+                    .filter((offer) => getSupplierKey(getOfferSupplierLabel(offer)) !== currentSupplierKey)
                     .filter((offer) => Number(offer?.unit_price || 0) < currentUnitPrice)
-                    .filter((offer) => !currentOffer?.currency || !offer?.currency || offer.currency === currentOffer.currency)
                     .sort(compareOffersByUnitPrice)[0] || null;
                 const lowerHistoricalPriceWithCurrentSupplier = sameSupplierOffers
                     .filter((offer) => Number(offer?.unit_price || 0) < currentUnitPrice)
                     .sort(compareOffersByUnitPrice)[0] || null;
-                const lowerObservedOffer = productOffers
+                const lowerObservedOffer = comparableOffers
                     .filter((offer) => Number(offer?.unit_price || 0) < currentUnitPrice)
                     .sort(compareOffersByUnitPrice)[0] || null;
                 const switchAlternatives = quantityMatchedOffers
                     .filter((offer) => {
-                        const supplierKey = getSupplierKey(offer?.supplier_name);
+                        const supplierKey = getSupplierKey(getOfferSupplierLabel(offer));
                         return supplierKey && supplierKey !== currentSupplierKey;
                     });
                 const recommendedSwitchOffer = switchAlternatives[0] || null;
-                const supplierSwitchOffer = recommendedSwitchOffer || lowerPriceWithAnotherSupplier;
-                const recommendedSwitchUnitPrice = Number(supplierSwitchOffer?.unit_price || 0);
-                const switchUnitPriceAdvantage = Math.max(currentUnitPrice - recommendedSwitchUnitPrice, 0);
-                const hasSupplierSwitchSavings = Boolean(
-                    currentOffer &&
-                    supplierSwitchOffer &&
-                    currentSupplierKey &&
-                    getSupplierKey(supplierSwitchOffer?.supplier_name) &&
-                    getSupplierKey(supplierSwitchOffer?.supplier_name) !== currentSupplierKey &&
-                    switchUnitPriceAdvantage > 0 &&
-                    quantityBasis > 0 &&
-                    currentTotalBasis > 0 &&
-                    Number(supplierSwitchOffer?.unit_price || 0) > 0
-                );
-                const savingsType = hasSupplierSwitchSavings ? "supplier-switch" : "";
-                const recommendedOffer = hasSupplierSwitchSavings ? supplierSwitchOffer : null;
-                const recommendedUnitPrice = Number(recommendedOffer?.unit_price || 0);
+                const sameSupplierMatchedOffer = quantityMatchedOffers
+                    .filter((offer) => getSupplierKey(getOfferSupplierLabel(offer)) === currentSupplierKey)
+                    .filter((offer) => Number(offer?.unit_price || 0) < currentUnitPrice)
+                    .sort(compareOffersByUnitPrice)[0] || null;
+                const referenceOffer = recommendedSwitchOffer
+                    || sameSupplierMatchedOffer
+                    || lowerPriceWithAnotherSupplier
+                    || lowerHistoricalPriceWithCurrentSupplier
+                    || lowerObservedOffer
+                    || null;
+                const savingsType = referenceOffer
+                    ? (getSupplierKey(getOfferSupplierLabel(referenceOffer)) === currentSupplierKey
+                        ? "same-supplier-history"
+                        : "supplier-switch")
+                    : "";
+                const recommendedUnitPrice = Number(referenceOffer?.unit_price || 0);
                 const unitPriceAdvantage = Math.max(currentUnitPrice - recommendedUnitPrice, 0);
-                const hasValidAlternative = Boolean(savingsType && recommendedOffer && unitPriceAdvantage > 0);
-                const bestOffer = hasValidAlternative ? recommendedOffer : currentOffer;
+                const hasValidAlternative = Boolean(referenceOffer && unitPriceAdvantage > 0 && quantityBasis > 0);
+                const bestOffer = hasValidAlternative ? referenceOffer : currentOffer;
                 const savingsAmount = hasValidAlternative
                     ? Math.max(currentTotalBasis - (quantityBasis * recommendedUnitPrice), 0)
                     : 0;
@@ -1743,9 +2132,9 @@
                     normalizeQuantityContext(lowerHistoricalPriceWithCurrentSupplier.quantity) !== currentQuantityKey
                 );
                 let decisionType = "price-variation-detected";
-                if (lowerPriceWithAnotherSupplier) {
+                if (referenceOffer && savingsType === "supplier-switch") {
                     decisionType = "lower-price-with-another-supplier";
-                } else if (lowerHistoricalPriceWithCurrentSupplier) {
+                } else if (referenceOffer && savingsType === "same-supplier-history") {
                     decisionType = "lower-historical-price-with-current-supplier";
                 } else if (isCurrentLowestObserved) {
                     decisionType = "lowest-observed-price-already-used";
@@ -1771,19 +2160,19 @@
                 const lowestPriceInsight = lowestObservedOffer
                     ? isCurrentLowestObserved
                         ? "Lowest price observed"
-                        : `Lower price observed: ${formatCurrency(lowestObservedOffer.unit_price || 0, lowestObservedOffer.currency || currentOffer?.currency)} (${lowestObservedOffer.supplier_name || "Supplier missing"}, Qty ${Number(lowestObservedOffer.quantity || 0)}, ${formatDate(lowestObservedOffer.quote_date)})`
+                        : `Lower price observed: ${formatCurrency(lowestObservedOffer.unit_price || 0, lowestObservedOffer.currency || currentOffer?.currency)} (${lowestObservedOffer.supplier_name || "Supplier missing"}, Qty ${formatQuantity(lowestObservedOffer.quantity || 0)}, ${formatDate(lowestObservedOffer.quote_date)})`
                     : "";
-                const referenceOffer = hasValidAlternative
-                    ? recommendedOffer
+                const resolvedReferenceOffer = hasValidAlternative
+                    ? referenceOffer
                     : decisionType === "lower-price-with-another-supplier"
-                        ? lowerPriceWithAnotherSupplier
+                        ? (lowerPriceWithAnotherSupplier || referenceOffer)
                         : decisionType === "lower-historical-price-with-current-supplier"
-                            ? lowerHistoricalPriceWithCurrentSupplier
+                            ? (lowerHistoricalPriceWithCurrentSupplier || referenceOffer)
                             : decisionType === "price-variation-detected"
-                                ? (lowerObservedOffer || lowestObservedOffer || currentOffer)
-                                : (lowestObservedOffer || currentOffer);
-                const quantityContextNote = referenceOffer
-                    ? normalizeQuantityContext(referenceOffer.quantity) !== currentQuantityKey
+                                ? (lowerObservedOffer || lowestObservedOffer || referenceOffer || currentOffer)
+                                : (lowestObservedOffer || referenceOffer || currentOffer);
+                const quantityContextNote = resolvedReferenceOffer
+                    ? normalizeQuantityContext(resolvedReferenceOffer.quantity) !== currentQuantityKey
                         ? "Observed at different quantity"
                         : "Observed at matching quantity"
                     : "";
@@ -1796,21 +2185,23 @@
                             : decisionType === "lowest-observed-price-already-used"
                                 ? "Best price benchmark"
                                 : "Observed price reference";
-                const compactResultInsight = hasValidAlternative && recommendedOffer
-                    ? `Best: ${formatCurrency(recommendedOffer.unit_price || 0, recommendedOffer.currency || currentOffer?.currency)} (${recommendedOffer.supplier_name || "Supplier missing"})`
+                const compactResultInsight = hasValidAlternative && resolvedReferenceOffer
+                    ? `Best: ${formatCurrency(resolvedReferenceOffer.unit_price || 0, resolvedReferenceOffer.currency || currentOffer?.currency)} (${getOfferSupplierLabel(resolvedReferenceOffer) || "Supplier missing"})`
                     : decisionType === "lowest-observed-price-already-used"
                         ? "Lowest price observed"
-                        : referenceOffer && Number(referenceOffer.unit_price || 0) > 0
-                            ? `Best: ${formatCurrency(referenceOffer.unit_price || 0, referenceOffer.currency || currentOffer?.currency)} (${referenceOffer.supplier_name || "Supplier missing"})`
+                        : resolvedReferenceOffer && Number(resolvedReferenceOffer.unit_price || 0) > 0
+                            ? `Best: ${formatCurrency(resolvedReferenceOffer.unit_price || 0, resolvedReferenceOffer.currency || currentOffer?.currency)} (${getOfferSupplierLabel(resolvedReferenceOffer) || "Supplier missing"})`
                             : "";
-                const resultBadgeTooltip = referenceOffer && Number(referenceOffer.unit_price || 0) > 0
-                    ? `Best price: ${formatCurrency(referenceOffer.unit_price || 0, referenceOffer.currency || currentOffer?.currency)} from ${referenceOffer.supplier_name || "Supplier missing"}${referenceOffer.quote_date ? ` (${formatDate(referenceOffer.quote_date)})` : ""}`
+                const resultBadgeTooltip = resolvedReferenceOffer && Number(resolvedReferenceOffer.unit_price || 0) > 0
+                    ? `Best price: ${formatCurrency(resolvedReferenceOffer.unit_price || 0, resolvedReferenceOffer.currency || currentOffer?.currency)} from ${getOfferSupplierLabel(resolvedReferenceOffer) || "Supplier missing"}${resolvedReferenceOffer.quote_date ? ` (${formatDate(resolvedReferenceOffer.quote_date)})` : ""}`
                     : decisionTypeLabel;
-                const supplierSwitchQuantityNote = recommendedOffer && normalizeQuantityContext(recommendedOffer.quantity) !== currentQuantityKey
-                    ? ` The lower supplier price was observed at Qty ${Number(recommendedOffer.quantity || 0)} and is estimated against the current Qty ${Number(quantityBasis || 0)}.`
+                const supplierSwitchQuantityNote = resolvedReferenceOffer && normalizeQuantityContext(resolvedReferenceOffer.quantity) !== currentQuantityKey
+                    ? ` The lower supplier price was observed at Qty ${formatQuantity(resolvedReferenceOffer.quantity || 0)} and is estimated against the current Qty ${formatQuantity(quantityBasis || 0)}.`
                     : " The lower supplier price was observed at the same quantity.";
                 const decisionSentence = savingsType === "supplier-switch"
-                    ? `Supplier switch savings are visible. Move from ${currentOffer?.supplier_name || "the current supplier"} at ${formatCurrency(currentUnitPrice, currentOffer?.currency)} per unit to ${recommendedOffer?.supplier_name || "the recommended supplier"} at ${formatCurrency(recommendedUnitPrice, recommendedOffer?.currency)} per unit.${supplierSwitchQuantityNote} Estimated savings on the current quantity: ${formatCurrency(savingsAmount, currentOffer?.currency)} (${formatPercent(savingsPercent)} lower total spend).`
+                    ? `Supplier switch savings are visible. Move from ${getOfferSupplierLabel(currentOffer) || "the current supplier"} at ${formatCurrency(currentUnitPrice, currentOffer?.currency)} per unit to ${getOfferSupplierLabel(resolvedReferenceOffer) || "the recommended supplier"} at ${formatCurrency(recommendedUnitPrice, resolvedReferenceOffer?.currency)} per unit.${supplierSwitchQuantityNote} Estimated savings on the current quantity: ${formatCurrency(savingsAmount, currentOffer?.currency)} (${formatPercent(savingsPercent)} lower total spend).`
+                    : savingsType === "same-supplier-history"
+                        ? `${getOfferSupplierLabel(currentOffer) || "The current supplier"} showed a lower historical price of ${formatCurrency(resolvedReferenceOffer?.unit_price || 0, resolvedReferenceOffer?.currency || currentOffer?.currency)} for the same product. Estimated savings against the latest price on the current quantity: ${formatCurrency(savingsAmount, currentOffer?.currency)}.${sameSupplierObservedAtDifferentQuantity ? " The lower point was observed at a different quantity." : " The lower point was observed at a matching quantity."}`
                     : decisionType === "lower-price-with-another-supplier"
                         ? `${lowerPriceWithAnotherSupplier?.supplier_name || "Another supplier"} has a lower observed unit price for this product at ${formatCurrency(lowerPriceWithAnotherSupplier?.unit_price || 0, lowerPriceWithAnotherSupplier?.currency || currentOffer?.currency)}. ${otherSupplierObservedAtDifferentQuantity ? "Observed at different quantity." : "Observed in comparable quantity history."}`
                         : decisionType === "lower-historical-price-with-current-supplier"
@@ -1821,6 +2212,19 @@
                                     ? `Lower prices were observed for this product, but only under a different commercial context. Review supplier, quantity, and date before acting on the price movement.`
                                     : `Only one visible pricing context exists for this product, so the screen is showing price intelligence rather than a supplier-switch recommendation.`;
                 const sameSupplierPriceVariation = Boolean(lowerHistoricalPriceWithCurrentSupplier);
+                const monthlyInsights = buildMonthlyAnalysisRows(productOffers, currentOffer);
+                const earliestOffer = productOffers.slice().sort((left, right) => compareOffersByRecency(right, left))[0] || null;
+                const overallAnalysis = {
+                    firstDate: formatDate(earliestOffer?.quote_date),
+                    latestDate: formatDate(currentOffer?.quote_date),
+                    firstUnitPrice: Number(earliestOffer?.unit_price || 0),
+                    latestUnitPrice: Number(currentOffer?.unit_price || 0),
+                    minUnitPrice: Number(lowestObservedOffer?.unit_price || 0),
+                    maxUnitPrice: Number(productSummary.highestObservedOffer?.unit_price || 0),
+                    trendSavingsAmount: earliestOffer && Number(earliestOffer.unit_price || 0) > currentUnitPrice
+                        ? Math.max((Number(earliestOffer.unit_price || 0) - currentUnitPrice) * quantityBasis, 0)
+                        : 0
+                };
                 const resultTone = decisionType === "price-variation-detected" || decisionType === "lowest-observed-price-already-used"
                     ? "neutral"
                     : "opportunity";
@@ -1829,6 +2233,7 @@
                     productName: currentOffer?.product_name || bestOffer?.product_name || "",
                     unit: currentOffer?.unit || bestOffer?.unit || "",
                     quantity: currentOffer?.quantity || bestOffer?.quantity || 0,
+                    totalQuantity: productOffers.reduce((sum, offer) => sum + Number(offer?.quantity || 0), 0),
                     quoteDate: currentOffer?.quote_date || bestOffer?.quote_date || "",
                     currency: currentOffer?.currency || bestOffer?.currency || "USD",
                     currentOffer,
@@ -1846,10 +2251,11 @@
                     lowerPriceWithAnotherSupplier,
                     lowerHistoricalPriceWithCurrentSupplier,
                     observedAtDifferentQuantity,
-                    referenceOffer,
+                    referenceOffer: resolvedReferenceOffer,
                     referenceOfferLabel,
                     productSummary,
                     lowestObservedOffer,
+                    highestObservedOffer: productSummary.highestObservedOffer || null,
                     lowestPriceInsight,
                     compactResultInsight,
                     resultBadgeTooltip,
@@ -1859,10 +2265,12 @@
                     isCurrentLowestObserved,
                     decisionSentence,
                     statusLabel: decisionTypeLabel,
-                    statusTone: resultTone
+                    statusTone: resultTone,
+                    monthlyInsights,
+                    overallAnalysis
                 };
             })
-            .sort((left, right) => left.productName.localeCompare(right.productName) || String(left.unit || "").localeCompare(String(right.unit || "")) || Number(right.quantity || 0) - Number(left.quantity || 0));
+            .sort((left, right) => left.productName.localeCompare(right.productName) || String(left.unit || "").localeCompare(String(right.unit || "")));
     }
 
     function buildAnalyzeSummary(result) {
@@ -2014,6 +2422,22 @@
         return state.historyMemo;
     }
 
+    function getAnalysisMemo(state) {
+        const cards = getAnalysisDecisionCards(state);
+        if (!state.analysisMemo || state.analysisMemo.cardsRef !== cards) {
+            state.analysisMemo = {
+                cardsRef: cards,
+                filteredKey: "",
+                filteredCards: null,
+                visibleSummaryKey: "",
+                visibleSummary: null,
+                topSavingsSummaryKey: "",
+                topSavingsSummary: null
+            };
+        }
+        return state.analysisMemo;
+    }
+
     function flattenHistoryRows(state) {
         return getHistoryDataset(state);
     }
@@ -2155,8 +2579,8 @@
         const prices = sortedRows.map((row) => row.unitPrice).filter((value) => Number.isFinite(value));
         const minPrice = prices.length ? Math.min(...prices) : null;
         const maxPrice = prices.length ? Math.max(...prices) : null;
-        const totalChange = latest.unitPrice - oldest.unitPrice;
-        const totalChangePercent = oldest.unitPrice ? (totalChange / oldest.unitPrice) * 100 : null;
+        const totalChange = minPrice != null && maxPrice != null ? maxPrice - minPrice : null;
+        const totalChangePercent = minPrice ? (totalChange / minPrice) * 100 : null;
 
         return {
             latestPrice: latest.unitPrice,
@@ -2211,6 +2635,12 @@
         state.qcHistoryData = buildHistoryDataset(state);
         state.historyMemo = null;
         state.historyFocusedSeriesKey = "";
+        state.historyFilters.product = "";
+        state.historyFilters.supplier = "";
+        state.historyFilters.dateFrom = "";
+        state.historyFilters.dateTo = "";
+        clearHistorySelectedSeries(state);
+        closeHistoryDetailModal(state);
         syncHistoryFilterDefaults(state);
     }
 
@@ -2238,10 +2668,12 @@
     async function loadSavedComparisons(state, { includeComparisons = false } = {}) {
         const loadStartedAt = performance.now();
         const hasExistingActiveContext = hasRestorableQuoteCompareContext(state);
+        const preferredLastScreen = readLastQuoteCompareScreen() || state.lastQuoteCompareScreen || null;
         try {
             const activeSessionId = state.activeSessionId || sessionStorage.getItem(QUOTE_COMPARE_ACTIVE_SESSION_KEY) || "";
             const persistedSelectedMappings = { ...(state.selectedMappings || {}) };
             const persistedCurrentScreen = state.currentScreen;
+            const persistedCurrentStep = Number(state.currentStep || getQuoteCompareStepForScreen(state) || 1);
             if (activeSessionId) {
                 state.activeSessionId = activeSessionId;
             }
@@ -2267,6 +2699,9 @@
                 return;
             }
             if (!data.active_session) {
+                if (preferredLastScreen && applyLastQuoteCompareScreen(state, preferredLastScreen)) {
+                    return;
+                }
                 if (["review", "analyze", "history"].includes(persistedCurrentScreen)) {
                     if (!includeComparisons || !hasExistingActiveContext) {
                         resetQuoteCompareUploadState(state);
@@ -2318,6 +2753,35 @@
             computeValidation(state);
 
             if (canRestoreAnalyze) {
+                if (preferredLastScreen?.currentScreen === "history") {
+                    state.analysisResult = {
+                        comparison: activeSession.comparison,
+                        evaluation: activeSession.evaluation,
+                        summary: buildAnalyzeSummary({ comparison: activeSession.comparison })
+                    };
+                    state.rows = activeSession.comparison?.bids || [];
+                    state.currentScreen = "history";
+                    state.currentStep = 4;
+                    return;
+                }
+                if (preferredLastScreen?.currentScreen === "analyze") {
+                    state.analysisResult = {
+                        comparison: activeSession.comparison,
+                        evaluation: activeSession.evaluation,
+                        summary: buildAnalyzeSummary({ comparison: activeSession.comparison })
+                    };
+                    state.rows = activeSession.comparison?.bids || [];
+                    state.currentScreen = "analyze";
+                    state.currentStep = 3;
+                    return;
+                }
+                if (preferredLastScreen?.currentScreen === "review") {
+                    state.analysisResult = null;
+                    state.rows = [];
+                    state.currentScreen = "review";
+                    state.currentStep = 2;
+                    return;
+                }
                 state.analysisResult = {
                     comparison: activeSession.comparison,
                     evaluation: activeSession.evaluation,
@@ -2325,13 +2789,15 @@
                 };
                 state.rows = activeSession.comparison?.bids || [];
                 state.currentScreen = persistedCurrentScreen === "history" ? "history" : "analyze";
+                syncQuoteCompareStepState(state);
                 return;
             }
 
             state.analysisResult = null;
             state.rows = [];
             state.currentScreen = "review";
-            console.info("[quote compare bootstrap timing]", {
+            state.currentStep = 2;
+            console.info("[compare prices bootstrap timing]", {
                 includeComparisons,
                 durationMs: Number((performance.now() - loadStartedAt).toFixed(1)),
                 currentScreen: state.currentScreen
@@ -2354,7 +2820,7 @@
         const startedAt = performance.now();
         try {
             await loadSavedComparisons(state, { includeComparisons: true });
-            console.info("[quote compare history bootstrap timing]", {
+            console.info("[compare prices history bootstrap timing]", {
                 durationMs: Number((performance.now() - startedAt).toFixed(1)),
                 comparisons: state.savedComparisons.length
             });
@@ -2367,7 +2833,7 @@
         return `
             <section class="qc2-screen qc2-screen-start">
                 <div class="qc2-head">
-                    <div class="panel-label">Quote Compare</div>
+                    <div class="panel-label">Compare Prices</div>
                     <h2 class="qc2-title">Choose how you want to begin</h2>
                     <p class="qc2-copy">Upload a supplier pricing file for column review or enter supplier price rows manually when you need a quick buying decision.</p>
                 </div>
@@ -2699,8 +3165,8 @@
                     ${incompleteText ? `<div class="mapping-alert mapping-alert-error">${escapeHtml(incompleteText)}</div>` : ""}
                     ${renderStatus(state)}
                     <div class="qc2-actions">
-                        <button type="button" class="secondary-btn" data-qc-action="back-review">Back</button>
-                        <button type="button" class="action-btn" data-qc-action="manual-analyze" ${validation.ready && !state.isSubmitting ? "" : "disabled"}>${state.isSubmitting ? "Starting..." : "Start Analysis"}</button>
+                        <button type="button" id="qcStep2BackBtn" class="secondary-btn" data-qc-action="back-review">Back</button>
+                        <button type="button" id="qcStep2StartBtn" class="action-btn" data-qc-action="start-analysis" ${validation.ready && !state.isSubmitting ? "" : "disabled"}>${state.isSubmitting ? "Starting..." : "Start Analysis"}</button>
                     </div>
                 </div>
             </section>
@@ -2771,6 +3237,9 @@
         const duplicateColumns = state.validation.duplicateColumns.map((item) => item.columnName);
         const duplicateText = state.validation.duplicateColumns.map((item) => `"${item.columnName}" is assigned to ${item.fieldNames.join(", ")}.`).join(" ");
         const missingText = state.validation.missingFields.length ? `Map the remaining required fields: ${state.validation.missingFields.join(", ")}.` : "";
+        const mappingReuseBanner = state.mappingReuseNotice
+            ? `<div class="mapping-alert mapping-alert-${escapeHtml(state.mappingReuseNotice.tone || "info")}">${escapeHtml(state.mappingReuseNotice.message)}${state.mappingReuseCandidate ? ' <button type="button" class="secondary-btn mapping-toolbar-btn" data-qc-action="apply-saved-mappings-partial">Apply matching fields</button>' : ""}</div>`
+            : "";
 
         return `
             <section class="qc2-screen qc2-screen-review">
@@ -2779,7 +3248,8 @@
                         <div>
                             <div class="upload-step">Step 2</div>
                             <h2 class="mapping-review-title">Review your column matches</h2>
-                            <p class="mapping-review-copy">Confirm each required field, adjust anything that was matched incorrectly, and start analysis only when the mapping is complete.</p>
+                            <p class="mapping-review-copy">Confirm each required field, adjust anything that was matched incorrectly, and start analysis only when the mapping is complete.If you have used the same supplier pricing format with same file name before, you may be able to reuse past mappings to save time.</p>
+                            
                         </div>
                         <div class="mapping-summary-chips">
                             <span class="mapping-summary-chip">${state.validation.mappedCount} of ${REQUIRED_FIELDS.length} required fields mapped</span>
@@ -2787,6 +3257,7 @@
                         </div>
                     </div>
                     <div class="mapping-alert mapping-alert-info">${escapeHtml(state.file?.name || state.uploadReview?.filename || "Uploaded file")}</div>
+                    ${mappingReuseBanner}
                     <div class="mapping-toolbar">
                         <div class="mapping-toolbar-copy">Required fields come first. Each uploaded column can be assigned only once.</div>
                         <div class="mapping-toolbar-actions">
@@ -2819,12 +3290,66 @@
                     ${missingText || duplicateText ? `<div class="mapping-alert mapping-alert-error">${escapeHtml(`${missingText} ${duplicateText}`.trim())}</div>` : ""}
                     ${renderStatus(state)}
                     <div class="qc2-actions">
-                        <button type="button" class="secondary-btn" data-qc-action="back-upload">Back</button>
-                        <button type="button" class="action-btn" data-qc-action="start-analysis" ${state.validation.ready && !state.isSubmitting ? "" : "disabled"}>${state.isSubmitting ? "Starting..." : "Start Analysis"}</button>
+                        <button type="button" class="secondary-btn" data-qc-action="back-home">Back to Home</button>
+                        <button type="button" id="qcStep2BackBtn" class="secondary-btn" data-qc-action="${state.mode === "manual" ? "back-review" : "back-upload"}">Back</button>
+                        <button type="button" id="qcStep2StartBtn" class="action-btn" data-qc-action="start-analysis" ${state.validation.ready && !state.isSubmitting ? "" : "disabled"}>${state.isSubmitting ? "Starting..." : "Start Analysis"}</button>
                     </div>
                 </div>
             </section>
         `;
+    }
+
+    async function triggerStep2StartAnalysis(elements, state) {
+        if (state.isSubmitting) return;
+        state.isSubmitting = true;
+        await setProgressPhase(state, "Validating -> Mapping -> Aggregating -> Building analysis");
+        renderApp(elements, state, { preserveScroll: true });
+        await waitForNextPaint();
+        const started = state.mode === "manual"
+            ? await startManualAnalysis(state, elements)
+            : await startUploadAnalysis(state, elements);
+        state.progressPhase = "";
+        renderApp(elements, state);
+        if (started) {
+            writeScrollPosition(elements, 0);
+        }
+    }
+
+    function bindCriticalQuoteCompareButtons(elements, state) {
+        const analysisScroller = elements.app?.querySelector(".qc2-analysis-table-scroll");
+        if (analysisScroller && analysisScroller.dataset.virtualBound !== "true") {
+            analysisScroller.dataset.virtualBound = "true";
+            analysisScroller.addEventListener("scroll", () => {
+                const filteredCards = getFilteredAnalysisCards(state, getAnalysisDecisionCards(state));
+                if (filteredCards.length <= 60) return;
+                const viewportHeight = analysisScroller.clientHeight || 0;
+                const scrollTop = analysisScroller.scrollTop || 0;
+                const approxStart = Math.max(Math.floor(scrollTop / ANALYSIS_ROW_HEIGHT) - ANALYSIS_VIRTUAL_OVERSCAN, 0);
+                const approxVisible = Math.ceil(viewportHeight / ANALYSIS_ROW_HEIGHT) + (ANALYSIS_VIRTUAL_OVERSCAN * 2);
+                const nextViewport = {
+                    start: approxStart,
+                    end: Math.min(approxStart + approxVisible, filteredCards.length),
+                    scrollTop
+                };
+                const previousViewport = state.analysisViewport || { start: 0, end: 80, scrollTop: 0 };
+                if (
+                    previousViewport.start === nextViewport.start
+                    && previousViewport.end === nextViewport.end
+                    && Math.abs((previousViewport.scrollTop || 0) - scrollTop) < 4
+                ) {
+                    return;
+                }
+                state.analysisViewport = nextViewport;
+                if (state.analysisViewportFrame) {
+                    cancelAnimationFrame(state.analysisViewportFrame);
+                }
+                state.analysisViewportFrame = requestAnimationFrame(() => {
+                    state.analysisViewportFrame = 0;
+                    applyAnalysisTableFilter(elements, state);
+                });
+            }, { passive: true });
+        }
+
     }
 
     const MANUAL_REBUILD_FIELDS = [
@@ -3170,7 +3695,7 @@
         const missingText = state.validation.missingFields.length ? `Map the remaining required fields: ${state.validation.missingFields.join(", ")}.` : "";
         const reviewCopy = state.mode === "manual"
             ? "Confirm the required fields, adjust anything you want to reinterpret, and start analysis only when the mapping is complete."
-            : "Confirm each required field, adjust anything that was matched incorrectly, and start analysis only when the mapping is complete.";
+            : "Confirm each required field, adjust anything that was matched incorrectly, and start analysis only when the mapping is complete.If you have used the same supplier pricing format with same file name before, you may be able to reuse past mappings to save time.";
         const sourceLabel = state.mode === "manual" ? "Manual entry" : (state.file?.name || state.uploadReview?.filename || "Uploaded file");
         const toolbarCopy = state.mode === "manual"
             ? "Required fields come first. Each entered column can be assigned only once."
@@ -3223,8 +3748,8 @@
                     ${missingText || duplicateText ? `<div class="mapping-alert mapping-alert-error">${escapeHtml(`${missingText} ${duplicateText}`.trim())}</div>` : ""}
                     ${renderStatus(state)}
                     <div class="qc2-actions">
-                        <button type="button" class="secondary-btn" data-qc-action="back-review">Back</button>
-                        <button type="button" class="action-btn" data-qc-action="start-analysis" ${state.validation.ready && !state.isSubmitting ? "" : "disabled"}>${state.isSubmitting ? "Starting..." : "Start Analysis"}</button>
+                        <button type="button" id="qcStep2BackBtn" class="secondary-btn" data-qc-action="${state.mode === "manual" ? "back-review" : "back-upload"}">Back</button>
+                        <button type="button" id="qcStep2StartBtn" class="action-btn" data-qc-action="start-analysis" ${state.validation.ready && !state.isSubmitting ? "" : "disabled"}>${state.isSubmitting ? "Starting..." : "Start Analysis"}</button>
                     </div>
                 </div>
             </section>
@@ -3386,9 +3911,11 @@
         elements.app?.querySelector(".qc2-analysis-table-frame")?.classList.toggle("is-active", Boolean(isActive));
     }
 
-    function selectFullComparisonRow(elements, state, cardKey, { persist = true } = {}) {
-        const nextCardKey = String(cardKey || "").trim();
-        if (!nextCardKey) return;
+    function selectFullComparisonRow(elements, state, cardKey, { persist = true, toggle = false } = {}) {
+        const requestedCardKey = String(cardKey || "").trim();
+        const nextCardKey = toggle && requestedCardKey === state.selectedAnalysisRowKey
+            ? ""
+            : requestedCardKey;
         state.selectedAnalysisRowKey = nextCardKey;
         elements.app?.querySelectorAll("[data-qc-analysis-card-key]").forEach((row) => {
             row.classList.toggle("is-selected", row.dataset.qcAnalysisCardKey === nextCardKey);
@@ -3451,8 +3978,7 @@
     }
 
     function getAnalysisFilterResultValue(card) {
-        if (card.decisionType === "lowest-observed-price-already-used") return "no-immediate-action";
-        return "pricing-opportunities";
+        return getPriceSpreadMetrics(card).hasSavings ? "pricing-opportunities" : "no-immediate-action";
     }
 
     function normalizeAnalysisTableFilter(filterValue) {
@@ -3467,6 +3993,230 @@
         if (typeof cardKey !== "string") return "";
         const separatorIndex = cardKey.indexOf("::");
         return separatorIndex === -1 ? "" : cardKey.slice(0, separatorIndex);
+    }
+
+    function getFullTableLowestOffer(card) {
+        return card?.lowestObservedOffer || card?.currentOffer || null;
+    }
+
+    function getFullTableHighestOffer(card) {
+        return card?.highestObservedOffer
+            || card?.productSummary?.highestObservedOffer
+            || card?.referenceOffer
+            || card?.currentOffer
+            || null;
+    }
+
+    function normalizeUnitPriceForComparison(value) {
+        const numericValue = Number(value || 0);
+        if (!Number.isFinite(numericValue)) return 0;
+        return Math.round((numericValue + Number.EPSILON) * 100) / 100;
+    }
+
+    function getPriceSpreadMetrics(card) {
+        const lowestOffer = getFullTableLowestOffer(card);
+        const highestOffer = getFullTableHighestOffer(card);
+        const normalizedLowestPrice = normalizeUnitPriceForComparison(lowestOffer?.unit_price || 0);
+        const normalizedHighestPrice = normalizeUnitPriceForComparison(highestOffer?.unit_price || 0);
+        const totalQuantity = Number(card?.totalQuantity || card?.quantity || 0);
+        const savingsAmount = Math.max(normalizedHighestPrice - normalizedLowestPrice, 0) * totalQuantity;
+        const hasSavings = normalizedHighestPrice > normalizedLowestPrice;
+        return {
+            leftOffer: lowestOffer,
+            rightOffer: highestOffer,
+            leftUnitPrice: normalizedLowestPrice,
+            rightUnitPrice: normalizedHighestPrice,
+            totalQuantity,
+            savingsAmount,
+            hasSavings
+        };
+    }
+
+    function getAnalysisTableViewModel(card) {
+        const priceSpread = getPriceSpreadMetrics(card);
+        return {
+            leftHeader: "Lowest Supplier",
+            leftPriceHeader: "Lowest Price",
+            rightHeader: "Highest Supplier",
+            rightPriceHeader: "Highest Price",
+            savingsHeader: "Savings Opportunity",
+            leftOffer: priceSpread.leftOffer,
+            rightOffer: priceSpread.rightOffer,
+            leftUnitPrice: priceSpread.leftUnitPrice,
+            rightUnitPrice: priceSpread.rightUnitPrice,
+            totalQuantity: priceSpread.totalQuantity,
+            savingsAmount: priceSpread.savingsAmount,
+            hasSavings: priceSpread.hasSavings,
+            leftMeta: priceSpread.leftOffer?.quote_date ? formatDate(priceSpread.leftOffer.quote_date) : "Best observed context",
+            leftPriceMeta: "Lowest unit price",
+            rightMeta: "Highest unit price",
+            rightPriceMeta: "Highest unit price",
+            leftDetailLabel: "Lowest Price",
+            rightDetailLabel: "Highest Price",
+            resultValue: priceSpread.hasSavings ? "pricing-opportunities" : "no-immediate-action",
+            statusLabel: priceSpread.hasSavings ? "Pricing opportunity" : "No immediate action",
+            statusTone: priceSpread.hasSavings ? "opportunity" : "neutral",
+            resultHelper: priceSpread.hasSavings ? "Savings available" : "No savings",
+            resultInsight: priceSpread.hasSavings
+                ? `Highest ${formatCurrency(priceSpread.rightUnitPrice)} vs lowest ${formatCurrency(priceSpread.leftUnitPrice)}`
+                : "",
+            decisionNote: priceSpread.hasSavings
+                ? `Price spread opportunity: highest ${formatCurrency(priceSpread.rightUnitPrice)} vs lowest ${formatCurrency(priceSpread.leftUnitPrice)} across qty ${formatQuantity(priceSpread.totalQuantity)}.`
+                : "No immediate action after 2-decimal price comparison."
+        };
+    }
+
+    function getFullTableSavingsAmount(card) {
+        return getAnalysisTableViewModel(card).savingsAmount;
+    }
+
+    function getFilteredAnalysisCards(state, cards) {
+        const activeFilter = normalizeAnalysisTableFilter(state.analysisTableFilter);
+        const searchTerm = String(state.analysisTableSearch || "").trim().toLowerCase();
+        const sourceCards = Array.isArray(cards) ? cards : [];
+        const memo = getAnalysisMemo(state);
+        const filteredKey = [
+            activeFilter,
+            searchTerm,
+            state.analysisTableSort?.key || "",
+            state.analysisTableSort?.direction || "",
+            sourceCards.length
+        ].join("|");
+        if (memo.cardsRef === sourceCards && memo.filteredKey === filteredKey && Array.isArray(memo.filteredCards)) {
+            return memo.filteredCards;
+        }
+        let filteredCards = [...sourceCards].filter((card) => {
+            const matchesFilter = activeFilter === "all" || getAnalysisFilterResultValue(card) === activeFilter;
+            if (!matchesFilter) return false;
+            if (!searchTerm) return true;
+            const viewModel = getAnalysisTableViewModel(card);
+            const haystack = [
+                card.productName,
+                getOfferSupplierLabel(viewModel.leftOffer),
+                getOfferSupplierLabel(viewModel.rightOffer)
+            ].filter(Boolean).join(" ").toLowerCase();
+            return haystack.includes(searchTerm);
+        });
+        if (state.analysisTableSort?.key === "savings") {
+            const direction = state.analysisTableSort.direction === "asc" ? 1 : -1;
+            filteredCards.sort((left, right) => {
+                const delta = getFullTableSavingsAmount(left) - getFullTableSavingsAmount(right);
+                if (delta !== 0) return delta * direction;
+                return String(left.productName || "").localeCompare(String(right.productName || "")) * direction;
+            });
+        }
+        memo.filteredKey = filteredKey;
+        memo.filteredCards = filteredCards;
+        return filteredCards;
+    }
+
+    function getVisibleAnalysisSummary(state, cards) {
+        const sourceCards = Array.isArray(cards) ? cards : getAnalysisDecisionCards(state);
+        const filteredCards = getFilteredAnalysisCards(state, sourceCards);
+        const memo = getAnalysisMemo(state);
+        const summaryKey = [
+            normalizeAnalysisTableFilter(state.analysisTableFilter),
+            String(state.analysisTableSearch || "").trim().toLowerCase(),
+            state.analysisTableSort?.key || "",
+            state.analysisTableSort?.direction || "",
+            filteredCards.length
+        ].join("|");
+        if (memo.filteredCards === filteredCards && memo.visibleSummaryKey === summaryKey && memo.visibleSummary) {
+            return memo.visibleSummary;
+        }
+
+        const productKeys = new Set();
+        const supplierKeys = new Set();
+        let pricingOpportunityCount = 0;
+        let totalPotentialSavings = 0;
+
+        filteredCards.forEach((card) => {
+            const viewModel = getAnalysisTableViewModel(card);
+            productKeys.add(getProductUnitKey(card.productName, card.unit));
+            const leftSupplier = getOfferSupplierLabel(viewModel.leftOffer);
+            const rightSupplier = getOfferSupplierLabel(viewModel.rightOffer);
+            if (leftSupplier) supplierKeys.add(getSupplierKey(leftSupplier));
+            if (rightSupplier) supplierKeys.add(getSupplierKey(rightSupplier));
+            if (viewModel.hasSavings) {
+                pricingOpportunityCount += 1;
+                totalPotentialSavings += Number(viewModel.savingsAmount || 0);
+            }
+        });
+
+        memo.visibleSummaryKey = summaryKey;
+        memo.visibleSummary = {
+            productCount: productKeys.size,
+            supplierCount: supplierKeys.size,
+            pricingOpportunityCount,
+            totalPotentialSavings,
+            filteredCards
+        };
+        return memo.visibleSummary;
+    }
+
+    function getVisibleTopSavingsSummary(state, cards, { sectionVisible = true } = {}) {
+        const sourceCards = Array.isArray(cards) ? cards : [];
+        const visibleCards = sectionVisible
+            ? sourceCards.slice(0, Math.max(state.opportunityRenderCount || OPPORTUNITY_CARD_BATCH_SIZE, OPPORTUNITY_CARD_BATCH_SIZE))
+            : [];
+        const memo = getAnalysisMemo(state);
+        const summaryKey = [
+            sectionVisible ? "visible" : "hidden",
+            visibleCards.length,
+            state.opportunityRenderCount || OPPORTUNITY_CARD_BATCH_SIZE
+        ].join("|");
+        if (memo.topSavingsSummaryKey === summaryKey && memo.topSavingsSummary) {
+            return memo.topSavingsSummary;
+        }
+
+        const productKeys = new Set();
+        const supplierKeys = new Set();
+        let pricingOpportunityCount = 0;
+        let totalPotentialSavings = 0;
+
+        visibleCards.forEach((card) => {
+            productKeys.add(getProductUnitKey(card.productName, card.unit));
+            const currentSupplier = getOfferSupplierLabel(card.currentOffer);
+            const bestSupplier = getOfferSupplierLabel(card.bestOffer || card.referenceOffer);
+            if (currentSupplier) supplierKeys.add(getSupplierKey(currentSupplier));
+            if (bestSupplier) supplierKeys.add(getSupplierKey(bestSupplier));
+            if (Number(card.savingsAmount || 0) > 0) {
+                pricingOpportunityCount += 1;
+                totalPotentialSavings += Number(card.savingsAmount || 0);
+            }
+        });
+
+        memo.topSavingsSummaryKey = summaryKey;
+        memo.topSavingsSummary = {
+            productCount: productKeys.size,
+            supplierCount: supplierKeys.size,
+            pricingOpportunityCount,
+            totalPotentialSavings,
+            visibleCards
+        };
+        return memo.topSavingsSummary;
+    }
+
+    function getAnalysisRowApproxHeight(card, state) {
+        const cardKey = getScopedDecisionCardKey("analysis", getDecisionCardKey(card));
+        return state.collapsedDecisionCards?.[cardKey] ? ANALYSIS_ROW_EXPANDED_HEIGHT : ANALYSIS_ROW_HEIGHT;
+    }
+
+    function getAnalysisVirtualSlice(cards, state) {
+        const sourceCards = Array.isArray(cards) ? cards : [];
+        if (sourceCards.length <= 60) {
+            return { visibleCards: sourceCards, topSpacer: 0, bottomSpacer: 0 };
+        }
+        const viewport = state.analysisViewport || { start: 0, end: 80 };
+        const start = Math.max(0, Math.min(viewport.start || 0, sourceCards.length));
+        const end = Math.max(start, Math.min(viewport.end || sourceCards.length, sourceCards.length));
+        const topSpacer = sourceCards.slice(0, start).reduce((sum, card) => sum + getAnalysisRowApproxHeight(card, state), 0);
+        const bottomSpacer = sourceCards.slice(end).reduce((sum, card) => sum + getAnalysisRowApproxHeight(card, state), 0);
+        return {
+            visibleCards: sourceCards.slice(start, end),
+            topSpacer,
+            bottomSpacer
+        };
     }
 
     function renderAnalysisFilterBar(state, cards) {
@@ -3540,15 +4290,14 @@
 
     function getTopPricingOpportunityCards(cards) {
         return [...(cards || [])]
-            .filter((card) => card.decisionType !== "lowest-observed-price-already-used")
+            .filter((card) => Number(card.savingsAmount || 0) >= 10000)
             .sort((left, right) => {
                 const priorityDelta = getTopPricingOpportunityPriority(left) - getTopPricingOpportunityPriority(right);
                 if (priorityDelta !== 0) return priorityDelta;
                 const scoreDelta = getTopPricingOpportunityScore(right) - getTopPricingOpportunityScore(left);
                 if (scoreDelta !== 0) return scoreDelta;
                 return String(left.productName || "").localeCompare(String(right.productName || ""));
-            })
-            .slice(0, 12);
+            });
     }
 
     function getSpotlightBadgeLabel(card) {
@@ -3590,7 +4339,7 @@
                             <div class="qc2-spotlight-card-head">
                                 <div>
                                     <div class="qc2-spotlight-title">${escapeHtml(card.productName)}</div>
-                                    <div class="qc2-spotlight-meta">${escapeHtml(card.unit || "Unit not provided")} | Qty ${escapeHtml(String(card.quantity || 0))}</div>
+                                    <div class="qc2-spotlight-meta">${escapeHtml(card.unit || "Unit not provided")} | Qty ${escapeHtml(formatQuantity(card.quantity || 0))}</div>
                                 </div>
                                 <span class="qc2-spotlight-badge">Top savings</span>
                             </div>
@@ -3672,7 +4421,7 @@
                                                 </div>
                                                 <div class="qc2-spotlight-detail-row">
                                                     <span class="qc2-spotlight-detail-label">Quantity</span>
-                                                    <span class="qc2-spotlight-detail-value">${escapeHtml(String(card.quantity || 0))} ${escapeHtml(card.unit || "")}</span>
+                                                    <span class="qc2-spotlight-detail-value">${escapeHtml(formatQuantity(card.quantity || 0))} ${escapeHtml(card.unit || "")}</span>
                                                 </div>
                                             </div>
                                         </section>
@@ -3696,18 +4445,20 @@
         if (!cards.length) {
             return '<div class="decision-list-empty">No immediate pricing opportunities found. Review full table for detailed price insights.</div>';
         }
+        const visibleCards = cards.slice(0, Math.max(state.opportunityRenderCount || OPPORTUNITY_CARD_BATCH_SIZE, OPPORTUNITY_CARD_BATCH_SIZE));
+        const hasMoreCards = visibleCards.length < cards.length;
         return `
             <div class="qc2-spotlight-panel">
                 <div class="qc2-spotlight-panel-scroll">
                     <div class="qc2-spotlight-grid">
-                ${cards.map((card, index) => {
+                ${visibleCards.map((card, index) => {
                     const theme = getOpportunityCardTheme(index);
                     const cardKey = getScopedDecisionCardKey("spotlight", getDecisionCardKey(card));
                     const isExpanded = Boolean(state.collapsedDecisionCards[cardKey]);
                     const badgeLabel = getSpotlightBadgeLabel(card);
                     return `
                         <article
-                            class="qc2-spotlight-card ${isExpanded ? "is-expanded" : ""}"
+                            class="qc2-spotlight-card ${isExpanded ? "is-expanded is-active-card" : ""}"
                             data-qc-card-key="${escapeHtml(cardKey)}"
                             style="
                                 --qc2-card-border:${theme.border};
@@ -3724,7 +4475,7 @@
                             <div class="qc2-spotlight-card-head">
                                 <div>
                                     <div class="qc2-spotlight-title">${escapeHtml(card.productName)}</div>
-                                    <div class="qc2-spotlight-meta">${escapeHtml(card.statusLabel)} | ${escapeHtml(card.unit || "Unit not provided")} | Qty ${escapeHtml(String(card.quantity || 0))}</div>
+                                    <div class="qc2-spotlight-meta">${escapeHtml(card.statusLabel)} | ${escapeHtml(card.unit || "Unit not provided")} | Qty ${escapeHtml(formatQuantity(card.quantity || 0))}</div>
                                 </div>
                                 <span class="qc2-spotlight-badge">${escapeHtml(badgeLabel)}</span>
                             </div>
@@ -3733,14 +4484,14 @@
                                     <div class="qc2-spotlight-label">Current unit price</div>
                                     <div class="qc2-spotlight-supplier">${escapeHtml(card.currentOffer?.supplier_name || "Supplier missing")}</div>
                                     <div class="qc2-spotlight-value">${escapeHtml(formatCurrency(card.currentOffer?.unit_price || 0, card.currency))}</div>
-                                    <div class="qc2-spotlight-meta">${escapeHtml(formatDate(card.quoteDate))} | Qty ${escapeHtml(String(card.currentOffer?.quantity || card.quantity || 0))}</div>
+                                    <div class="qc2-spotlight-meta">${escapeHtml(formatDate(card.quoteDate))} | Qty ${escapeHtml(formatQuantity(card.currentOffer?.quantity || card.quantity || 0))}</div>
                                 </div>
                                 <div class="qc2-spotlight-arrow">-&gt;</div>
                                 <div class="qc2-spotlight-lane is-best">
                                     <div class="qc2-spotlight-label">${escapeHtml(card.referenceOfferLabel || "Reference price")}</div>
                                     <div class="qc2-spotlight-supplier">${escapeHtml(card.referenceOffer?.supplier_name || "Supplier missing")}</div>
                                     <div class="qc2-spotlight-value">${escapeHtml(formatCurrency(card.referenceOffer?.unit_price || 0, card.currency))}</div>
-                                    <div class="qc2-spotlight-meta">${escapeHtml(formatDate(card.referenceOffer?.quote_date || card.quoteDate))} | Qty ${escapeHtml(String(card.referenceOffer?.quantity || 0))}</div>
+                                    <div class="qc2-spotlight-meta">${escapeHtml(formatDate(card.referenceOffer?.quote_date || card.quoteDate))} | Qty ${escapeHtml(formatQuantity(card.referenceOffer?.quantity || 0))}</div>
                                 </div>
                             </div>
                             <div class="qc2-spotlight-savings-row">
@@ -3802,7 +4553,7 @@
                                                 </div>
                                             </div>
                                         </section>
-                                        <section class="qc2-spotlight-detail-group" aria-label="Opportunity detail">
+                                        <section class="qc2-spotlight-detail-group qc2-spotlight-detail-group-snapshot" aria-label="Opportunity detail">
                                             <div class="qc2-spotlight-detail-group-title">Opportunity Snapshot</div>
                                             <div class="qc2-spotlight-detail-table">
                                                 <div class="qc2-spotlight-detail-row">
@@ -3830,6 +4581,11 @@
                     `;
                 }).join("")}
                     </div>
+                    ${hasMoreCards ? `
+                        <div class="qc2-spotlight-loadmore">
+                            <button type="button" class="secondary-btn" data-qc-action="load-more-opportunities">Load more opportunities (${cards.length - visibleCards.length} remaining)</button>
+                        </div>
+                    ` : ""}
                 </div>
             </div>
         `;
@@ -3837,6 +4593,13 @@
 
     function getAnalysisDecisionCards(state) {
         return getAnalysisSummary(state.analysisResult || { comparison: { bids: [] } }).decisionCards || [];
+    }
+
+    function getAnalyzeHistoryTargetCard(state) {
+        const decisionCards = getAnalysisDecisionCards(state);
+        if (!decisionCards.length) return null;
+        const selectedCard = decisionCards.find((card) => getScopedDecisionCardKey("analysis", getDecisionCardKey(card)) === state.selectedAnalysisRowKey);
+        return selectedCard || null;
     }
 
     function findProductSummaryCard(state, productName, unit) {
@@ -3871,7 +4634,6 @@
             lowestObservedOffer,
             highestObservedOffer,
             latestObservedOffer,
-            earliestObservedOffer,
             averageObservedUnitPrice,
             supplierCount,
             offers
@@ -3883,7 +4645,7 @@
             : 0;
         const summaryInsights = [
             lowestObservedOffer
-                ? `Best recorded price: ${formatCurrency(lowestObservedOffer.unit_price || 0, lowestObservedOffer.currency || currency)} from ${lowestObservedOffer.supplier_name || "Supplier missing"} on ${formatDate(lowestObservedOffer.quote_date)} at quantity ${Number(lowestObservedOffer.quantity || 0)}.`
+                ? `Best recorded price: ${formatCurrency(lowestObservedOffer.unit_price || 0, lowestObservedOffer.currency || currency)} from ${lowestObservedOffer.supplier_name || "Supplier missing"} on ${formatDate(lowestObservedOffer.quote_date)} at quantity ${formatQuantity(lowestObservedOffer.quantity || 0)}.`
                 : "Best recorded price is not available.",
             highestObservedOffer
                 ? `Highest observed price: ${formatCurrency(highestObservedOffer.unit_price || 0, highestObservedOffer.currency || currency)} from ${highestObservedOffer.supplier_name || "Supplier missing"} on ${formatDate(highestObservedOffer.quote_date)}.`
@@ -3906,12 +4668,10 @@
                     <button type="button" class="secondary-btn" data-qc-product-summary-close="true" aria-label="Close price summary">Close</button>
                 </div>
                 <div class="qc2-product-summary-kpis">
-                    <article class="summary-card qc2-product-summary-kpi"><div class="summary-card-title">Best Unit Price</div><div class="summary-card-value compact">${lowestObservedOffer ? escapeHtml(formatCurrency(lowestObservedOffer.unit_price || 0, lowestObservedOffer.currency || currency)) : "--"}</div><div class="summary-card-insight">${escapeHtml(lowestObservedOffer?.supplier_name || "Supplier missing")} | Qty ${escapeHtml(String(lowestObservedOffer?.quantity || 0))}</div></article>
+                    <article class="summary-card qc2-product-summary-kpi"><div class="summary-card-title">Best Unit Price</div><div class="summary-card-value compact">${lowestObservedOffer ? escapeHtml(formatCurrency(lowestObservedOffer.unit_price || 0, lowestObservedOffer.currency || currency)) : "--"}</div><div class="summary-card-insight">${escapeHtml(lowestObservedOffer?.supplier_name || "Supplier missing")} | Qty ${escapeHtml(formatQuantity(lowestObservedOffer?.quantity || 0))}</div></article>
                     <article class="summary-card qc2-product-summary-kpi"><div class="summary-card-title">Highest Unit Price</div><div class="summary-card-value compact">${highestObservedOffer ? escapeHtml(formatCurrency(highestObservedOffer.unit_price || 0, highestObservedOffer.currency || currency)) : "--"}</div><div class="summary-card-insight">${escapeHtml(highestObservedOffer?.supplier_name || "Supplier missing")}</div></article>
                     <article class="summary-card qc2-product-summary-kpi"><div class="summary-card-title">Latest Unit Price</div><div class="summary-card-value compact">${latestObservedOffer ? escapeHtml(formatCurrency(latestObservedOffer.unit_price || 0, latestObservedOffer.currency || currency)) : "--"}</div><div class="summary-card-insight">${escapeHtml(formatDate(latestObservedOffer?.quote_date))}</div></article>
-                    <article class="summary-card qc2-product-summary-kpi"><div class="summary-card-title">Earliest Unit Price</div><div class="summary-card-value compact">${earliestObservedOffer ? escapeHtml(formatCurrency(earliestObservedOffer.unit_price || 0, earliestObservedOffer.currency || currency)) : "--"}</div><div class="summary-card-insight">${escapeHtml(formatDate(earliestObservedOffer?.quote_date))}</div></article>
                     <article class="summary-card qc2-product-summary-kpi"><div class="summary-card-title">Average Unit Price</div><div class="summary-card-value compact">${escapeHtml(formatCurrency(averageObservedUnitPrice || 0, currency))}</div><div class="summary-card-insight">Across all observed records</div></article>
-                    <article class="summary-card qc2-product-summary-kpi"><div class="summary-card-title">Current vs Best</div><div class="summary-card-value compact">${currentOffer && lowestObservedOffer ? escapeHtml(formatCurrency(currentVsLowestUnitGap, currency)) : "--"}</div><div class="summary-card-insight">${currentOffer && lowestObservedOffer ? (currentVsLowestUnitGap > 0 ? `${escapeHtml(formatPercent(currentVsLowestPercent))} above best` : "Matches best recorded price") : "Current comparison unavailable"}</div></article>
                 </div>
                 <div class="qc2-product-summary-insights">
                     ${summaryInsights.map((insight) => `<div class="qc2-product-summary-insight">${escapeHtml(insight)}</div>`).join("")}
@@ -3923,7 +4683,7 @@
                                 <span>${escapeHtml(formatDate(offer.quote_date))}</span>
                                 <span>${escapeHtml(offer.supplier_name || "Supplier missing")}</span>
                             </div>
-                            <div class="qc2-product-summary-item-copy">Qty ${escapeHtml(String(offer.quantity || 0))} | Unit ${escapeHtml(formatCurrency(offer.unit_price || 0, offer.currency || currency))} | Total ${escapeHtml(formatCurrency(offer.total_price || 0, offer.currency || currency))}</div>
+                            <div class="qc2-product-summary-item-copy">Qty ${escapeHtml(formatQuantity(offer.quantity || 0))} | Unit ${escapeHtml(formatCurrency(offer.unit_price || 0, offer.currency || currency))} | Total ${escapeHtml(formatCurrency(offer.total_price || 0, offer.currency || currency))}</div>
                         </div>
                     `).join("")}
                 </div>
@@ -3932,38 +4692,51 @@
     }
 
     function renderAnalyzeRows(cards, state) {
-        if (!cards.length) {
+        const filteredCards = getFilteredAnalysisCards(state, cards);
+        if (!filteredCards.length) {
             return '<div class="decision-list-empty">No supplier rows were available for comparison.</div>';
         }
+        const { visibleCards, topSpacer, bottomSpacer } = getAnalysisVirtualSlice(filteredCards, state);
+        const savingsSortDirection = state.analysisTableSort?.key === "savings" ? state.analysisTableSort.direction : "";
+        const headerModel = getAnalysisTableViewModel(visibleCards[0] || filteredCards[0] || {});
+        const savingsSortIndicator = savingsSortDirection === "asc" ? "↑" : savingsSortDirection === "desc" ? "↓" : "↕";
         return `
             <div class="qc2-analysis-table qc2-full-table-v3">
                 <div class="qc2-analysis-table-head qc2-ft-head qc2-ft-grid" role="row">
                     <span class="qc2-ft-head-cell qc2-ft-head-cell--product" role="columnheader">Product</span>
-                    <span class="qc2-ft-head-cell" role="columnheader">Current Supplier</span>
-                    <span class="qc2-ft-head-cell qc2-ft-head-cell--price" role="columnheader">Current Price</span>
-                    <span class="qc2-ft-head-cell" role="columnheader">Reference Supplier</span>
-                    <span class="qc2-ft-head-cell qc2-ft-head-cell--price" role="columnheader">Reference Price</span>
-                    <span class="qc2-ft-head-cell qc2-ft-head-cell--savings" role="columnheader">Savings</span>
+                    <span class="qc2-ft-head-cell" role="columnheader">${escapeHtml(headerModel.leftHeader)}</span>
+                    <span class="qc2-ft-head-cell qc2-ft-head-cell--price" role="columnheader">${escapeHtml(headerModel.leftPriceHeader)}</span>
+                    <span class="qc2-ft-head-cell" role="columnheader">${escapeHtml(headerModel.rightHeader)}</span>
+                    <span class="qc2-ft-head-cell qc2-ft-head-cell--price" role="columnheader">${escapeHtml(headerModel.rightPriceHeader)}</span>
+                    <button type="button" class="qc2-ft-head-cell qc2-ft-head-cell--savings qc2-ft-sort-btn ${savingsSortDirection ? "is-active" : ""}" data-qc-action="sort-analysis-savings" aria-label="Sort by savings">${escapeHtml(headerModel.savingsHeader)} ${savingsSortIndicator}</button>
                     <span class="qc2-ft-head-cell qc2-ft-head-cell--result" role="columnheader">Result</span>
                     <span class="qc2-ft-head-cell qc2-ft-head-cell--details" role="columnheader">Details</span>
                 </div>
-                ${cards.map((card, rowIndex) => {
+                ${topSpacer ? `<div class="qc2-virtual-spacer" style="height:${topSpacer}px" aria-hidden="true"></div>` : ""}
+                ${visibleCards.map((card, rowIndex) => {
                     const cardKey = getScopedDecisionCardKey("analysis", getDecisionCardKey(card));
                     const isExpanded = Boolean(state.collapsedDecisionCards[cardKey]);
-                    const resultValue = getAnalysisFilterResultValue(card);
+                    const viewModel = getAnalysisTableViewModel(card);
+                    const resultValue = viewModel.resultValue;
+                    const leftDisplayOffer = viewModel.leftOffer;
+                    const rightDisplayOffer = viewModel.rightOffer;
+                    const leftDisplayUnitPrice = viewModel.leftUnitPrice;
+                    const rightDisplayUnitPrice = viewModel.rightUnitPrice;
+                    const totalDisplayQuantity = viewModel.totalQuantity;
+                    const displaySavingsAmount = viewModel.savingsAmount;
+                    const hasDirectSavings = viewModel.hasSavings;
                     const searchText = [
                         card.productName,
-                        card.currentOffer?.supplier_name,
-                        card.referenceOffer?.supplier_name
+                        getOfferSupplierLabel(leftDisplayOffer),
+                        getOfferSupplierLabel(rightDisplayOffer)
                     ].filter(Boolean).join(" ").toLowerCase();
                     const supplierSearchText = [
-                        card.currentOffer?.supplier_name,
-                        card.referenceOffer?.supplier_name
+                        getOfferSupplierLabel(leftDisplayOffer),
+                        getOfferSupplierLabel(rightDisplayOffer)
                     ].filter(Boolean).join(" ").toLowerCase();
-                    const hasDirectSavings = card.hasValidAlternative && Number(card.savingsAmount || 0) > 0;
-                    const statusToneClass = card.statusTone === "best"
+                    const statusToneClass = viewModel.statusTone === "best"
                         ? "qc2-ft-result__badge--best"
-                        : card.statusTone === "neutral"
+                        : viewModel.statusTone === "neutral"
                             ? "qc2-ft-result__badge--neutral"
                             : "qc2-ft-result__badge--opportunity";
                     return `
@@ -3983,112 +4756,104 @@
                             <div class="qc2-analysis-cell qc2-analysis-cell-product qc2-ft-cell qc2-ft-cell--product" role="gridcell">
                                 <div class="qc2-ft-stack">
                                     <div class="qc2-ft-primary qc2-ft-product" title="${escapeHtml(card.productName)}">${escapeHtml(card.productName)}</div>
-                                    <div class="qc2-ft-meta">${escapeHtml(card.unit || "Unit not provided")} | Qty ${escapeHtml(String(card.quantity || 0))}</div>
+                                    <div class="qc2-ft-meta">${escapeHtml(card.unit || "Unit not provided")} | Qty ${escapeHtml(formatQuantity(totalDisplayQuantity || 0))}</div>
                                 </div>
                             </div>
                             <div class="qc2-analysis-cell qc2-ft-cell qc2-ft-cell--supplier" role="gridcell">
                                 <div class="qc2-ft-stack">
-                                    <div class="qc2-ft-primary qc2-ft-supplier" title="${escapeHtml(card.currentOffer?.supplier_name || "Supplier missing")}">${escapeHtml(card.currentOffer?.supplier_name || "Supplier missing")}</div>
-                                    <div class="qc2-ft-meta">${escapeHtml(formatDate(card.quoteDate))}</div>
+                                    <div class="qc2-ft-primary qc2-ft-supplier" title="${escapeHtml(getOfferSupplierLabel(leftDisplayOffer) || "Supplier missing")}">${escapeHtml(getOfferSupplierLabel(leftDisplayOffer) || "Supplier missing")}</div>
+                                    <div class="qc2-ft-meta">${escapeHtml(viewModel.leftMeta)}</div>
                                 </div>
                             </div>
                             <div class="qc2-analysis-cell qc2-ft-cell qc2-ft-cell--price" role="gridcell">
                                 <div class="qc2-ft-stack">
-                                    <div class="qc2-ft-primary qc2-ft-money">${escapeHtml(formatCurrency(card.currentOffer?.total_price || 0, card.currency))}</div>
-                                    <div class="qc2-ft-meta">${escapeHtml(formatCurrency(card.currentOffer?.unit_price || 0, card.currency))} unit</div>
+                                    <div class="qc2-ft-primary qc2-ft-money">${escapeHtml(formatCurrency(leftDisplayUnitPrice, card.currency))}</div>
+                                    <div class="qc2-ft-meta">${escapeHtml(viewModel.leftPriceMeta)}</div>
                                 </div>
                             </div>
                             <div class="qc2-analysis-cell qc2-ft-cell qc2-ft-cell--supplier" role="gridcell">
                                 <div class="qc2-ft-stack">
-                                    <div class="qc2-ft-primary qc2-ft-supplier" title="${escapeHtml(card.referenceOffer?.supplier_name || "Supplier missing")}">${escapeHtml(card.referenceOffer?.supplier_name || "Supplier missing")}</div>
-                                    <div class="qc2-ft-meta">${escapeHtml(card.referenceOfferLabel || "Reference price")}</div>
+                                    <div class="qc2-ft-primary qc2-ft-supplier" title="${escapeHtml(getOfferSupplierLabel(rightDisplayOffer) || "Supplier missing")}">${escapeHtml(getOfferSupplierLabel(rightDisplayOffer) || "Supplier missing")}</div>
+                                    <div class="qc2-ft-meta">${escapeHtml(viewModel.rightMeta)}</div>
                                 </div>
                             </div>
                             <div class="qc2-analysis-cell qc2-ft-cell qc2-ft-cell--price" role="gridcell">
                                 <div class="qc2-ft-stack">
-                                    <div class="qc2-ft-primary qc2-ft-money">${escapeHtml(formatCurrency(card.referenceOffer?.total_price || 0, card.currency))}</div>
-                                    <div class="qc2-ft-meta">${escapeHtml(formatCurrency(card.referenceOffer?.unit_price || 0, card.currency))} unit</div>
+                                    <div class="qc2-ft-primary qc2-ft-money">${escapeHtml(formatCurrency(rightDisplayUnitPrice, card.currency))}</div>
+                                    <div class="qc2-ft-meta">${escapeHtml(viewModel.rightPriceMeta)}</div>
                                 </div>
                             </div>
                             <div class="qc2-analysis-cell qc2-ft-cell qc2-ft-cell--savings" role="gridcell">
                                 ${!hasDirectSavings ? `
                                     <div class="qc2-ft-neutral-value">--</div>
                                 ` : `
-                                    <div class="qc2-ft-savings-pill">${escapeHtml(formatCurrency(card.savingsAmount, card.currency))}</div>
-                                    <div class="qc2-ft-meta">${escapeHtml(formatPercent(card.savingsPercent))}</div>
+                                    <div class="qc2-ft-savings-pill qc2-ft-savings-pill--nowrap">${escapeHtml(formatCurrency(displaySavingsAmount, card.currency))}</div>
+                                    <div class="qc2-ft-meta">Qty ${escapeHtml(formatQuantity(totalDisplayQuantity || 0))}</div>
                                 `}
                             </div>
                             <div class="qc2-analysis-cell qc2-analysis-cell-result qc2-ft-cell qc2-ft-cell--result" role="gridcell">
                                 <div class="qc2-ft-result" aria-label="Result summary">
                                     <div class="qc2-ft-result__badge-zone">
-                                        <div class="qc2-ft-result__badge ${statusToneClass}" title="${escapeHtml(card.resultBadgeTooltip || card.statusLabel || "")}">${escapeHtml(card.statusLabel)}</div>
+                                        <div class="qc2-ft-result__badge ${statusToneClass}" title="${escapeHtml(viewModel.statusLabel)}">${escapeHtml(viewModel.statusLabel)}</div>
                                     </div>
                                     <div class="qc2-ft-result__helper-zone">
-                                        <div class="qc2-ft-result__helper">${escapeHtml(hasDirectSavings ? "Direct savings available" : "No direct savings")}</div>
+                                        <div class="qc2-ft-result__helper">${escapeHtml(viewModel.resultHelper)}</div>
                                     </div>
                                     <div class="qc2-ft-result__insight-zone">
-                                        <div class="qc2-ft-result__insight">${card.compactResultInsight ? escapeHtml(card.compactResultInsight) : ""}</div>
+                                        <div class="qc2-ft-result__insight">${viewModel.resultInsight ? escapeHtml(viewModel.resultInsight) : ""}</div>
                                     </div>
                                 </div>
                             </div>
-                            <div class="qc2-analysis-cell qc2-analysis-cell-expand qc2-ft-cell qc2-ft-cell--details ${card.hasValidAlternative && card.savingsAmount > 0 ? "" : "single-action"}" role="gridcell">
+                            <div class="qc2-analysis-cell qc2-analysis-cell-expand qc2-ft-cell qc2-ft-cell--details" role="gridcell">
                                 <div class="qc2-ft-actions">
-                                    ${card.hasValidAlternative && card.savingsAmount > 0 ? `
-                                        <button
-                                            type="button"
-                                            class="secondary-btn qc2-collapse-btn qc2-analysis-history-btn"
-                                            data-qc-action="see-history-offers"
-                                            data-product-name="${escapeHtml(card.productName)}"
-                                            data-product-unit="${escapeHtml(card.unit || "")}"
-                                        >
-                                            See history
-                                        </button>
-                                        <button type="button" class="secondary-btn qc2-collapse-btn" data-qc-action="open-product-summary" data-product-name="${escapeHtml(card.productName)}" data-product-unit="${escapeHtml(card.unit || "")}">
-                                            Price summary
-                                        </button>
-                                        <button type="button" class="secondary-btn qc2-collapse-btn" data-qc-action="toggle-decision-card" data-card-key="${escapeHtml(cardKey)}" aria-expanded="${isExpanded ? "true" : "false"}">
-                                            ${isExpanded ? "Close table" : "Open table"}
-                                        </button>
-                                    ` : `
-                                        <button type="button" class="secondary-btn qc2-collapse-btn" data-qc-action="open-product-summary" data-product-name="${escapeHtml(card.productName)}" data-product-unit="${escapeHtml(card.unit || "")}">
-                                            Price summary
-                                        </button>
-                                        <button type="button" class="secondary-btn qc2-collapse-btn" data-qc-action="toggle-decision-card" data-card-key="${escapeHtml(cardKey)}" aria-expanded="${isExpanded ? "true" : "false"}">
-                                            ${isExpanded ? "Close table" : "Open table"}
-                                        </button>
-                                    `}
+                                    <button
+                                        type="button"
+                                        class="secondary-btn qc2-collapse-btn qc2-analysis-history-btn"
+                                        data-qc-action="see-history-offers"
+                                        data-product-name="${escapeHtml(card.productName)}"
+                                        data-product-unit="${escapeHtml(card.unit || "")}"
+                                    >
+                                        See history
+                                    </button>
+                                    <button type="button" class="secondary-btn qc2-collapse-btn" data-qc-action="open-product-summary" data-product-name="${escapeHtml(card.productName)}" data-product-unit="${escapeHtml(card.unit || "")}">
+                                        Price summary
+                                    </button>
+                                    <button type="button" class="secondary-btn qc2-collapse-btn" data-qc-action="toggle-decision-card" data-card-key="${escapeHtml(cardKey)}" aria-expanded="${isExpanded ? "true" : "false"}">
+                                        ${isExpanded ? "Close table" : "Open table"}
+                                    </button>
                                 </div>
                             </div>
                         </div>
                         <div class="qc2-analysis-row-detail qc2-ft-detail-panel">
                             <div class="qc2-analysis-detail-grid qc2-ft-detail-grid">
                                 <div class="qc2-analysis-detail-item qc2-ft-detail-card">
-                                    <span class="qc2-analysis-detail-label">Price Date</span>
-                                    <span class="qc2-analysis-detail-value">${escapeHtml(formatDate(card.quoteDate))}</span>
+                                    <span class="qc2-analysis-detail-label">Overall trend</span>
+                                    <span class="qc2-analysis-detail-value">${escapeHtml(card.overallAnalysis?.firstDate || "--")} -> ${escapeHtml(card.overallAnalysis?.latestDate || "--")} | ${escapeHtml(formatCurrency(card.overallAnalysis?.firstUnitPrice || 0, card.currency))} -> ${escapeHtml(formatCurrency(card.overallAnalysis?.latestUnitPrice || 0, card.currency))}</span>
                                 </div>
                                 <div class="qc2-analysis-detail-item qc2-ft-detail-card">
-                                    <span class="qc2-analysis-detail-label">Current Price</span>
-                                    <span class="qc2-analysis-detail-value">${escapeHtml(card.currentOffer?.supplier_name || "Supplier missing")} | ${escapeHtml(formatCurrency(card.currentOffer?.unit_price || 0, card.currency))} unit</span>
+                                    <span class="qc2-analysis-detail-label">${escapeHtml(viewModel.leftDetailLabel)}</span>
+                                    <span class="qc2-analysis-detail-value">${escapeHtml(getOfferSupplierLabel(leftDisplayOffer) || "Supplier missing")} | ${escapeHtml(formatCurrency(leftDisplayUnitPrice, card.currency))} unit</span>
                                 </div>
                                 <div class="qc2-analysis-detail-item qc2-ft-detail-card">
-                                    <span class="qc2-analysis-detail-label">Reference Price</span>
-                                    <span class="qc2-analysis-detail-value">${escapeHtml(card.referenceOffer?.supplier_name || "Supplier missing")} | ${escapeHtml(formatCurrency(card.referenceOffer?.unit_price || 0, card.currency))} unit</span>
+                                    <span class="qc2-analysis-detail-label">${escapeHtml(viewModel.rightDetailLabel)}</span>
+                                    <span class="qc2-analysis-detail-value">${escapeHtml(getOfferSupplierLabel(rightDisplayOffer) || "Supplier missing")} | ${escapeHtml(formatCurrency(rightDisplayUnitPrice, card.currency))} unit</span>
                                 </div>
                                 <div class="qc2-analysis-detail-item qc2-ft-detail-card">
                                     <span class="qc2-analysis-detail-label">Commercial Terms</span>
                                     <span class="qc2-analysis-detail-value">${escapeHtml(card.referenceOffer?.currency || card.currency || "USD")} | ${escapeHtml(card.referenceOffer?.delivery_time || "Delivery not provided")} | ${escapeHtml(card.referenceOffer?.payment_term || "Payment terms not provided")}</span>
                                 </div>
                                 <div class="qc2-analysis-detail-item qc2-ft-detail-card">
-                                    <span class="qc2-analysis-detail-label">Price Validity</span>
-                                    <span class="qc2-analysis-detail-value">${escapeHtml(formatDate(card.referenceOffer?.valid_until) || "Not provided")}</span>
+                                    <span class="qc2-analysis-detail-label">Monthly analysis</span>
+                                    <span class="qc2-analysis-detail-value">${escapeHtml((card.monthlyInsights || []).slice(0, 4).map((entry) => `${entry.label}: avg ${formatCurrency(entry.avgPrice, card.currency)}`).join(" | ") || "No monthly history available")}</span>
                                 </div>
                             </div>
                             ${(card.currentOffer?.notes || card.referenceOffer?.notes) ? `<div class="qc2-analysis-detail-note qc2-analysis-detail-note-secondary qc2-ft-detail-note">${escapeHtml(card.currentOffer?.notes || card.referenceOffer?.notes)}</div>` : ""}
-                            <div class="qc2-analysis-detail-note qc2-ft-detail-insight">${escapeHtml(card.decisionSentence)}</div>
+                            <div class="qc2-analysis-detail-note qc2-ft-detail-insight">${escapeHtml(viewModel.decisionNote)}</div>
                         </div>
                     </article>
                 `;
                 }).join("")}
+                ${bottomSpacer ? `<div class="qc2-virtual-spacer" style="height:${bottomSpacer}px" aria-hidden="true"></div>` : ""}
                 <div class="qc2-analysis-filter-empty" data-qc-analysis-empty hidden>No comparison rows match the selected filter.</div>
             </div>
         `;
@@ -4169,14 +4934,13 @@
         const summary = getAnalysisSummary(result);
         const decisionCards = summary.decisionCards || [];
         const opportunityCards = getTopPricingOpportunityCards(decisionCards);
-        const totalPotentialSavings = opportunityCards.reduce(
-            (sum, card) => sum + (card.hasPotentialSavings ? Number(card.potentialSavingsAmount || 0) : 0),
-            0
-        );
         const expandedOpportunityCards = opportunityCards.filter((card) => Boolean(state.collapsedDecisionCards[getScopedDecisionCardKey("spotlight", getDecisionCardKey(card))]));
         const comparisonCurrency = result.comparison?.bids?.[0]?.currency || "USD";
         const isOpportunitySectionVisible = state.showOpportunitySection !== false;
         const activeAnalyzeTab = state.activeAnalyzeTab || "savings";
+        const visibleSummary = activeAnalyzeTab === "savings"
+            ? getVisibleTopSavingsSummary(state, opportunityCards, { sectionVisible: isOpportunitySectionVisible })
+            : getVisibleAnalysisSummary(state, decisionCards);
         const shouldRenderFullComparison = state.showFullComparison && activeAnalyzeTab === "full-table";
         return `
             <section class="qc2-screen qc2-screen-analyze" id="qc2AnalysisTop">
@@ -4199,10 +4963,10 @@
                         </button>
                     </div>
                     <div class="qc2-summary-grid qc2-summary-grid-compact qc2-summary-grid-hero">
-                        <article class="summary-card qc2-summary-card-compact"><div class="summary-card-title">Products analyzed</div><div class="summary-card-value compact">${summary.productCount}</div><div class="summary-card-insight">Visible product groups in this analysis.</div></article>
-                        <article class="summary-card qc2-summary-card-compact"><div class="summary-card-title">Suppliers compared</div><div class="summary-card-value compact">${summary.supplierCount}</div><div class="summary-card-insight">Unique suppliers in the imported pricing data.</div></article>
-                        <article class="summary-card qc2-summary-card-compact"><div class="summary-card-title">Pricing opportunities</div><div class="summary-card-value compact">${opportunityCards.length}</div><div class="summary-card-insight">Visible actionable pricing opportunity cards in this summary.</div></article>
-                        <article class="summary-card qc2-summary-card-compact is-savings"><div class="summary-card-title">Total potential savings</div><div class="summary-card-value compact">${escapeHtml(formatCurrency(totalPotentialSavings, comparisonCurrency))}</div><div class="summary-card-insight">Sum of the visible potential savings shown in the pricing opportunity cards.</div></article>
+                        <article class="summary-card qc2-summary-card-compact"><div class="summary-card-title">Products analyzed</div><div class="summary-card-value compact">${visibleSummary.productCount}</div><div class="summary-card-insight">${activeAnalyzeTab === "savings" ? "Visible Top Savings products in the current section." : "Visible product groups in the active filter."}</div></article>
+                        <article class="summary-card qc2-summary-card-compact"><div class="summary-card-title">Suppliers compared</div><div class="summary-card-value compact">${visibleSummary.supplierCount}</div><div class="summary-card-insight">${activeAnalyzeTab === "savings" ? "Unique suppliers across the visible Top Savings cards." : "Unique suppliers in the visible table view."}</div></article>
+                        <article class="summary-card qc2-summary-card-compact"><div class="summary-card-title">Pricing opportunities</div><div class="summary-card-value compact">${visibleSummary.pricingOpportunityCount}</div><div class="summary-card-insight">${activeAnalyzeTab === "savings" ? "Visible Top Savings cards with savings above zero." : "Visible rows with savings above zero in the active filter."}</div></article>
+                        <article class="summary-card qc2-summary-card-compact is-savings"><div class="summary-card-title">Total potential savings</div><div class="summary-card-value compact">${escapeHtml(formatCurrency(visibleSummary.totalPotentialSavings, comparisonCurrency))}</div><div class="summary-card-insight">${activeAnalyzeTab === "savings" ? "Sum of visible Top Savings card values." : "Sum of visible row savings in the active filter."}</div></article>
                     </div>
                     <div class="qc2-analyze-tab-panels">
                         <div id="qcTabSavings" class="qc2-analyze-tab-panel ${activeAnalyzeTab === "savings" ? "active-tab" : ""}" role="tabpanel" aria-hidden="${activeAnalyzeTab === "savings" ? "false" : "true"}">
@@ -4248,18 +5012,19 @@
                                     ${renderAnalysisFilterBar(state, summary.decisionCards)}
                                     <div class="qc2-analysis-table-frame">
                                         <div class="qc2-analysis-table-scroll" tabindex="0" aria-label="Full comparison table results">
-                                            ${renderAnalyzeRows(summary.decisionCards, state)}
+                                            <div data-qc-analysis-table-content>${renderAnalyzeRows(summary.decisionCards, state)}</div>
                                         </div>
                                     </div>
                                 ` : ""}
                             </section>
                         </div>
                     </div>
-                    ${renderStatus(state)}
+                    ${activeAnalyzeTab === "savings" ? "" : renderStatus(state)}
                     <div data-qc-product-summary-modal>${renderProductSummaryDrawer(state)}</div>
                     <div class="qc2-actions qc2-analyze-actions" id="qc2AnalysisLower">
                         <div class="qc2-analyze-actions-slot is-left">
-                            <button type="button" class="secondary-btn" data-qc-action="back-review">Back to Review</button>
+                            <button type="button" id="qcStep3BackBtn" class="secondary-btn" data-qc-action="back-review">Back</button>
+                            <button type="button" class="secondary-btn" data-qc-action="back-home">Back to Home</button>
                         </div>
                         <div class="qc2-analyze-actions-slot is-right">
                             <button type="button" class="action-btn" data-qc-action="go-history">Product History</button>
@@ -4422,6 +5187,7 @@
         const optionSource = getHistoryFilterOptions(state, key);
         const matchedValue = optionSource.find((option) => option.toLowerCase() === normalizedValue.toLowerCase()) || "";
         state.historyFilters[key] = matchedValue;
+        state.historyViewport = { start: 0, end: 120, scrollTop: 0 };
         syncHistoryFilterDefaults(state);
         return true;
     }
@@ -4496,7 +5262,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             <article class="summary-card"><div class="summary-card-title">Latest price</div><div class="summary-card-value compact">${summary.latestPrice == null ? "--" : escapeHtml(formatCurrency(summary.latestPrice, currency))}</div><div class="summary-card-insight">Most recent unit price in the selected range.</div></article>
             <article class="summary-card"><div class="summary-card-title">Oldest price</div><div class="summary-card-value compact">${summary.oldestPrice == null ? "--" : escapeHtml(formatCurrency(summary.oldestPrice, currency))}</div><div class="summary-card-insight">Starting unit price in the selected range.</div></article>
             <article class="summary-card"><div class="summary-card-title">Min / Max</div><div class="summary-card-value compact">${summary.minPrice == null ? "--" : `${escapeHtml(formatCurrency(summary.minPrice, currency))} / ${escapeHtml(formatCurrency(summary.maxPrice, currency))}`}</div><div class="summary-card-insight">Lowest and highest unit price in the visible history.</div></article>
-            <article class="summary-card"><div class="summary-card-title">Total change</div><div class="summary-card-value compact">${summary.totalChange == null ? "--" : escapeHtml(formatCurrency(summary.totalChange, currency))}</div><div class="summary-card-insight">${summary.totalChangePercent == null ? "No change percentage available yet." : `${escapeHtml(formatPercent(summary.totalChangePercent))} vs oldest visible record.`}</div></article>
+            <article class="summary-card"><div class="summary-card-title">Total change</div><div class="summary-card-value compact">${summary.totalChange == null ? "--" : escapeHtml(formatCurrency(summary.totalChange, currency))}</div><div class="summary-card-insight">${summary.totalChangePercent == null ? "No change percentage available yet." : `${escapeHtml(formatPercent(summary.totalChangePercent))} from lowest to highest visible price.`}</div></article>
         `;
     }
 
@@ -4614,6 +5380,19 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
         const { productName, unit, rows, usesFullSeries } = state.historyDetailModalSeries;
         const summary = buildHistorySeriesSummary(rows);
         const insights = buildHistorySeriesInsights(rows);
+        const supplierRows = summary.supplierNames.map((supplierName) => {
+            const matchingRows = rows.filter((row) => row.supplier === supplierName);
+            const avgPrice = matchingRows.length
+                ? matchingRows.reduce((sum, row) => sum + Number(row.unitPrice || 0), 0) / matchingRows.length
+                : null;
+            return {
+                supplierName,
+                avgPrice
+            };
+        });
+        const supplierAvgPrices = supplierRows.map((entry) => Number(entry.avgPrice)).filter(Number.isFinite);
+        const lowestSupplierAvg = supplierAvgPrices.length ? Math.min(...supplierAvgPrices) : null;
+        const highestSupplierAvg = supplierAvgPrices.length ? Math.max(...supplierAvgPrices) : null;
         return `
             <div class="qc2-history-detail-backdrop" data-qc-history-detail-close></div>
             <aside class="qc2-history-detail-drawer" role="dialog" aria-modal="true" aria-label="${escapeHtml(`${productName} ${unit} detail view`)}">
@@ -4630,19 +5409,47 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
                 </div>
                 ${renderHistorySeriesChart(rows)}
                 <div class="qc2-history-detail-kpis">
-                    <article class="summary-card qc2-history-detail-kpi"><div class="summary-card-title">Latest Unit Price</div><div class="summary-card-value compact">${summary.latestUnitPrice == null ? "--" : escapeHtml(formatCurrency(summary.latestUnitPrice, rows[rows.length - 1]?.currency || "USD"))}</div><div class="summary-card-insight">${escapeHtml(summary.latestUnitPriceSupplier || "Supplier missing")}${summary.latestUnitPriceDate ? ` | ${escapeHtml(summary.latestUnitPriceDate)}` : ""}</div></article>
+                    <article class="summary-card qc2-history-detail-kpi"><div class="summary-card-title">Lowest Unit Price</div><div class="summary-card-value compact">${summary.lowestUnitPrice == null ? "--" : escapeHtml(formatCurrency(summary.lowestUnitPrice, rows[rows.length - 1]?.currency || "USD"))}</div><div class="summary-card-insight">${escapeHtml(summary.lowestUnitPriceSupplier || "Supplier missing")}${summary.lowestUnitPriceDate ? ` | ${escapeHtml(summary.lowestUnitPriceDate)}` : ""}</div></article>
                     <article class="summary-card qc2-history-detail-kpi"><div class="summary-card-title">Highest Unit Price</div><div class="summary-card-value compact">${summary.highestUnitPrice == null ? "--" : escapeHtml(formatCurrency(summary.highestUnitPrice, rows[0]?.currency || "USD"))}</div><div class="summary-card-insight">${escapeHtml(summary.highestUnitPriceSupplier || "Supplier missing")}${summary.highestUnitPriceDate ? ` | ${escapeHtml(summary.highestUnitPriceDate)}` : ""}</div></article>
-                    <article class="summary-card qc2-history-detail-kpi"><div class="summary-card-title">Earliest Unit Price</div><div class="summary-card-value compact">${summary.earliestUnitPrice == null ? "--" : escapeHtml(formatCurrency(summary.earliestUnitPrice, rows[0]?.currency || "USD"))}</div><div class="summary-card-insight">${escapeHtml(summary.earliestUnitPriceSupplier || "Supplier missing")}${summary.earliestUnitPriceDate ? ` | ${escapeHtml(summary.earliestUnitPriceDate)}` : ""}</div></article>
+                    <article class="summary-card qc2-history-detail-kpi qc2-history-detail-kpi-current-supplier"><div class="summary-card-title">Current Supplier</div><div class="summary-card-value compact">${escapeHtml(summary.latestUnitPriceSupplier || "Supplier missing")}</div><div class="summary-card-insight">${summary.latestUnitPriceDate ? escapeHtml(summary.latestUnitPriceDate) : "Latest visible price context"}</div></article>
                     <article class="summary-card qc2-history-detail-kpi"><div class="summary-card-title">Net Change</div><div class="summary-card-value compact">${summary.netChange == null ? "--" : escapeHtml(formatCurrency(summary.netChange, rows[rows.length - 1]?.currency || "USD"))}</div><div class="summary-card-insight">First -> Latest</div></article>
                     <article class="summary-card qc2-history-detail-kpi"><div class="summary-card-title">Net Change %</div><div class="summary-card-value compact">${summary.netChangePercent == null ? "--" : escapeHtml(formatPercent(summary.netChangePercent))}</div><div class="summary-card-insight">${escapeHtml(summary.firstDate || "--")} -> ${escapeHtml(summary.latestDate || "--")}</div></article>
-                    <article class="summary-card qc2-history-detail-kpi"><div class="summary-card-title">Current vs Best</div><div class="summary-card-value compact">${summary.currentVsBestUnitPrice == null ? "--" : escapeHtml(formatCurrency(summary.currentVsBestUnitPrice, rows[rows.length - 1]?.currency || "USD"))}</div><div class="summary-card-insight">${escapeHtml(summary.currentVsBestLabel || "Best-price comparison unavailable")}</div></article>
                     <article class="summary-card qc2-history-detail-kpi"><div class="summary-card-title">Average Unit Price</div><div class="summary-card-value compact">${summary.averageUnitPrice == null ? "--" : escapeHtml(formatCurrency(summary.averageUnitPrice, rows[0]?.currency || "USD"))}</div><div class="summary-card-insight">Across ${escapeHtml(String(summary.movementCount || 0))} records</div></article>
                     <article class="summary-card qc2-history-detail-kpi"><div class="summary-card-title">Movement Count</div><div class="summary-card-value compact">${summary.movementCount}</div><div class="summary-card-insight">First -> Latest</div></article>
-                    <article class="summary-card qc2-history-detail-kpi"><div class="summary-card-title">Supplier Count</div><div class="summary-card-value compact">${summary.supplierCount}</div><div class="summary-card-insight">${escapeHtml(summary.supplierNames.length ? summary.supplierNames.join(", ") : "Supplier names unavailable")}</div></article>
+                    <article class="summary-card qc2-history-detail-kpi"><div class="summary-card-title">Supplier Count</div><div class="summary-card-value compact">${summary.supplierCount}</div><div class="summary-card-insight"><button type="button" class="secondary-btn qc2-history-suppliers-toggle" data-qc-history-suppliers-toggle="true">${state.historyDetailSuppliersExpanded ? "Hide Suppliers" : "See Suppliers"}</button></div></article>
                 </div>
-                <div class="qc2-history-detail-insights">
-                    ${insights.map((insight) => `<div class="qc2-history-detail-insight">${escapeHtml(insight)}</div>`).join("")}
-                </div>
+                ${state.historyDetailSuppliersExpanded ? `
+                    <section class="qc2-history-detail-section qc2-history-detail-section-suppliers">
+                        <div class="qc2-history-detail-section-head">
+                            <div class="qc2-history-detail-section-title">Suppliers</div>
+                        </div>
+                        <div class="qc2-history-detail-suppliers">
+                            ${supplierRows.map((entry) => {
+                                const isLowest = lowestSupplierAvg != null && Number(entry.avgPrice) === lowestSupplierAvg;
+                                const isHighest = highestSupplierAvg != null && Number(entry.avgPrice) === highestSupplierAvg;
+                                return `<div class="qc2-history-detail-supplier-card ${isLowest ? "is-lowest" : ""} ${isHighest ? "is-highest" : ""}">
+                                    <div class="qc2-history-detail-supplier-head">
+                                        <div class="qc2-history-detail-supplier-name">${escapeHtml(entry.supplierName)}</div>
+                                        <div class="qc2-history-detail-supplier-badges">
+                                            ${isLowest ? '<span class="qc2-history-detail-supplier-badge is-lowest">Lowest</span>' : ""}
+                                            ${isHighest ? '<span class="qc2-history-detail-supplier-badge is-highest">Highest</span>' : ""}
+                                        </div>
+                                    </div>
+                                    <div class="qc2-history-detail-supplier-meta">Average unit price</div>
+                                    <div class="qc2-history-detail-supplier-price">${escapeHtml(formatCurrency(entry.avgPrice, rows[0]?.currency || "USD"))}</div>
+                                </div>`;
+                            }).join("")}
+                        </div>
+                    </section>
+                ` : ""}
+                <section class="qc2-history-detail-section qc2-history-detail-section-insights">
+                    <div class="qc2-history-detail-section-head">
+                        <div class="qc2-history-detail-section-title">Analysis Insights</div>
+                    </div>
+                    <div class="qc2-history-detail-insights">
+                        ${insights.map((insight) => `<div class="qc2-history-detail-insight">${escapeHtml(insight)}</div>`).join("")}
+                    </div>
+                </section>
                 <div class="qc2-history-detail-timeline">
                     ${rows.map((row) => `
                         <div class="qc2-history-detail-item">
@@ -4692,8 +5499,11 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
                     </section>
                     <div data-qc-history-detail-modal>${renderHistoryDetailModal(state)}</div>
                     ${renderStatus(state)}
-                    <div class="qc2-actions">
-                        <button type="button" class="secondary-btn" data-qc-action="back-analyze">Back to Analyze</button>
+                    <div class="qc2-actions qc2-analyze-actions">
+                        <div class="qc2-analyze-actions-slot is-left">
+                            <button type="button" id="qcStep4BackBtn" class="secondary-btn" data-qc-action="back-analyze">Back</button>
+                            <button type="button" class="secondary-btn" data-qc-action="back-home">Back to Home</button>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -4724,10 +5534,11 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
         const anchorSelector = options.anchorSelector || "";
         const anchorOffset = anchorSelector ? getAnchorOffset(elements, anchorSelector) : null;
         if (!elements.app) return;
+        sanitizeQuoteCompareStepState(state);
+        updateLastQuoteCompareScreen(state);
+        updateContinueAnalysisButton(elements, state);
         elements.app.innerHTML = renderCurrentScreen(state);
-        if (state.currentScreen === "analyze") {
-            applyAnalysisTableFilter(elements, state);
-        }
+        bindCriticalQuoteCompareButtons(elements, state);
         if (preserveScrollTop != null) {
             writeScrollPosition(elements, preserveScrollTop);
         }
@@ -4735,8 +5546,9 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
         if (state.currentScreen === "history") {
             scheduleHistoryDetailChartRender(elements, state);
         }
+        updateCurrentFileSummary(elements, state);
         persistQuoteCompareSession(state, elements);
-        console.info("[quote compare render timing]", {
+        console.info("[compare prices render timing]", {
             screen: state.currentScreen,
             durationMs: Number((performance.now() - renderStartedAt).toFixed(1))
         });
@@ -4746,6 +5558,11 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
         window.clearTimeout(state.analysisFilterTimer);
         state.analysisFilterTimer = window.setTimeout(() => {
             state.analysisFilterTimer = null;
+            state.analysisViewport = { start: 0, end: 80, scrollTop: 0 };
+            const scroller = elements.app?.querySelector(".qc2-analysis-table-scroll");
+            if (scroller) {
+                scroller.scrollTop = 0;
+            }
             applyAnalysisTableFilter(elements, state);
             persistQuoteCompareSession(state, elements);
         }, 120);
@@ -4764,54 +5581,15 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
     function applyAnalysisTableFilter(elements, state) {
         if (!elements.app) return;
         const activeFilter = normalizeAnalysisTableFilter(state.analysisTableFilter);
-        const searchTerm = String(state.analysisTableSearch || "").trim().toLowerCase();
-        const rows = Array.from(elements.app.querySelectorAll("[data-qc-analysis-row]"));
-        const table = rows[0]?.parentElement || null;
-        const emptyState = elements.app.querySelector("[data-qc-analysis-empty]");
-        const rankedRows = rows
-            .map((row, index) => {
-                const rowIndex = Number(row.dataset.rowIndex);
-                const productText = String(row.dataset.productSearchText || "");
-                const supplierText = String(row.dataset.supplierSearchText || "");
-                const productMatch = searchTerm && productText.includes(searchTerm);
-                const supplierMatch = searchTerm && supplierText.includes(searchTerm);
-                let searchRank = 2;
-                if (!searchTerm) {
-                    searchRank = 2;
-                } else if (productMatch) {
-                    searchRank = productText.startsWith(searchTerm) ? 0 : 1;
-                }
-                return {
-                    row,
-                    index: Number.isFinite(rowIndex) ? rowIndex : index,
-                    searchRank,
-                    matchesFilter: activeFilter === "all" || row.dataset.result === activeFilter,
-                    matchesSearch: !searchTerm || productMatch || supplierMatch
-                };
-            })
-            .sort((left, right) => {
-                if (left.searchRank !== right.searchRank) return left.searchRank - right.searchRank;
-                return left.index - right.index;
-            });
-        let visibleCount = 0;
-        rankedRows.forEach(({ row, matchesFilter, matchesSearch }) => {
-            const matches = matchesFilter && matchesSearch;
-            row.classList.toggle("is-filter-hidden", !matches);
-            if (table) {
-                table.appendChild(row);
-            }
-            if (matches) visibleCount += 1;
-        });
-        if (table && emptyState) {
-            table.appendChild(emptyState);
-        }
         elements.app.querySelectorAll("[data-qc-action=\"set-analysis-filter\"]").forEach((button) => {
             const isActive = button.dataset.filterValue === activeFilter;
             button.classList.toggle("is-active", isActive);
             button.setAttribute("aria-pressed", isActive ? "true" : "false");
         });
-        if (emptyState) {
-            emptyState.hidden = visibleCount > 0;
+        const tableContent = elements.app.querySelector("[data-qc-analysis-table-content]");
+        const summary = getAnalysisSummary(state.analysisResult || { comparison: { bids: [] } });
+        if (tableContent) {
+            tableContent.innerHTML = renderAnalyzeRows(summary.decisionCards || [], state);
         }
     }
 
@@ -4833,7 +5611,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             return;
         }
         await inspectUpload(state);
-        console.info("[quote compare file selection timing]", {
+        console.info("[compare prices file selection timing]", {
             fileName: file.name,
             totalFileSelectionMs: Number((performance.now() - parseSelectedStartedAt).toFixed(1))
         });
@@ -4891,7 +5669,8 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             }
         }
         state.isSubmitting = true;
-        setStatus(state, "Building pricing analysis from the confirmed mappings.", "info");
+        await setProgressPhase(state, "Validating");
+        persistMappingMemory(state);
         const formData = new FormData();
         if (state.file) {
             formData.append("file", state.file);
@@ -4901,15 +5680,34 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             formData.append("session_id", state.activeSessionId);
         }
         try {
-            const data = await fetchJson("/quote-compare/upload/confirm", {
-                method: "POST",
-                body: formData
-            });
+            await setProgressPhase(state, "Mapping");
+            let data;
+            try {
+                data = await fetchJson("/quote-compare/upload/confirm", {
+                    method: "POST",
+                    body: formData
+                });
+            } catch (error) {
+                if (!state.file || !state.activeSessionId) {
+                    throw error;
+                }
+                const retryFormData = new FormData();
+                retryFormData.append("file", state.file);
+                retryFormData.append("mappings", JSON.stringify(state.selectedMappings));
+                data = await fetchJson("/quote-compare/upload/confirm", {
+                    method: "POST",
+                    body: retryFormData
+                });
+                state.activeSessionId = "";
+                sessionStorage.removeItem(QUOTE_COMPARE_ACTIVE_SESSION_KEY);
+            }
+            await setProgressPhase(state, "Aggregating");
             state.activeSessionId = data.session_id || state.activeSessionId;
             if (state.activeSessionId) {
                 sessionStorage.setItem(QUOTE_COMPARE_ACTIVE_SESSION_KEY, state.activeSessionId);
             }
             state.analyzeMode = "compare";
+            await setProgressPhase(state, "Building analysis");
             state.analysisResult = {
                 comparison: { ...data.comparison, source_type: "upload" },
                 evaluation: data.evaluation,
@@ -4919,9 +5717,12 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             state.activeAnalyzeTab = "savings";
             state.showOpportunitySection = true;
             state.showFullComparison = false;
+            state.opportunityRenderCount = OPPORTUNITY_CARD_BATCH_SIZE;
             state.collapsedDecisionCards = clearDecisionCardsForScope(state.collapsedDecisionCards, "spotlight");
+            state.selectedAnalysisRowKey = "";
             state.lastFlowScreen = "review";
             state.currentScreen = "analyze";
+            state.currentStep = 3;
             state.isSubmitting = false;
             await activateCurrentUploadScope(elements, state);
             setStatus(state, data.message || "Pricing analysis is ready.", "success");
@@ -4948,7 +5749,9 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
                 state.isSubmitting = false;
                 return false;
             }
+            await setProgressPhase(state, "Validating");
             const mappedRows = normalizeMappedManualRows(applySelectedMappingsToRows(state.rows, state.selectedMappings));
+            state.normalizedRowsCache = mappedRows;
             const importResult = buildQuoteBidImportResultFromRows(mappedRows);
             if (!importResult.valid_row_count) {
                 throw new Error("Add at least one complete pricing row before starting analysis.");
@@ -4962,12 +5765,14 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
                 bids: importResult.bids,
                 weighting: null
             };
-            setStatus(state, "Calculating pricing analysis from the manual pricing rows.", "info");
+            await setProgressPhase(state, "Mapping");
             const data = await fetchJson("/quote-compare/evaluate", {
                 method: "POST",
                 body: JSON.stringify(payload)
             });
+            await setProgressPhase(state, "Aggregating");
             state.analyzeMode = "compare";
+            await setProgressPhase(state, "Building analysis");
             state.analysisResult = {
                 comparison: { ...data.comparison, source_type: "manual" },
                 evaluation: data.evaluation,
@@ -4978,9 +5783,12 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             state.activeAnalyzeTab = "savings";
             state.showOpportunitySection = true;
             state.showFullComparison = false;
+            state.opportunityRenderCount = OPPORTUNITY_CARD_BATCH_SIZE;
             state.collapsedDecisionCards = clearDecisionCardsForScope(state.collapsedDecisionCards, "spotlight");
+            state.selectedAnalysisRowKey = "";
             state.lastFlowScreen = "review";
             state.currentScreen = "analyze";
+            state.currentStep = 3;
             await activateCurrentUploadScope(elements, state);
             const skippedMessage = importResult.skipped_row_count
                 ? ` ${importResult.skipped_row_count} incomplete rows were skipped.`
@@ -5092,10 +5900,15 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             resetAnalysisTableDrag();
         });
 
-        elements.app.addEventListener("click", async (event) => {
+        elements.workspace?.addEventListener("click", async (event) => {
             const actionTarget = event.target.closest("[data-qc-action]");
-            if (!actionTarget) return;
+            if (!actionTarget || !elements.workspace?.contains(actionTarget)) return;
             const action = actionTarget.dataset.qcAction;
+            const handled = await handleQuoteCompareAction(action, actionTarget, elements, state);
+            if (handled != null) {
+                event.preventDefault();
+                return;
+            }
 
             if (action === "start-upload") {
                 closeProductSummary(state);
@@ -5116,6 +5929,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             if (action === "back-start") {
                 closeProductSummary(state);
                 state.currentScreen = "start";
+                syncQuoteCompareStepState(state);
                 setStatus(state, "", "");
                 renderApp(elements, state);
                 return;
@@ -5138,6 +5952,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             if (action === "back-upload") {
                 closeProductSummary(state);
                 state.currentScreen = "upload";
+                syncQuoteCompareStepState(state);
                 renderApp(elements, state);
                 return;
             }
@@ -5147,19 +5962,18 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
                 renderApp(elements, state, { preserveScroll: true });
                 return;
             }
-            if (action === "start-analysis") {
-                if (state.isSubmitting) return;
-                state.isSubmitting = true;
-                setStatus(state, "Starting analysis...", "info");
-                renderApp(elements, state, { preserveScroll: true });
-                await waitForNextPaint();
-                const started = state.mode === "manual"
-                    ? await startManualAnalysis(state, elements)
-                    : await startUploadAnalysis(state, elements);
-                renderApp(elements, state);
-                if (started) {
-                    writeScrollPosition(elements, 0);
+            if (action === "apply-saved-mappings-partial") {
+                if (applySavedMappingsToState(state, state.mappingReuseCandidate, { partial: true })) {
+                    state.mappingReuseNotice = {
+                        tone: "warning",
+                        message: "Matching saved fields were applied. Please verify before continuing."
+                    };
                 }
+                renderApp(elements, state, { preserveScroll: true });
+                return;
+            }
+            if (action === "start-analysis" || action === "manual-analyze") {
+                await triggerStep2StartAnalysis(elements, state);
                 return;
             }
             if (action === "back-review") {
@@ -5169,6 +5983,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
                 } else {
                     state.currentScreen = "review";
                 }
+                syncQuoteCompareStepState(state);
                 renderApp(elements, state);
                 return;
             }
@@ -5200,8 +6015,12 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             if (action === "open-product-summary") {
                 const productName = actionTarget.dataset.productName || "";
                 const productUnit = actionTarget.dataset.productUnit || "";
+                rememberFullComparisonTablePosition(elements, state);
                 if (openProductSummary(state, productName, productUnit)) {
                     renderApp(elements, state, { preserveScroll: true });
+                    requestAnimationFrame(() => {
+                        restoreFullComparisonTablePosition(elements, state);
+                    });
                 }
                 return;
             }
@@ -5236,6 +6055,9 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             if (action === "set-analyze-tab") {
                 const nextTab = actionTarget.dataset.tab === "full-table" ? "full-table" : "savings";
                 state.activeAnalyzeTab = nextTab;
+                if (nextTab === "full-table") {
+                    state.showFullComparison = true;
+                }
                 renderApp(elements, state, { preserveScroll: true, anchorSelector: '[data-qc-anchor="opportunity-section"], [data-qc-anchor="full-comparison-section"]' });
                 return;
             }
@@ -5271,6 +6093,24 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             }
             if (action === "set-analysis-filter") {
                 state.analysisTableFilter = actionTarget.dataset.filterValue || "all";
+                state.analysisViewport = { start: 0, end: 80, scrollTop: 0 };
+                const scroller = elements.app?.querySelector(".qc2-analysis-table-scroll");
+                if (scroller) scroller.scrollTop = 0;
+                applyAnalysisTableFilter(elements, state);
+                persistQuoteCompareSession(state, elements);
+                return;
+            }
+            if (action === "sort-analysis-savings") {
+                if (state.analysisTableSort?.key !== "savings") {
+                    state.analysisTableSort = { key: "savings", direction: "desc" };
+                } else if (state.analysisTableSort.direction === "desc") {
+                    state.analysisTableSort = { key: "savings", direction: "asc" };
+                } else {
+                    state.analysisTableSort = { key: "", direction: "" };
+                }
+                state.analysisViewport = { start: 0, end: 80, scrollTop: 0 };
+                const scroller = elements.app?.querySelector(".qc2-analysis-table-scroll");
+                if (scroller) scroller.scrollTop = 0;
                 applyAnalysisTableFilter(elements, state);
                 persistQuoteCompareSession(state, elements);
                 return;
@@ -5280,14 +6120,30 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
                 renderApp(elements, state, { preserveScroll: true });
                 return;
             }
+            if (action === "load-more-opportunities") {
+                state.opportunityRenderCount = Math.max(state.opportunityRenderCount || OPPORTUNITY_CARD_BATCH_SIZE, OPPORTUNITY_CARD_BATCH_SIZE) + OPPORTUNITY_CARD_BATCH_SIZE;
+                renderApp(elements, state, { preserveScroll: true, anchorSelector: '[data-qc-anchor="opportunity-section"]' });
+                return;
+            }
             if (action === "go-history") {
                 closeProductSummary(state);
+                const targetCard = getAnalyzeHistoryTargetCard(state);
                 rememberFullComparisonTablePosition(elements, state);
                 state.previousAnalyzeTab = state.activeAnalyzeTab || "savings";
                 initializeHistoryFilters(state);
-                setStatus(state, "Loading saved product history.", "info");
+                setStatus(
+                    state,
+                    targetCard?.productName
+                        ? `Opening price history for ${targetCard.productName}.`
+                        : "Opening price history for all products.",
+                    "info"
+                );
                 await ensureHistoryComparisonsLoaded(state);
+                if (targetCard?.productName) {
+                    focusHistoryOnProductSeries(state, targetCard.productName, targetCard.unit || "");
+                }
                 state.currentScreen = "history";
+                state.currentStep = 4;
                 renderApp(elements, state);
                 requestAnimationFrame(() => {
                     scrollHistorySectionIntoView(elements);
@@ -5309,6 +6165,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
                 await ensureHistoryComparisonsLoaded(state);
                 focusHistoryOnProductSeries(state, productName, productUnit);
                 state.currentScreen = "history";
+                state.currentStep = 4;
                 renderApp(elements, state);
                 requestAnimationFrame(() => {
                     scrollHistorySectionIntoView(elements);
@@ -5317,6 +6174,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             }
             if (action === "back-analyze") {
                 state.currentScreen = "analyze";
+                state.currentStep = 3;
                 state.activeAnalyzeTab = state.previousAnalyzeTab || state.activeAnalyzeTab || "savings";
                 const anchorSelector = state.activeAnalyzeTab === "full-table"
                     ? '[data-qc-anchor="full-comparison-section"]'
@@ -5335,11 +6193,17 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             if (productSummaryClose) {
                 closeProductSummary(state);
                 renderApp(elements, state, { preserveScroll: true });
+                requestAnimationFrame(() => {
+                    restoreFullComparisonTablePosition(elements, state);
+                });
                 return;
             }
             const selectedAnalysisRow = event.target.closest("[data-qc-analysis-card-key]");
             if (selectedAnalysisRow) {
-                selectFullComparisonRow(elements, state, selectedAnalysisRow.dataset.qcAnalysisCardKey || "");
+                if (event.target.closest("[data-qc-action], button, a, input, select, textarea")) {
+                    return;
+                }
+                selectFullComparisonRow(elements, state, selectedAnalysisRow.dataset.qcAnalysisCardKey || "", { toggle: true });
             }
 
             const historyDateClear = event.target.closest("[data-qc-history-date-clear]");
@@ -5347,6 +6211,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
                 const key = historyDateClear.dataset.qcHistoryDateClear;
                 if (key === "dateFrom" || key === "dateTo") {
                     state.historyFilters[key] = "";
+                    state.historyViewport = { start: 0, end: 120, scrollTop: 0 };
                     syncHistoryFilterDefaults(state);
                     clearHistorySelectedSeries(state);
                     closeHistoryDetailModal(state);
@@ -5449,6 +6314,12 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
                 closeHistoryDetailModal(state);
                 refreshHistoryView(elements, state);
                 restoreHistoryTablePosition(elements, previousScrollTop, previousTableScrollTop);
+                return;
+            }
+
+            if (event.target.closest("[data-qc-history-suppliers-toggle]")) {
+                state.historyDetailSuppliersExpanded = !state.historyDetailSuppliersExpanded;
+                refreshHistoryView(elements, state);
             }
         });
 
@@ -5459,7 +6330,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
                 const file = fileInput.files?.[0] || null;
                 await parseSelectedFile(state, file);
                 renderApp(elements, state);
-                console.info("[quote compare upload render timing]", {
+                console.info("[compare prices upload render timing]", {
                     fileName: file?.name || "",
                     renderAfterInspectMs: Number((performance.now() - renderStartedAt).toFixed(1))
                 });
@@ -5469,6 +6340,12 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             const mappingSelect = event.target.closest("[data-qc-mapping-field]");
             if (mappingSelect) {
                 state.selectedMappings[mappingSelect.dataset.qcMappingField] = mappingSelect.value || "";
+                if (state.mappingReuseNotice) {
+                    state.mappingReuseNotice = {
+                        tone: "info",
+                        message: "Column mappings updated. Review them before continuing."
+                    };
+                }
                 computeValidation(state);
                 renderApp(elements, state, { preserveScroll: true });
                 return;
@@ -5478,6 +6355,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             if (historyFilter) {
                 const key = historyFilter.dataset.qcHistoryFilter;
                 state.historyFilters[key] = historyFilter.value || "";
+                state.historyViewport = { start: 0, end: 120, scrollTop: 0 };
                 syncHistoryFilterDefaults(state);
                 clearHistorySelectedSeries(state);
                 closeHistoryDetailModal(state);
@@ -5537,6 +6415,9 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             if (event.key === "Escape" && state.productSummaryModalOpen) {
                 closeProductSummary(state);
                 renderApp(elements, state, { preserveScroll: true });
+                requestAnimationFrame(() => {
+                    restoreFullComparisonTablePosition(elements, state);
+                });
                 return;
             }
             if (event.key === "Escape" && state.historyDetailModalOpen) {
@@ -5671,16 +6552,19 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             openStartAction(action) {
                 state.currentScreen = action === "manual" ? "manual" : "upload";
                 state.mode = action === "manual" ? "manual" : "upload";
+                syncQuoteCompareStepState(state);
                 renderApp(elements, state);
             },
             openUploadFilePicker() {
                 state.currentScreen = "upload";
+                syncQuoteCompareStepState(state);
                 renderApp(elements, state);
                 elements.app.querySelector("#qc2FileInput")?.click();
             },
             syncUploadFileName() {},
             continueUploadReview() {
                 state.currentScreen = "review";
+                state.currentStep = 2;
                 renderApp(elements, state);
             },
             clearUploadFile() {
@@ -5689,6 +6573,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             addManualSupplier() {
                 state.currentScreen = "manual";
                 state.manualRows.push(createEmptyManualRow());
+                syncQuoteCompareStepState(state);
                 renderApp(elements, state);
             },
             saveManualProduct() {},
@@ -5710,6 +6595,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             },
             goToStart() {
                 state.currentScreen = "start";
+                state.currentStep = 1;
                 renderApp(elements, state);
             }
         };
@@ -5719,11 +6605,13 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
         const initStartedAt = performance.now();
         const elements = getElements();
         if (!elements.shell || !elements.app) return;
-        console.info("[quote compare init start]");
+        console.info("[compare prices init start]");
         setQuoteCompareReady(elements, false);
         const state = createState();
         let hardResetRequested = false;
         let hasBackendAnalysis = false;
+        const forceStartHome = shouldForceQuoteCompareStart();
+        const resumeRequested = shouldResumeQuoteCompareSession();
         try {
             try {
                 const scopePayload = await fetchJson("/analysis/scope-bootstrap?scope=current_upload");
@@ -5734,7 +6622,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             hardResetRequested = Boolean(window.PriceAnalyzerBootGuard?.didHardReset?.());
             if (hardResetRequested) {
                 resetQuoteCompareUploadState(state);
-            } else if (!hasBackendAnalysis) {
+            } else if (!hasBackendAnalysis && !resumeRequested) {
                 clearPersistedQuoteCompareState();
                 resetQuoteCompareUploadState(state);
             } else {
@@ -5748,29 +6636,42 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             if (state.currentScreen === "history") {
                 await ensureHistoryComparisonsLoaded(state);
             }
+            if (forceStartHome) {
+                closeProductSummary(state);
+                closeHistoryDetailModal(state);
+                state.currentScreen = "start";
+                state.currentStep = 1;
+                setStatus(state, "", "");
+            }
             const renderStartedAt = performance.now();
             renderApp(elements, state);
-            console.info("[quote compare initial render timing]", {
+            console.info("[compare prices initial render timing]", {
                 currentScreen: state.currentScreen,
                 durationMs: Number((performance.now() - renderStartedAt).toFixed(1))
             });
+            if (forceStartHome) {
+                clearForcedQuoteCompareStartFlag();
+            }
+            if (resumeRequested) {
+                clearQuoteCompareResumeFlag();
+            }
             if (hardResetRequested) {
                 writeScrollPosition(elements, 0);
             } else {
                 restoreQuoteCompareScroll(elements);
             }
         } catch (error) {
-            console.error("[quote compare init failed]", error);
+            console.error("[compare prices init failed]", error);
             state.currentScreen = "start";
             state.lastFlowScreen = "review";
             state.status = {
-                message: "Quote Compare could not restore the previous session. Starting a fresh workflow.",
+                message: "Compare Prices could not restore the previous session. Starting a fresh workflow.",
                 tone: "info"
             };
             renderApp(elements, state);
         } finally {
             setQuoteCompareReady(elements, true);
-            console.info("[quote compare init end]", {
+            console.info("[compare prices init end]", {
                 currentScreen: state.currentScreen,
                 totalInitMs: Number((performance.now() - initStartedAt).toFixed(1))
             });
@@ -5784,6 +6685,13 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
         window.addEventListener("beforeunload", () => {
             window.clearTimeout(state.persistSessionTimer);
             persistQuoteCompareSession(state, elements);
+        });
+
+        window.addEventListener("shared-analysis-context-updated", async (event) => {
+            if (event.detail?.scope && event.detail.scope !== "current_upload") {
+                return;
+            }
+            await refreshSharedScopeSummary(elements, state);
         });
 
         elements.app.addEventListener("focusin", (event) => {

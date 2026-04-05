@@ -18,7 +18,13 @@
     let activeColumns = [...defaultColumns];
 
     function formatCurrency(value) {
-        return `$${Number(value || 0).toFixed(2)}`;
+        const numericValue = Number(value || 0);
+        return Number.isFinite(numericValue)
+            ? numericValue.toLocaleString("en-US", {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            })
+            : "0.00";
     }
 
     function formatPercent(value) {
@@ -43,7 +49,7 @@
     }
 
     function currencyToNumber(value) {
-        return parseFloat(String(value).replace(/\$/g, "").replace(/,/g, "").trim()) || 0;
+        return parseFloat(String(value).replace(/[^0-9.-]/g, "").trim()) || 0;
     }
 
     function percentToNumber(value) {

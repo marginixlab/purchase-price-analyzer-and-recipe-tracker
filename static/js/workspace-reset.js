@@ -30,6 +30,10 @@
         if (recipeSummary) {
             recipeSummary.textContent = scopeSummaryText;
         }
+        const continueAnalysisButton = document.getElementById("quoteContinueAnalysisButton");
+        if (continueAnalysisButton) {
+            continueAnalysisButton.hidden = true;
+        }
         window.PriceAnalyzerBootGuard?.resetAllUiState?.();
         window.dispatchEvent(new CustomEvent("shared-analysis-context-updated", {
             detail: {
@@ -126,6 +130,10 @@
             try {
                 await resetWorkspaceData();
                 applyResetUiState();
+                if (document.body?.dataset.activeView === "recipes") {
+                    window.location.assign("/");
+                    return;
+                }
                 await reloadSavedRecipesUi();
                 confirmButton.disabled = false;
                 confirmButton.textContent = "Reset Data";
