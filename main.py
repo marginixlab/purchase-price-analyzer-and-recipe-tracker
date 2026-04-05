@@ -299,6 +299,12 @@ def safe_template_response(
         )
 
 
+def redirect_if_authenticated(request: Request) -> RedirectResponse | None:
+    if request.cookies.get("user_id"):
+        return RedirectResponse(url="/", status_code=303)
+    return None
+
+
 def build_sample_dataframe() -> pd.DataFrame:
     return pd.DataFrame({
         "Product Name": [
@@ -3994,6 +4000,7 @@ def build_page_context(
     active_view: str = "quote_compare"
 ) -> dict[str, Any]:
     context_started_at = perf_counter()
+    is_authenticated = bool(request.cookies.get("user_id"))
     has_saved_recipes = False
     if active_view == "recipes":
         try:
@@ -4006,6 +4013,7 @@ def build_page_context(
     context: dict[str, Any] = {
         "request": request,
         "active_view": active_view,
+        "is_authenticated": is_authenticated,
         "has_analysis": has_analysis,
         "has_saved_recipes": has_saved_recipes,
         "recipes_has_visible_content": recipes_has_visible_content,
@@ -4026,8 +4034,9 @@ def build_page_context(
         context["error"] = error
 
     logger.info(
-        "[page context timing] active_view=%s has_analysis=%s has_saved_recipes=%s total_ms=%.1f",
+        "[page context timing] active_view=%s is_authenticated=%s has_analysis=%s has_saved_recipes=%s total_ms=%.1f",
         active_view,
+        is_authenticated,
         has_analysis,
         has_saved_recipes,
         (perf_counter() - context_started_at) * 1000
@@ -4052,6 +4061,7 @@ def create_app() -> FastAPI:
         logger.info("Base directory: %s", BASE_DIR)
         logger.info("Templates directory verified: %s", TEMPLATES_DIR)
         logger.info("Static directory mounted: %s", STATIC_DIR)
+        ensure_auth_db()
         ensure_codes_file()
         logger.info("Access codes file ready: %s", CODES_PATH)
         ensure_recipes_file()
@@ -4677,3 +4687,308 @@ def create_app() -> FastAPI:
 
 templates = build_templates()
 app = create_app()
+
+
+# ===== AUTH / LICENSE SECTION =====
+
+from pydantic import BaseModel
+import sqlite3
+import hashlib
+from fastapi import Request
+from fastapi.responses import RedirectResponse, JSONResponse
+from datetime import datetime
+
+AUTH_DB_PATH = BASE_DIR / "auth.db"
+DEFAULT_TEST_LICENSE_CODE = "TEST-123-ABC"
+
+
+def ensure_auth_db() -> None:
+    conn = sqlite3.connect(str(AUTH_DB_PATH))
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS license_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT NOT NULL UNIQUE,
+                is_used INTEGER NOT NULL DEFAULT 0,
+                used_by_user_id INTEGER,
+                activated_at TEXT,
+                status TEXT NOT NULL DEFAULT 'active'
+            )
+        """)
+        cursor.execute("""
+            INSERT OR IGNORE INTO license_codes (code, is_used, status)
+            VALUES (?, 0, 'active')
+        """, (DEFAULT_TEST_LICENSE_CODE,))
+        conn.commit()
+        logger.info("Auth database ready: %s", AUTH_DB_PATH)
+    finally:
+        conn.close()
+
+
+@app.middleware("http")
+async def check_auth(request: Request, call_next):
+    path = request.url.path
+
+    allowed_paths = [
+        "/login",
+        "/activate",
+        "/api/login",
+        "/api/logout",
+        "/api/activate",
+        "/docs",
+        "/openapi.json",
+        "/redoc",
+        "/static",
+        "/favicon.ico"
+    ]
+
+    if any(path.startswith(p) for p in allowed_paths):
+        return await call_next(request)
+
+    user_id = request.cookies.get("user_id")
+
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=303)
+
+    return await call_next(request)
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    redirect_response = redirect_if_authenticated(request)
+    if redirect_response is not None:
+        return redirect_response
+
+    return safe_template_response(
+        request,
+        "login.html",
+        {
+            "request": request
+        }
+    )
+
+
+@app.get("/activate", response_class=HTMLResponse)
+async def activate_page(request: Request):
+    redirect_response = redirect_if_authenticated(request)
+    if redirect_response is not None:
+        return redirect_response
+
+    return safe_template_response(
+        request,
+        "activate.html",
+        {
+            "request": request
+        }
+    )
+
+
+class ActivatePayload(BaseModel):
+    email: str
+    password: str
+    code: str
+
+
+def build_auth_json_response(
+    *,
+    success: bool,
+    message: str | None = None,
+    detail: str | None = None,
+    status_code: int = 200
+) -> JSONResponse:
+    payload: dict[str, Any] = {"success": success}
+    if message is not None:
+        payload["message"] = message
+    if detail is not None:
+        payload["detail"] = detail
+    return JSONResponse(content=payload, status_code=status_code)
+
+
+def get_license_code_status(license_row: sqlite3.Row) -> str | None:
+    for key in ("status", "code_status", "license_status"):
+        if key in license_row.keys():
+            value = str(license_row[key] or "").strip().lower()
+            return value or None
+
+    for key in ("is_active", "active"):
+        if key in license_row.keys():
+            return "active" if bool(license_row[key]) else "inactive"
+
+    return None
+
+
+@app.post("/api/activate")
+async def activate(payload: ActivatePayload):
+    email = str(payload.email or "").strip().lower()
+    password = str(payload.password or "")
+    code = str(payload.code or "").strip()
+    conn: sqlite3.Connection | None = None
+
+    if not code:
+        return build_auth_json_response(
+            success=False,
+            detail="Access code is required.",
+            status_code=400
+        )
+    if not email:
+        return build_auth_json_response(
+            success=False,
+            detail="Email is required.",
+            status_code=400
+        )
+    if not password:
+        return build_auth_json_response(
+            success=False,
+            detail="Password is required.",
+            status_code=400
+        )
+
+    try:
+        conn = sqlite3.connect(str(AUTH_DB_PATH))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT * FROM license_codes WHERE code = ?", (code,))
+        license_row = cursor.fetchone()
+
+        if not license_row:
+            return build_auth_json_response(
+                success=False,
+                detail="Invalid code",
+                status_code=400
+            )
+
+        if bool(license_row["is_used"]) if "is_used" in license_row.keys() else False:
+            return build_auth_json_response(
+                success=False,
+                detail="Code already used",
+                status_code=400
+            )
+
+        license_status = get_license_code_status(license_row)
+        if license_status is not None and license_status != "active":
+            return build_auth_json_response(
+                success=False,
+                detail="Code not active",
+                status_code=400
+            )
+
+        existing_user = cursor.execute(
+            "SELECT id FROM users WHERE email = ?",
+            (email,)
+        ).fetchone()
+        if existing_user:
+            return build_auth_json_response(
+                success=False,
+                detail="An account with this email already exists.",
+                status_code=400
+            )
+
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        activated_at = datetime.now().isoformat()
+
+        cursor.execute("""
+            INSERT INTO users (email, password_hash, created_at, is_active)
+            VALUES (?, ?, ?, ?)
+        """, (email, password_hash, activated_at, 1))
+        user_id = cursor.lastrowid
+
+        cursor.execute("""
+            UPDATE license_codes
+            SET is_used = 1,
+                used_by_user_id = ?,
+                activated_at = ?
+            WHERE code = ?
+        """, (user_id, activated_at, code))
+
+        if cursor.rowcount != 1:
+            raise RuntimeError("License code update did not complete as expected.")
+
+        conn.commit()
+        return build_auth_json_response(
+            success=True,
+            message="Account activated"
+        )
+    except sqlite3.IntegrityError as exc:
+        if conn is not None:
+            conn.rollback()
+        logger.exception("Activation integrity error for email=%s code=%s", email, code)
+        return build_auth_json_response(
+            success=False,
+            detail="Account activation failed because the account or code already exists.",
+            status_code=400
+        )
+    except Exception as exc:
+        if conn is not None:
+            conn.rollback()
+        logger.exception("Activation failed for email=%s code=%s", email, code)
+        return build_auth_json_response(
+            success=False,
+            detail=str(exc) or "Activation failed.",
+            status_code=500
+        )
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+class LoginPayload(BaseModel):
+    email: str
+    password: str
+
+
+@app.post("/api/login")
+async def login(payload: LoginPayload):
+    email = payload.email
+    password = payload.password
+
+    conn = sqlite3.connect(str(AUTH_DB_PATH))
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT id, password_hash FROM users WHERE email = ?", (email,))
+    user = cursor.fetchone()
+
+    if not user:
+        conn.close()
+        return {"success": False, "message": "User not found"}
+
+    user_id, stored_hash = user
+    password_hash = hashlib.sha256(password.encode()).hexdigest()
+
+    if password_hash != stored_hash:
+        conn.close()
+        return {"success": False, "message": "Wrong password"}
+
+    conn.close()
+
+    response = JSONResponse(
+        content={"success": True, "message": "Login successful"}
+    )
+    response.set_cookie(
+        key="user_id",
+        value=str(user_id),
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        path="/"
+    )
+    return response
+
+
+@app.post("/api/logout")
+async def auth_logout():
+    response = JSONResponse(
+        content={"success": True, "message": "Logout successful"}
+    )
+    response.delete_cookie(key="user_id", path="/")
+    return response

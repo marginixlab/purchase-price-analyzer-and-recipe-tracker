@@ -4,6 +4,7 @@
     let isSubmitting = false;
     let isInitialized = false;
     let hasValidatedSuccessfully = false;
+    let authMode = "legacy";
 
     function getElements() {
         return {
@@ -15,6 +16,16 @@
             accessCodeError: document.getElementById("accessCodeError"),
             logoutButton: document.getElementById("logoutButton")
         };
+    }
+
+    function isAuthenticatedUser() {
+        return document.body?.dataset.isAuthenticated === "true";
+    }
+
+    function detectAuthMode() {
+        authMode = isAuthenticatedUser() ? "authenticated" : "legacy";
+        console.log(`AUTH MODE: ${authMode}`);
+        return authMode;
     }
 
     function normalizeCode(code) {
@@ -162,6 +173,10 @@
     }
 
     async function validateCode(code, sessionId, source) {
+        if (authMode === "authenticated") {
+            console.log("AUTH BYPASS APPLIED");
+            throw new Error("Legacy validation is disabled in authenticated mode.");
+        }
         console.log("VALIDATE CALLED FROM:", source);
         const response = await fetch("/validate-code", {
             method: "POST",
@@ -184,6 +199,11 @@
     }
 
     async function unlockWithCode(elements, rawCode, source) {
+        if (authMode === "authenticated") {
+            console.log("AUTH BYPASS APPLIED");
+            showDashboard(elements);
+            return true;
+        }
         if (hasValidatedSuccessfully) {
             return true;
         }
@@ -223,6 +243,15 @@
     }
 
     async function restoreStoredAccess(elements) {
+        if (authMode === "authenticated") {
+            console.log("AUTH BYPASS APPLIED");
+            hasValidatedSuccessfully = true;
+            setError(elements, "");
+            showDashboard(elements);
+            return;
+        }
+
+        console.log("LEGACY ACCESS FLOW ACTIVE");
         if (hasValidatedSuccessfully) {
             return;
         }
@@ -246,6 +275,19 @@
     }
 
     async function logout() {
+        if (authMode === "authenticated") {
+            console.log("LOGOUT MODE: api");
+            try {
+                await fetch("/api/logout", {
+                    method: "POST"
+                });
+            } finally {
+                window.location.reload();
+            }
+            return;
+        }
+
+        console.log("LOGOUT MODE: legacy");
         const storedAccess = getStoredAccess();
         if (!storedAccess.code || !storedAccess.sessionId) {
             clearStoredAccess();
@@ -301,6 +343,17 @@
     }
 
     function bindEvents(elements) {
+        if (elements.logoutButton && elements.logoutButton.dataset.bound !== "true") {
+            elements.logoutButton.dataset.bound = "true";
+            elements.logoutButton.addEventListener("click", () => {
+                logout();
+            });
+        }
+
+        if (authMode === "authenticated") {
+            return;
+        }
+
         if (!elements.accessCodeForm) return;
         if (elements.accessCodeForm.dataset.bound === "true") return;
         elements.accessCodeForm.dataset.bound = "true";
@@ -315,13 +368,6 @@
                 handleSubmit(event, elements);
             });
         }
-
-        if (elements.logoutButton && elements.logoutButton.dataset.bound !== "true") {
-            elements.logoutButton.dataset.bound = "true";
-            elements.logoutButton.addEventListener("click", () => {
-                logout();
-            });
-        }
     }
 
     async function init() {
@@ -329,8 +375,17 @@
             return;
         }
         isInitialized = true;
+        detectAuthMode();
         console.log("ACCESS INIT START");
         const elements = getElements();
+        bindEvents(elements);
+
+        if (authMode === "authenticated") {
+            console.log("AUTH BYPASS APPLIED");
+            showDashboard(elements);
+            return;
+        }
+
         if (elements.accessCodeInput) {
             elements.accessCodeInput.disabled = false;
             elements.accessCodeInput.readOnly = false;
@@ -338,7 +393,6 @@
         }
         setSubmitButtonDisabled(elements, false);
         bindMouseLightEffect(elements);
-        bindEvents(elements);
         await restoreStoredAccess(elements);
     }
 

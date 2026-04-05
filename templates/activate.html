@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Activate | Purchase Price Analyzer</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/css/styles.css') }}">
+    <style>
+        body.auth-page {
+            min-height: 100vh;
+            margin: 0;
+            background:
+                radial-gradient(circle at top right, rgba(109, 168, 255, 0.16), transparent 34%),
+                linear-gradient(160deg, var(--bg-top), var(--bg-bottom));
+            color: var(--text);
+            font-family: var(--font-body);
+        }
+
+        .auth-shell {
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            padding: 32px 18px;
+        }
+
+        .auth-layout {
+            width: min(1080px, 100%);
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(320px, 440px);
+            gap: 24px;
+            align-items: stretch;
+        }
+
+        .auth-hero-panel,
+        .auth-card {
+            border-radius: 28px;
+            border: 1px solid var(--border-soft);
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+
+        .auth-hero-panel {
+            position: relative;
+            background: linear-gradient(145deg, #0c1830 0%, #173257 44%, #2263d1 100%);
+            color: var(--text-on-hero);
+            padding: 36px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            gap: 28px;
+        }
+
+        .auth-hero-panel::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background:
+                radial-gradient(circle at 16% 22%, rgba(255, 255, 255, 0.12), transparent 22%),
+                linear-gradient(135deg, rgba(255, 255, 255, 0.06), transparent 48%);
+            pointer-events: none;
+        }
+
+        .auth-hero-panel > * {
+            position: relative;
+            z-index: 1;
+        }
+
+        .auth-kicker {
+            display: inline-flex;
+            width: fit-content;
+            padding: 8px 12px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            color: var(--muted-soft);
+            font-size: 0.82rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .auth-hero-title {
+            margin: 16px 0 12px;
+            font-family: var(--font-heading);
+            font-size: clamp(2rem, 4vw, 3.25rem);
+            line-height: 1.03;
+        }
+
+        .auth-hero-copy {
+            margin: 0;
+            max-width: 44ch;
+            color: var(--muted-soft);
+            font-size: 1rem;
+            line-height: 1.7;
+        }
+
+        .auth-steps {
+            display: grid;
+            gap: 14px;
+        }
+
+        .auth-step {
+            padding: 16px 18px;
+            border-radius: 18px;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .auth-step strong {
+            display: block;
+            margin-bottom: 6px;
+            font-family: var(--font-heading);
+            font-size: 1rem;
+        }
+
+        .auth-step p {
+            margin: 0;
+            color: var(--muted-soft);
+            line-height: 1.55;
+        }
+
+        .auth-card {
+            background: var(--surface-strong);
+            padding: 30px 26px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+
+        .auth-card h1 {
+            margin: 0 0 10px;
+            font-family: var(--font-heading);
+            font-size: 1.95rem;
+            color: var(--text-strong);
+        }
+
+        .auth-card p {
+            margin: 0;
+            color: var(--text-secondary);
+            line-height: 1.65;
+        }
+
+        .auth-form {
+            display: grid;
+            gap: 16px;
+            margin-top: 24px;
+        }
+
+        .auth-field {
+            display: grid;
+            gap: 8px;
+        }
+
+        .auth-label {
+            font-size: 0.92rem;
+            font-weight: 600;
+            color: var(--text-strong);
+        }
+
+        .auth-input {
+            width: 100%;
+            box-sizing: border-box;
+            min-height: 52px;
+            padding: 0 15px;
+            border-radius: 14px;
+            border: 1px solid var(--border-strong);
+            background: var(--surface);
+            color: var(--text);
+            font: inherit;
+        }
+
+        .auth-input:focus {
+            outline: 2px solid var(--primary-ring);
+            border-color: var(--primary);
+        }
+
+        .auth-error {
+            min-height: 22px;
+            color: var(--alert-error-text);
+            font-size: 0.92rem;
+        }
+
+        .auth-submit {
+            width: 100%;
+            justify-content: center;
+        }
+
+        .auth-links {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-top: 18px;
+            color: var(--text-secondary);
+            font-size: 0.94rem;
+        }
+
+        .auth-links a {
+            color: var(--accent-primary);
+            text-decoration: none;
+        }
+
+        .auth-links a:hover {
+            text-decoration: underline;
+        }
+
+        @media (max-width: 900px) {
+            .auth-layout {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body class="auth-page">
+    <main class="auth-shell">
+        <div class="auth-layout">
+            <section class="auth-hero-panel" aria-label="Activation details">
+                <div>
+                    <div class="auth-kicker">Account Activation</div>
+                    <h2 class="auth-hero-title">Turn your access code into a real account.</h2>
+                    <p class="auth-hero-copy">Create your login once, then use the normal sign-in flow to reach the existing app experience.</p>
+                </div>
+                <div class="auth-steps" aria-hidden="true">
+                    <article class="auth-step">
+                        <strong>1. Enter your access code</strong>
+                        <p>Use the active code you received for the product.</p>
+                    </article>
+                    <article class="auth-step">
+                        <strong>2. Create your account</strong>
+                        <p>Choose the email and password you want to use for login.</p>
+                    </article>
+                    <article class="auth-step">
+                        <strong>3. Sign in normally</strong>
+                        <p>After activation, continue through the new login page and enter the app.</p>
+                    </article>
+                </div>
+            </section>
+
+            <section class="auth-card" aria-labelledby="activateTitle">
+                <div class="panel-label">New Account</div>
+                <h1 id="activateTitle">Activate your account</h1>
+                <p>Use your access code once to create the email and password for future sign-ins.</p>
+
+                <form id="activateForm" class="auth-form" novalidate>
+                    <label class="auth-field" for="activateCode">
+                        <span class="auth-label">Access Code</span>
+                        <input id="activateCode" class="auth-input" name="code" type="text" autocomplete="off" required>
+                    </label>
+
+                    <label class="auth-field" for="activateEmail">
+                        <span class="auth-label">Email</span>
+                        <input id="activateEmail" class="auth-input" name="email" type="email" autocomplete="email" required>
+                    </label>
+
+                    <label class="auth-field" for="activatePassword">
+                        <span class="auth-label">Password</span>
+                        <input id="activatePassword" class="auth-input" name="password" type="password" autocomplete="new-password" required>
+                    </label>
+
+                    <div id="activateError" class="auth-error" role="alert" aria-live="polite"></div>
+
+                    <button id="activateButton" class="action-btn auth-submit" type="submit">Activate Account</button>
+                </form>
+
+                <div class="auth-links">
+                    <span>Already activated?</span>
+                    <a href="/login">Go to Login</a>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <script>
+        (function () {
+            const form = document.getElementById("activateForm");
+            const codeInput = document.getElementById("activateCode");
+            const emailInput = document.getElementById("activateEmail");
+            const passwordInput = document.getElementById("activatePassword");
+            const button = document.getElementById("activateButton");
+            const errorBox = document.getElementById("activateError");
+
+            function setError(message) {
+                errorBox.textContent = message || "";
+            }
+
+            async function readResponsePayload(response) {
+                const rawText = await response.text();
+                if (!rawText) {
+                    return {};
+                }
+
+                try {
+                    return JSON.parse(rawText);
+                } catch (error) {
+                    return {
+                        success: false,
+                        detail: rawText
+                    };
+                }
+            }
+
+            form.addEventListener("submit", async (event) => {
+                event.preventDefault();
+                setError("");
+                button.disabled = true;
+                button.textContent = "Activating...";
+
+                try {
+                    const response = await fetch("/api/activate", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json"
+                        },
+                        body: JSON.stringify({
+                            code: codeInput.value.trim(),
+                            email: emailInput.value.trim(),
+                            password: passwordInput.value
+                        })
+                    });
+                    const payload = await readResponsePayload(response);
+
+                    if (!response.ok || payload.success !== true) {
+                        throw new Error(
+                            payload.detail
+                            || payload.message
+                            || "Activation failed."
+                        );
+                    }
+
+                    window.location.assign("/login");
+                } catch (error) {
+                    setError(error.message || "Activation failed.");
+                } finally {
+                    button.disabled = false;
+                    button.textContent = "Activate Account";
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

@@ -14,7 +14,7 @@
         }
     </style>
 </head>
-<body data-active-view="{{ active_view }}" class="app-booting">
+<body data-active-view="{{ active_view }}" data-is-authenticated="{{ 'true' if is_authenticated else 'false' }}" class="app-booting">
     <section class="access-shell" id="accessShell" hidden>
         <div class="access-atmosphere" aria-hidden="true">
             <div class="access-gradient-layer"></div>
