@@ -5341,6 +5341,8 @@ def build_password_reset_link(request: Request, token: str) -> str:
 
 
 def send_password_reset_email(email: str, reset_link: str) -> None:
+    print("RESEND_FROM_EMAIL =", RESEND_FROM_EMAIL)
+
     if not RESEND_API_KEY:
         raise RuntimeError("RESEND_API_KEY is not configured.")
 
@@ -5363,7 +5365,6 @@ def send_password_reset_email(email: str, reset_link: str) -> None:
         status_code = getattr(response, "status", response.getcode())
         if int(status_code) >= 300:
             raise RuntimeError(f"Resend request failed with status {status_code}.")
-
 
 def create_password_reset_request(email: str, request: Request) -> str | None:
     normalized_email = str(email or "").strip().lower()
