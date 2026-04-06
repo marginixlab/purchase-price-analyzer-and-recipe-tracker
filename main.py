@@ -4346,6 +4346,8 @@ def create_app() -> FastAPI:
 
     @app.get("/")
     def home(request: Request):
+        if not getattr(request.state, "auth_user_id", None):
+            return RedirectResponse(url="/login", status_code=303)
         return safe_template_response(
             request,
             INDEX_TEMPLATE,
