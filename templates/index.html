@@ -17,6 +17,7 @@
     </style>
 </head>
 <body data-active-view="{{ active_view }}" data-is-authenticated="{{ 'true' if is_authenticated else 'false' }}" class="{% if not is_authenticated %}app-booting{% endif %}">
+    {% if not is_authenticated %}
     <section class="access-shell" id="accessShell" hidden>
         <div class="access-atmosphere" aria-hidden="true">
             <div class="access-gradient-layer"></div>
@@ -49,6 +50,7 @@
             </div>
         </div>
     </section>
+    {% endif %}
 
     <div class="container app-shell{% if not is_authenticated %} app-shell-locked{% endif %}" id="appShell" {% if not is_authenticated %}hidden{% endif %}>
         <header class="page-header">
