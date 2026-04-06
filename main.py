@@ -5024,6 +5024,37 @@ def hash_password(password: str) -> str:
     password_digest = base64.urlsafe_b64encode(derived_key).decode("ascii")
     return f"pbkdf2_sha256${PASSWORD_HASH_ITERATIONS}${salt}${password_digest}"
 
+def seed_admin():
+    try:
+        conn = sqlite3.connect(str(AUTH_DB_PATH))
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            INSERT OR IGNORE INTO users (email, password_hash, created_at, is_active, is_admin)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            "admin@test.com",
+            hash_password("123456"),
+            datetime.now().isoformat(),
+            1,
+            1
+        ))
+
+        conn.commit()
+        conn.close()
+        print("Admin seed ok")
+
+    except Exception as e:
+        print("Seed error:", e)
+
+seed_admin()
+
+
+
+
+
+
+
 
 def hash_reset_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
