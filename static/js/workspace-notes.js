@@ -22,6 +22,72 @@
         return getScopedStorageKey(NOTES_ITEMS_KEY);
     }
 
+    function getAnalysisScopeBootstrapCacheStore() {
+        if (!window.__analysisScopeBootstrapCache || typeof window.__analysisScopeBootstrapCache !== "object") {
+            window.__analysisScopeBootstrapCache = {};
+        }
+        return window.__analysisScopeBootstrapCache;
+    }
+
+    function setCachedAnalysisScopeBootstrap(scope, payload) {
+        const normalizedScope = String(scope || "current_upload").trim() || "current_upload";
+        const store = getAnalysisScopeBootstrapCacheStore();
+        store[normalizedScope] = {
+            data: payload,
+            timestamp: performance.now(),
+            promise: null
+        };
+    }
+
+    async function getCachedAnalysisScopeBootstrap(scope = "current_upload", { force = false, maxAgeMs = 5000 } = {}) {
+        const normalizedScope = String(scope || "current_upload").trim() || "current_upload";
+        const store = getAnalysisScopeBootstrapCacheStore();
+        const cachedEntry = store[normalizedScope];
+        const now = performance.now();
+        if (!force && cachedEntry?.data && (now - Number(cachedEntry.timestamp || 0)) <= maxAgeMs) {
+            console.info("[notes scope bootstrap cache hit]", {
+                scope: normalizedScope,
+                ageMs: Number((now - Number(cachedEntry.timestamp || 0)).toFixed(1))
+            });
+            return cachedEntry.data;
+        }
+        if (!force && cachedEntry?.promise) {
+            console.info("[notes scope bootstrap shared inflight]", {
+                scope: normalizedScope
+            });
+            return cachedEntry.promise;
+        }
+        const query = normalizedScope ? `?scope=${encodeURIComponent(normalizedScope)}` : "";
+        const fetchStartedAt = performance.now();
+        console.info("[notes scope bootstrap fetch start]", {
+            scope: normalizedScope
+        });
+        const requestPromise = fetch(`/analysis/scope-bootstrap${query}`, {
+            headers: { Accept: "application/json" }
+        })
+            .then((response) => response.json())
+            .then((payload) => {
+                setCachedAnalysisScopeBootstrap(normalizedScope, payload);
+                console.info("[notes scope bootstrap fetch end]", {
+                    scope: normalizedScope,
+                    durationMs: Number((performance.now() - fetchStartedAt).toFixed(1))
+                });
+                return payload;
+            })
+            .finally(() => {
+                const latestEntry = store[normalizedScope];
+                if (latestEntry?.promise === requestPromise) {
+                    latestEntry.promise = null;
+                }
+            });
+        store[normalizedScope] = {
+            data: cachedEntry?.data || null,
+            timestamp: cachedEntry?.timestamp || 0,
+            promise: requestPromise
+        };
+        return requestPromise;
+    }
+
     function getElements() {
         return {
             workspace: document.getElementById("notesWorkspace"),
@@ -428,19 +494,24 @@
         }
     }
 
-    async function refreshNotesContext(elements) {
+    async function refreshNotesContext(elements, scopePayload = null) {
+        const refreshStartedAt = performance.now();
         if (!elements.workspace || (!elements.notesContextStatus && !elements.notesContextMetrics && !elements.notesSuggestedTags)) return;
         const snapshot = readQuoteCompareSnapshot();
-        let scopePayload = null;
+        let resolvedScopePayload = scopePayload;
         try {
-            const response = await fetch("/analysis/scope-bootstrap", {
-                headers: { Accept: "application/json" }
-            });
-            scopePayload = await response.json();
+            resolvedScopePayload = resolvedScopePayload || await getCachedAnalysisScopeBootstrap("current_upload");
         } catch (error) {
-            scopePayload = { has_analysis: false, scope_summary: {} };
+            resolvedScopePayload = { has_analysis: false, scope_summary: {} };
         }
-        renderNotesContext(elements, buildNotesContextModel(snapshot, scopePayload, getState().items.length));
+        if (resolvedScopePayload) {
+            setCachedAnalysisScopeBootstrap("current_upload", resolvedScopePayload);
+        }
+        renderNotesContext(elements, buildNotesContextModel(snapshot, resolvedScopePayload, getState().items.length));
+        console.info("[notes context refresh]", {
+            durationMs: Number((performance.now() - refreshStartedAt).toFixed(1)),
+            usedPrefetchedScope: Boolean(scopePayload)
+        });
     }
 
     function bindEvents(elements) {
@@ -565,6 +636,9 @@
         });
         window.addEventListener("pageshow", () => {
             refreshNotesContext(elements);
+        });
+        window.addEventListener("shared-analysis-context-updated", (event) => {
+            refreshNotesContext(elements, event.detail?.scopePayload || null);
         });
         window.addEventListener("storage", (event) => {
             const notesItemsStorageKey = getNotesItemsStorageKey();

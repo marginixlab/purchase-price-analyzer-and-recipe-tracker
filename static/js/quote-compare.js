@@ -199,6 +199,127 @@
         updateContinueAnalysisButton(elements, state);
     }
 
+    function getAnalysisScopeBootstrapCacheStore() {
+        if (!window.__analysisScopeBootstrapCache || typeof window.__analysisScopeBootstrapCache !== "object") {
+            window.__analysisScopeBootstrapCache = {};
+        }
+        return window.__analysisScopeBootstrapCache;
+    }
+
+    function setCachedAnalysisScopeBootstrap(scope, payload) {
+        const normalizedScope = String(scope || "current_upload").trim() || "current_upload";
+        const store = getAnalysisScopeBootstrapCacheStore();
+        store[normalizedScope] = {
+            data: payload,
+            timestamp: performance.now(),
+            promise: null
+        };
+    }
+
+    async function getCachedAnalysisScopeBootstrap(scope = "current_upload", { force = false, maxAgeMs = 5000 } = {}) {
+        const normalizedScope = String(scope || "current_upload").trim() || "current_upload";
+        const store = getAnalysisScopeBootstrapCacheStore();
+        const cachedEntry = store[normalizedScope];
+        const now = performance.now();
+        if (!force && cachedEntry?.data && (now - Number(cachedEntry.timestamp || 0)) <= maxAgeMs) {
+            console.info("[compare prices scope bootstrap cache hit]", {
+                scope: normalizedScope,
+                ageMs: Number((now - Number(cachedEntry.timestamp || 0)).toFixed(1))
+            });
+            return cachedEntry.data;
+        }
+        if (!force && cachedEntry?.promise) {
+            console.info("[compare prices scope bootstrap shared inflight]", {
+                scope: normalizedScope
+            });
+            return cachedEntry.promise;
+        }
+        const query = normalizedScope ? `?scope=${encodeURIComponent(normalizedScope)}` : "";
+        const requestPromise = fetchJson(`/analysis/scope-bootstrap${query}`)
+            .then((payload) => {
+                setCachedAnalysisScopeBootstrap(normalizedScope, payload);
+                return payload;
+            })
+            .finally(() => {
+                const latestEntry = store[normalizedScope];
+                if (latestEntry?.promise === requestPromise) {
+                    latestEntry.promise = null;
+                }
+            });
+        store[normalizedScope] = {
+            data: cachedEntry?.data || null,
+            timestamp: cachedEntry?.timestamp || 0,
+            promise: requestPromise
+        };
+        return requestPromise;
+    }
+
+    function buildClientAnalysisScopePayload(state) {
+        const analysisResult = state?.analysisResult || null;
+        const summary = getAnalysisSummary(analysisResult || { comparison: { bids: [] } });
+        const comparison = analysisResult?.comparison || {};
+        const rowCount = Number(summary?.rowCount || 0);
+        return {
+            success: true,
+            has_analysis: rowCount > 0,
+            scope_options: [],
+            scope_summary: {
+                scope: "current_upload",
+                scope_label: "Current File",
+                row_count: rowCount,
+                product_count: Number(summary?.productCount || 0),
+                supplier_count: Number(summary?.supplierCount || 0),
+                current_upload_id: String(comparison.upload_id || state?.activeSessionId || state?.manualUploadId || "").trim(),
+                current_upload_name: String(comparison.name || state?.file?.name || "").trim(),
+                date_range: {
+                    start: "",
+                    end: ""
+                }
+            }
+        };
+    }
+
+    function applySharedScopeSummaryPayload(elements, state, payload) {
+        state.dataScopeSummary = payload?.scope_summary || null;
+        state.hasSharedScopeAnalysis = Boolean(payload?.has_analysis);
+        const summary = state.dataScopeSummary || {};
+        const rowCount = Number(summary.row_count || 0);
+        const productCount = Number(summary.product_count || 0);
+        const scopeLabel = summary.scope_label || "Current File";
+        if (elements.quoteDataScopeSummary) {
+            elements.quoteDataScopeSummary.textContent = rowCount
+                ? `${scopeLabel} • ${productCount} products • ${rowCount} rows`
+                : `${scopeLabel} • No analyzed file yet`;
+        }
+        updateCurrentFileSummary(elements, state);
+        updateContinueAnalysisButton(elements, state);
+    }
+
+    async function refreshSharedScopeSummaryCached(elements, state, { scopePayload = null, force = false } = {}) {
+        const refreshStartedAt = performance.now();
+        if (!elements.quoteDataScopeSummary) {
+            updateContinueAnalysisButton(elements, state);
+            return;
+        }
+        try {
+            const resolvedPayload = scopePayload || await getCachedAnalysisScopeBootstrap("current_upload", { force });
+            if (resolvedPayload) {
+                setCachedAnalysisScopeBootstrap("current_upload", resolvedPayload);
+            }
+            applySharedScopeSummaryPayload(elements, state, resolvedPayload || { has_analysis: false, scope_summary: null });
+        } catch (error) {
+            state.hasSharedScopeAnalysis = false;
+            elements.quoteDataScopeSummary.textContent = "Current File";
+            updateCurrentFileSummary(elements, state);
+            updateContinueAnalysisButton(elements, state);
+        }
+        console.info("[compare prices restore scope summary]", {
+            durationMs: Number((performance.now() - refreshStartedAt).toFixed(1)),
+            hadPrefetchedPayload: Boolean(scopePayload),
+            hasAnalysis: Boolean(state.hasSharedScopeAnalysis)
+        });
+    }
+
     function hasResumableContinueAnalysisContext(state) {
         return Boolean(
             state
@@ -260,11 +381,14 @@
     async function activateCurrentUploadScope(elements, state) {
         state.dataScope = "current_upload";
         setSharedAnalysisAvailability(true);
-        await refreshSharedScopeSummary(elements, state);
+        const scopePayload = buildClientAnalysisScopePayload(state);
+        setCachedAnalysisScopeBootstrap("current_upload", scopePayload);
+        await refreshSharedScopeSummaryCached(elements, state, { scopePayload });
         window.dispatchEvent(new CustomEvent("shared-analysis-context-updated", {
             detail: {
                 scope: "current_upload",
-                uploadId: state.analysisResult?.comparison?.upload_id || state.activeSessionId || state.manualUploadId || ""
+                uploadId: state.analysisResult?.comparison?.upload_id || state.activeSessionId || state.manualUploadId || "",
+                scopePayload
             }
         }));
     }
@@ -825,6 +949,7 @@
     }
 
     function renderHistoryDetailChart(elements, state, attempt = 0) {
+        const chartStartedAt = performance.now();
         const modalSeriesRows = Array.isArray(state.historyDetailModalSeries?.rows) ? state.historyDetailModalSeries.rows : [];
         if (!state.historyDetailModalOpen || !modalSeriesRows.length) return;
         const validRows = modalSeriesRows
@@ -983,6 +1108,10 @@
             }
         });
         window.qcHistoryDetailChartInstance = state.historyDetailChart;
+        console.info("[compare prices chart render]", {
+            rows: validRows.length,
+            durationMs: Number((performance.now() - chartStartedAt).toFixed(1))
+        });
     }
 
     function renderHistorySeriesChart(rows) {
@@ -1055,6 +1184,13 @@
     function buildPersistedState(state) {
         syncQuoteCompareStepState(state);
         updateLastQuoteCompareScreen(state);
+        const hasServerBackedSession = Boolean(String(state.activeSessionId || "").trim());
+        const lightweightAnalysisResult = state.analysisResult
+            ? {
+                comparison: state.analysisResult.comparison || null,
+                evaluation: state.analysisResult.evaluation || null
+            }
+            : null;
         return {
             currentStep: state.currentStep,
             currentScreen: state.currentScreen,
@@ -1062,10 +1198,10 @@
             lastFlowScreen: state.lastFlowScreen,
             mode: state.mode,
             analyzeMode: state.analyzeMode,
-            analysisResult: state.analysisResult,
-            uploadReview: state.uploadReview,
-            headers: state.headers,
-            rows: state.rows,
+            analysisResult: lightweightAnalysisResult,
+            uploadReview: hasServerBackedSession ? null : state.uploadReview,
+            headers: hasServerBackedSession ? [] : state.headers,
+            rows: state.analysisResult ? [] : state.rows,
             detectedMappings: state.detectedMappings,
             selectedMappings: state.selectedMappings,
             activeSessionId: state.activeSessionId,
@@ -1081,7 +1217,7 @@
             historySelectedRowId: state.historySelectedRowId,
             historyDetailModalOpen: state.historyDetailModalOpen,
             historyDetailModalSeries: state.historyDetailModalSeries,
-            savedComparisons: state.savedComparisons,
+            savedComparisons: [],
             collapsedDecisionCards: state.collapsedDecisionCards,
             selectedAnalysisRowKey: state.selectedAnalysisRowKey,
             analysisTableFilter: state.analysisTableFilter,
@@ -1099,11 +1235,22 @@
     }
 
     function persistQuoteCompareSession(state, elements) {
+        const persistStartedAt = performance.now();
         try {
-            sessionStorage.setItem(QUOTE_COMPARE_STATE_KEY, JSON.stringify(buildPersistedState(state)));
+            const serializedState = JSON.stringify(buildPersistedState(state));
+            if (serializedState !== state.lastPersistedSnapshot) {
+                sessionStorage.setItem(QUOTE_COMPARE_STATE_KEY, serializedState);
+                state.lastPersistedSnapshot = serializedState;
+            }
             sessionStorage.setItem(QUOTE_COMPARE_SCROLL_KEY, JSON.stringify({ top: readScrollPosition(elements) }));
         } catch (error) {
             // Ignore storage failures.
+        } finally {
+            console.info("[compare prices session persist]", {
+                screen: state.currentScreen,
+                durationMs: Number((performance.now() - persistStartedAt).toFixed(1)),
+                snapshotKb: Number((((state.lastPersistedSnapshot || "").length) / 1024).toFixed(1))
+            });
         }
     }
 
@@ -1276,8 +1423,10 @@
 
     function restoreQuoteCompareSession(state) {
         try {
-            const snapshot = JSON.parse(sessionStorage.getItem(QUOTE_COMPARE_STATE_KEY) || "null");
+            const rawSnapshot = sessionStorage.getItem(QUOTE_COMPARE_STATE_KEY) || "null";
+            const snapshot = JSON.parse(rawSnapshot);
             hydratePersistedState(state, snapshot);
+            state.lastPersistedSnapshot = rawSnapshot;
         } catch (error) {
             // Ignore invalid session payloads.
         }
@@ -1596,34 +1745,52 @@
 
     async function fetchJson(url, options = {}) {
         const fetchStartedAt = performance.now();
+        const method = options.method || "GET";
+        const requestKey = `${method} ${url}`;
+        if (!window.__quoteCompareFetchTracker || typeof window.__quoteCompareFetchTracker !== "object") {
+            window.__quoteCompareFetchTracker = { counts: {}, inflight: {} };
+        }
+        const tracker = window.__quoteCompareFetchTracker;
+        tracker.counts[requestKey] = Number(tracker.counts[requestKey] || 0) + 1;
+        const requestNumber = tracker.counts[requestKey];
+        const inflightBeforeStart = Number(tracker.inflight[requestKey] || 0);
+        tracker.inflight[requestKey] = inflightBeforeStart + 1;
         console.info("[compare prices fetch start]", {
             url,
-            method: options.method || "GET"
+            method,
+            requestNumber,
+            duplicateRequest: requestNumber > 1,
+            inflightDuplicate: inflightBeforeStart > 0
         });
-        const response = await fetch(url, {
-            method: options.method || "GET",
-            headers: {
-                Accept: "application/json",
-                ...(options.body && !(options.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
-                ...(options.headers || {})
-            },
-            body: options.body
-        });
-        let data = {};
         try {
-            data = await response.json();
-        } catch (error) {
-            data = {};
+            const response = await fetch(url, {
+                method,
+                headers: {
+                    Accept: "application/json",
+                    ...(options.body && !(options.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
+                    ...(options.headers || {})
+                },
+                body: options.body
+            });
+            let data = {};
+            try {
+                data = await response.json();
+            } catch (error) {
+                data = {};
+            }
+            if (!response.ok || data.success === false) {
+                throw new Error(data.message || "Request failed.");
+            }
+            console.info("[compare prices fetch end]", {
+                url,
+                method,
+                requestNumber,
+                durationMs: Number((performance.now() - fetchStartedAt).toFixed(1))
+            });
+            return data;
+        } finally {
+            tracker.inflight[requestKey] = Math.max(Number(tracker.inflight[requestKey] || 1) - 1, 0);
         }
-        if (!response.ok || data.success === false) {
-            throw new Error(data.message || "Request failed.");
-        }
-        console.info("[compare prices fetch end]", {
-            url,
-            method: options.method || "GET",
-            durationMs: Number((performance.now() - fetchStartedAt).toFixed(1))
-        });
-        return data;
     }
 
     function setStatus(state, message = "", tone = "") {
@@ -2679,6 +2846,10 @@
         const preferredLastScreen = readLastQuoteCompareScreen() || state.lastQuoteCompareScreen || null;
         try {
             const activeSessionId = state.activeSessionId || sessionStorage.getItem(QUOTE_COMPARE_ACTIVE_SESSION_KEY) || "";
+            console.info("[compare prices restore bootstrap start]", {
+                includeComparisons,
+                hasActiveSessionId: Boolean(activeSessionId)
+            });
             const persistedSelectedMappings = { ...(state.selectedMappings || {}) };
             const persistedCurrentScreen = state.currentScreen;
             const persistedCurrentStep = Number(state.currentStep || getQuoteCompareStepForScreen(state) || 1);
@@ -2817,6 +2988,12 @@
                     "Your last upload session could not be restored. Please upload the file again."
                 );
             }
+        } finally {
+            console.info("[compare prices restore bootstrap end]", {
+                includeComparisons,
+                durationMs: Number((performance.now() - loadStartedAt).toFixed(1)),
+                currentScreen: state.currentScreen
+            });
         }
     }
 
@@ -3309,6 +3486,7 @@
 
     async function triggerStep2StartAnalysis(elements, state) {
         if (state.isSubmitting) return;
+        const triggerStartedAt = performance.now();
         state.isSubmitting = true;
         await setProgressPhase(state, "Validating -> Mapping -> Aggregating -> Building analysis");
         renderApp(elements, state, { preserveScroll: true });
@@ -3320,6 +3498,12 @@
         renderApp(elements, state);
         if (started) {
             writeScrollPosition(elements, 0);
+            requestAnimationFrame(() => {
+                console.info("[compare prices step3 visible after confirm]", {
+                    durationMs: Number((performance.now() - triggerStartedAt).toFixed(1)),
+                    currentScreen: state.currentScreen
+                });
+            });
         }
     }
 
@@ -4700,6 +4884,7 @@
     }
 
     function renderAnalyzeRows(cards, state) {
+        const renderStartedAt = performance.now();
         const filteredCards = getFilteredAnalysisCards(state, cards);
         if (!filteredCards.length) {
             return '<div class="decision-list-empty">No supplier rows were available for comparison.</div>';
@@ -4708,7 +4893,7 @@
         const savingsSortDirection = state.analysisTableSort?.key === "savings" ? state.analysisTableSort.direction : "";
         const headerModel = getAnalysisTableViewModel(visibleCards[0] || filteredCards[0] || {});
         const savingsSortIndicator = savingsSortDirection === "asc" ? "↑" : savingsSortDirection === "desc" ? "↓" : "↕";
-        return `
+        const markup = `
             <div class="qc2-analysis-table qc2-full-table-v3">
                 <div class="qc2-analysis-table-head qc2-ft-head qc2-ft-grid" role="row">
                     <span class="qc2-ft-head-cell qc2-ft-head-cell--product" role="columnheader">Product</span>
@@ -4865,6 +5050,12 @@
                 <div class="qc2-analysis-filter-empty" data-qc-analysis-empty hidden>No comparison rows match the selected filter.</div>
             </div>
         `;
+        console.info("[compare prices table render]", {
+            filteredRows: filteredCards.length,
+            visibleRows: visibleCards.length,
+            durationMs: Number((performance.now() - renderStartedAt).toFixed(1))
+        });
+        return markup;
     }
 
     function renderOptimizeRows(rows, state) {
@@ -4938,6 +5129,7 @@
     }
 
     function renderQcAnalyze(state) {
+        const step3RenderStartedAt = performance.now();
         const result = state.analysisResult || { comparison: { bids: [] }, evaluation: null, summary: { rowCount: 0, supplierCount: 0, productCount: 0, productsWithSavings: 0, totalVisibleSavings: 0, currentSpend: 0, optimizedSpend: 0, optimizedSavings: 0, optimizedSavingsPercent: 0, optimizedRows: [], decisionCards: [] } };
         const summary = getAnalysisSummary(result);
         const decisionCards = summary.decisionCards || [];
@@ -4950,7 +5142,7 @@
             ? getVisibleTopSavingsSummary(state, opportunityCards, { sectionVisible: isOpportunitySectionVisible })
             : getVisibleAnalysisSummary(state, decisionCards);
         const shouldRenderFullComparison = state.showFullComparison && activeAnalyzeTab === "full-table";
-        return `
+        const markup = `
             <section class="qc2-screen qc2-screen-analyze" id="qc2AnalysisTop">
                 <div class="qc2-card qc2-analyze-card">
                     <div class="qc2-head qc2-head-compact qc2-analyze-head">
@@ -5041,6 +5233,14 @@
                 </div>
             </section>
         `;
+        console.info("[compare prices step3 render]", {
+            activeTab: activeAnalyzeTab,
+            decisionCards: decisionCards.length,
+            renderedOpportunityCards: opportunityCards.length,
+            renderedFullComparison: shouldRenderFullComparison,
+            durationMs: Number((performance.now() - step3RenderStartedAt).toFixed(1))
+        });
+        return markup;
     }
 
     function renderHistoryTrend(state, rows, { hasHistoryContext = false } = {}) {
@@ -5555,7 +5755,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             scheduleHistoryDetailChartRender(elements, state);
         }
         updateCurrentFileSummary(elements, state);
-        persistQuoteCompareSession(state, elements);
+        scheduleQuoteCompareSessionPersist(state, elements);
         console.info("[compare prices render timing]", {
             screen: state.currentScreen,
             durationMs: Number((performance.now() - renderStartedAt).toFixed(1))
@@ -6618,13 +6818,14 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
         const state = createState();
         let hardResetRequested = false;
         let hasBackendAnalysis = false;
+        let initialScopePayload = null;
         const forceStartHome = shouldForceQuoteCompareStart();
         const resumeRequested = shouldResumeQuoteCompareSession();
         const hasPersistedActiveSession = hasPersistedQuoteCompareActiveSession();
         try {
             try {
-                const scopePayload = await fetchJson("/analysis/scope-bootstrap?scope=current_upload");
-                hasBackendAnalysis = Boolean(scopePayload?.has_analysis);
+                initialScopePayload = await getCachedAnalysisScopeBootstrap("current_upload");
+                hasBackendAnalysis = Boolean(initialScopePayload?.has_analysis);
             } catch (error) {
                 hasBackendAnalysis = false;
             }
@@ -6639,7 +6840,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
                 restoreHistoryUiPreferences(state);
             }
             bindEvents(elements, state);
-            await refreshSharedScopeSummary(elements, state);
+            await refreshSharedScopeSummaryCached(elements, state, { scopePayload: initialScopePayload });
             exposeApi(elements, state);
             await loadSavedComparisons(state, { includeComparisons: false });
             if (state.currentScreen === "history") {
@@ -6658,6 +6859,13 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
                 currentScreen: state.currentScreen,
                 durationMs: Number((performance.now() - renderStartedAt).toFixed(1))
             });
+            if (state.currentScreen === "analyze") {
+                requestAnimationFrame(() => {
+                    console.info("[compare prices step3 visible]", {
+                        totalInitMs: Number((performance.now() - initStartedAt).toFixed(1))
+                    });
+                });
+            }
             if (forceStartHome) {
                 clearForcedQuoteCompareStartFlag();
             }
@@ -6700,7 +6908,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             if (event.detail?.scope && event.detail.scope !== "current_upload") {
                 return;
             }
-            await refreshSharedScopeSummary(elements, state);
+            await refreshSharedScopeSummaryCached(elements, state, { scopePayload: event.detail?.scopePayload || null });
         });
 
         elements.app.addEventListener("focusin", (event) => {
