@@ -4330,6 +4330,7 @@ def create_app() -> FastAPI:
         logger.info("Templates directory verified: %s", TEMPLATES_DIR)
         logger.info("Static directory mounted: %s", STATIC_DIR)
         ensure_auth_db()
+        ensure_seed_admin_user()
         ensure_recipes_file()
         logger.info("Recipes file ready: %s", RECIPES_PATH)
         ensure_quote_comparisons_file()
@@ -5024,13 +5025,19 @@ def hash_password(password: str) -> str:
     password_digest = base64.urlsafe_b64encode(derived_key).decode("ascii")
     return f"pbkdf2_sha256${PASSWORD_HASH_ITERATIONS}${salt}${password_digest}"
 
-def seed_admin():
+def ensure_seed_admin_user() -> None:
+    conn = sqlite3.connect(str(AUTH_DB_PATH))
     try:
-        conn = sqlite3.connect(str(AUTH_DB_PATH))
         cursor = conn.cursor()
+        existing_user = cursor.execute(
+            "SELECT id FROM users WHERE email = ?",
+            ("admin@test.com",)
+        ).fetchone()
+        if existing_user:
+            return
 
         cursor.execute("""
-            INSERT OR IGNORE INTO users (email, password_hash, created_at, is_active, is_admin)
+            INSERT INTO users (email, password_hash, created_at, is_active, is_admin)
             VALUES (?, ?, ?, ?, ?)
         """, (
             "admin@test.com",
@@ -5039,15 +5046,12 @@ def seed_admin():
             1,
             1
         ))
-
         conn.commit()
+        logger.info("Seeded startup admin user: admin@test.com")
+    except Exception:
+        logger.exception("Failed to seed startup admin user.")
+    finally:
         conn.close()
-        print("Admin seed ok")
-
-    except Exception as e:
-        print("Seed error:", e)
-
-seed_admin()
 
 
 
@@ -5936,38 +5940,3 @@ async def admin_generate_license(request: Request):
     new_code = create_unique_license_code()
     redirect_url = "/admin/licenses?" + urlencode({"success": new_code})
     return RedirectResponse(url=redirect_url, status_code=303)
-
-import sqlite3
-from datetime import datetime
-import hashlib
-import os
-
-def seed_admin():
-    try:
-        password = "123456"
-        hashed = hashlib.sha256(password.encode()).hexdigest()
-
-        DB_PATH = os.path.join(os.getcwd(), "auth.db")
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-
-        cursor.execute("""
-        INSERT OR IGNORE INTO users (email, password_hash, created_at, is_active, is_admin)
-        VALUES (?, ?, ?, ?, ?)
-        """, (
-            "admin@test.com",
-            hashed,
-            datetime.utcnow().isoformat(),
-            1,
-            1
-        ))
-
-        conn.commit()
-        conn.close()
-
-        print("Admin seed ok")
-
-    except Exception as e:
-        print("Seed error:", e)
-
-seed_admin()
