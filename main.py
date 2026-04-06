@@ -471,6 +471,10 @@ def get_user_session_file_path(user_id: int | str | None, session_id: str) -> Pa
     return get_user_session_cache_dir(user_id) / f"{normalized_session_id}.json"
 
 
+def get_user_active_quote_compare_session_path(user_id: int | str | None) -> Path:
+    return get_user_storage_root(user_id) / "active_quote_compare_session.json"
+
+
 def build_templates() -> Jinja2Templates:
     ensure_app_paths()
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -1931,11 +1935,23 @@ def save_quote_compare_active_session(
     payload: dict[str, Any],
     user_id: int | str | None = None
 ) -> None:
+    resolved_user_id = get_storage_user_id(user_id)
     normalized_payload = make_json_safe(payload)
     normalized_payload["session_id"] = session_id
-    session_path = get_quote_compare_session_path(session_id, user_id=user_id)
+    session_cache_dir = ensure_quote_compare_session_cache_dir(resolved_user_id)
+    for existing_session_path in session_cache_dir.glob("*.json"):
+        try:
+            existing_session_path.unlink()
+        except FileNotFoundError:
+            continue
+    session_path = get_quote_compare_session_path(session_id, user_id=resolved_user_id)
+    session_payload = json.dumps(normalized_payload, ensure_ascii=False, separators=(",", ":"))
     session_path.write_text(
-        json.dumps(normalized_payload, ensure_ascii=False, separators=(",", ":")),
+        session_payload,
+        encoding="utf-8"
+    )
+    get_user_active_quote_compare_session_path(resolved_user_id).write_text(
+        session_payload,
         encoding="utf-8"
     )
 
@@ -1944,20 +1960,22 @@ def load_quote_compare_active_session(
     session_id: str | None,
     user_id: int | str | None = None
 ) -> dict[str, Any] | None:
-    if not session_id:
-        return None
-    normalized_session_id = str(session_id).strip()
-    if not normalized_session_id:
-        return None
+    resolved_user_id = get_storage_user_id(user_id)
+    normalized_session_id = str(session_id or "").strip()
+    candidate_paths: list[Path] = []
+    if normalized_session_id:
+        candidate_paths.append(get_quote_compare_session_path(normalized_session_id, user_id=resolved_user_id))
+    candidate_paths.append(get_user_active_quote_compare_session_path(resolved_user_id))
 
-    session_path = get_quote_compare_session_path(normalized_session_id, user_id=user_id)
-    if session_path.exists():
+    for session_path in candidate_paths:
+        if not session_path.exists():
+            continue
         try:
             payload = json.loads(session_path.read_text(encoding="utf-8"))
             return payload if isinstance(payload, dict) else None
         except json.JSONDecodeError:
             logger.warning("Compare Prices session file is invalid: %s", session_path)
-            return None
+            continue
     return None
 
 
@@ -2951,25 +2969,9 @@ def persist_quote_compare_analysis_results(
 
 
 def get_latest_quote_compare_analysis_session(user_id: int | str | None = None) -> dict[str, Any] | None:
-    session_cache_dir = ensure_quote_compare_session_cache_dir(get_storage_user_id(user_id))
-    if not session_cache_dir.exists():
-        return None
-
-    session_files = sorted(
-        session_cache_dir.glob("*.json"),
-        key=lambda path: path.stat().st_mtime_ns,
-        reverse=True
-    )
-    for session_path in session_files:
-        try:
-            payload = json.loads(session_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            logger.warning("Skipping invalid Compare Prices session file: %s", session_path)
-            continue
-        validated_payload = validate_quote_compare_active_session(payload)
-        if validated_payload and isinstance(validated_payload.get("comparison"), dict):
-            return validated_payload
-
+    validated_payload = validate_quote_compare_active_session(load_quote_compare_active_session(None, user_id=user_id))
+    if validated_payload and isinstance(validated_payload.get("comparison"), dict):
+        return validated_payload
     return None
 
 
@@ -4625,10 +4627,9 @@ def create_app() -> FastAPI:
             comparisons = store.get("comparisons", [])
         comparisons_loaded_at = perf_counter()
 
-        if session_id:
-            active_session = validate_quote_compare_active_session(
-                load_quote_compare_active_session(session_id)
-            )
+        active_session = validate_quote_compare_active_session(
+            load_quote_compare_active_session(session_id)
+        )
         active_session_loaded_at = perf_counter()
 
         response_payload = {
