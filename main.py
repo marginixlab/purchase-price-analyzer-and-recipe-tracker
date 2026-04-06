@@ -5909,13 +5909,15 @@ async def admin_generate_license(request: Request):
 import sqlite3
 from datetime import datetime
 import hashlib
+import os
 
 def seed_admin():
     try:
         password = "123456"
         hashed = hashlib.sha256(password.encode()).hexdigest()
 
-        conn = sqlite3.connect("auth.db")
+        DB_PATH = os.path.join(os.getcwd(), "auth.db")
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
 
         cursor.execute("""
@@ -5931,6 +5933,7 @@ def seed_admin():
 
         conn.commit()
         conn.close()
+
         print("Admin seed ok")
 
     except Exception as e:
