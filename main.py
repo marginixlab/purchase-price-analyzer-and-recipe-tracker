@@ -60,8 +60,9 @@ PERSIST_DIR = Path(os.getenv("PERSIST_DIR", "/var/data")).expanduser()
 PERSIST_DIR.mkdir(parents=True, exist_ok=True)
 STATIC_DIR = BASE_DIR / "static"
 TEMPLATES_DIR = BASE_DIR / "templates"
-DATA_DIR = PERSIST_DIR / "data"
+DATA_DIR = BASE_DIR / "data"
 USER_DATA_DIR = DATA_DIR / "users"
+RECIPES_DATA_DIR = PERSIST_DIR / "recipes"
 INDEX_TEMPLATE = "index.html"
 LATEST_RESULTS_PATH = BASE_DIR / "latest_results.csv"
 ANALYSIS_HISTORY_PATH = BASE_DIR / "analysis_history.json"
@@ -398,6 +399,7 @@ ANALYSIS_DEDUPE_NUMBER_COLUMNS = {
 def ensure_app_paths() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    RECIPES_DATA_DIR.mkdir(parents=True, exist_ok=True)
     if not STATIC_DIR.is_dir():
         raise RuntimeError(f"Static directory not found: {STATIC_DIR}")
     if not TEMPLATES_DIR.is_dir():
@@ -440,7 +442,8 @@ def get_current_latest_results_path(user_id: int | str | None = None) -> Path:
 
 
 def get_user_recipes_path(user_id: int | str | None) -> Path:
-    return get_user_storage_root(user_id) / "recipes.json"
+    normalized_user_id = str(user_id or "").strip() or "anonymous"
+    return RECIPES_DATA_DIR / f"{normalized_user_id}.json"
 
 
 def get_user_quote_comparisons_path(user_id: int | str | None) -> Path:
