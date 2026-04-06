@@ -56,9 +56,11 @@ def env_int(name: str, default: int) -> int:
     return parsed_value if parsed_value > 0 else default
 
 BASE_DIR = Path(__file__).resolve().parent
+PERSIST_DIR = Path(os.getenv("PERSIST_DIR", "/var/data")).expanduser()
+PERSIST_DIR.mkdir(parents=True, exist_ok=True)
 STATIC_DIR = BASE_DIR / "static"
 TEMPLATES_DIR = BASE_DIR / "templates"
-DATA_DIR = BASE_DIR / "data"
+DATA_DIR = PERSIST_DIR / "data"
 USER_DATA_DIR = DATA_DIR / "users"
 INDEX_TEMPLATE = "index.html"
 LATEST_RESULTS_PATH = BASE_DIR / "latest_results.csv"
@@ -394,6 +396,7 @@ ANALYSIS_DEDUPE_NUMBER_COLUMNS = {
 
 
 def ensure_app_paths() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
     if not STATIC_DIR.is_dir():
         raise RuntimeError(f"Static directory not found: {STATIC_DIR}")
@@ -4970,7 +4973,7 @@ from fastapi.responses import RedirectResponse, JSONResponse
 from datetime import datetime
 
 
-AUTH_DB_PATH = Path(os.getenv("AUTH_DB_PATH", str(BASE_DIR / "auth.db"))).expanduser()
+AUTH_DB_PATH = Path(os.getenv("AUTH_DB_PATH", str(PERSIST_DIR / "auth.db"))).expanduser()
 DEFAULT_TEST_LICENSE_CODE = "TEST-123-ABC"
 SEED_DEFAULT_TEST_LICENSE = env_flag("SEED_DEFAULT_TEST_LICENSE", not IS_PRODUCTION)
 AUTH_COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "ppa_auth_session").strip() or "ppa_auth_session"
