@@ -4973,7 +4973,7 @@ from datetime import datetime
 AUTH_DB_PATH = Path(os.getenv("AUTH_DB_PATH", str(BASE_DIR / "auth.db"))).expanduser()
 DEFAULT_TEST_LICENSE_CODE = "TEST-123-ABC"
 SEED_DEFAULT_TEST_LICENSE = env_flag("SEED_DEFAULT_TEST_LICENSE", not IS_PRODUCTION)
-AUTH_COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "user_id").strip() or "user_id"
+AUTH_COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "ppa_auth_session").strip() or "ppa_auth_session"
 AUTH_COOKIE_MAX_AGE_SECONDS = env_int("AUTH_COOKIE_MAX_AGE_SECONDS", 60 * 60 * 24 * 14)
 AUTH_COOKIE_SAMESITE = os.getenv("AUTH_COOKIE_SAMESITE", "lax").strip().lower() or "lax"
 if AUTH_COOKIE_SAMESITE not in {"lax", "strict", "none"}:
