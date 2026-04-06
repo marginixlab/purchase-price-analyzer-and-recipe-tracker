@@ -963,49 +963,58 @@ def read_uploaded_dataframe(file: UploadFile) -> pd.DataFrame:
         elif extension == ".xlsx":
             try:
                 file.file.seek(0)
-                dataframe = pd.read_excel(file.file, engine="openpyxl", dtype=object)
+                dataframe = pd.read_excel(file.file, engine="calamine", dtype=object)
                 logger.info(
-                    "[upload debug] parsed .xlsx with engine=openpyxl: filename=%s",
+                    "[upload debug] parsed .xlsx with engine=calamine: filename=%s",
                     filename
                 )
-                log_perf("read_file.xlsx.openpyxl", read_started_at)
+                log_perf("read_file.xlsx.calamine", read_started_at)
             except ImportError:
-                raise
-            except Exception as openpyxl_exc:
+                try:
+                    file.file.seek(0)
+                    dataframe = pd.read_excel(file.file, engine="openpyxl", dtype=object)
+                    logger.info(
+                        "[upload debug] parsed .xlsx with fallback engine=openpyxl: filename=%s",
+                        filename
+                    )
+                    log_perf("read_file.xlsx.openpyxl", read_started_at)
+                except ImportError:
+                    raise
+            except Exception as calamine_exc:
                 logger.warning(
-                    "[upload debug] openpyxl parse failed for filename=%s extension=%s error=%s",
+                    "[upload debug] calamine parse failed for filename=%s extension=%s error=%s",
                     filename,
                     extension,
-                    openpyxl_exc
+                    calamine_exc
                 )
                 try:
                     file.file.seek(0)
-                    dataframe = pd.read_excel(file.file, engine="calamine", dtype=object)
+                    dataframe = pd.read_excel(file.file, engine="openpyxl", dtype=object)
                     logger.info(
-                        "[upload debug] parsed .xlsx with fallback engine=calamine: filename=%s",
+                        "[upload debug] parsed .xlsx with fallback engine=openpyxl: filename=%s",
                         filename
                     )
-                    log_perf("read_file.xlsx.calamine", read_started_at)
-                except ImportError as calamine_exc:
+                    log_perf("read_file.xlsx.openpyxl", read_started_at)
+                except ImportError as openpyxl_exc:
                     logger.warning(
-                        "[upload debug] calamine unavailable for filename=%s extension=%s error=%s",
+                        "[upload debug] openpyxl unavailable for filename=%s extension=%s error=%s",
                         filename,
                         extension,
-                        calamine_exc
+                        openpyxl_exc
                     )
                     raise ValueError(
-                        "This Excel workbook could not be parsed with openpyxl. Install python-calamine for broader Excel compatibility, or re-save the workbook as a new .xlsx file and try again."
-                    ) from openpyxl_exc
-                except Exception as calamine_exc:
+                        "This Excel workbook could not be parsed. Install python-calamine or openpyxl to enable .xlsx uploads."
+                    ) from calamine_exc
+                except Exception as openpyxl_exc:
                     logger.warning(
-                        "[upload debug] calamine parse failed for filename=%s extension=%s error=%s",
+                        "[upload debug] openpyxl parse failed for filename=%s extension=%s error=%s",
                         filename,
                         extension,
-                        calamine_exc
+                        openpyxl_exc
                     )
                     raise ValueError(
                         "This Excel workbook could not be parsed. Please re-save the workbook as a new .xlsx file and try again."
-                    ) from calamine_exc
+                    ) from openpyxl_exc
         elif extension == ".xls":
             file.file.seek(0)
             dataframe = pd.read_excel(file.file, dtype=object)
@@ -2580,37 +2589,71 @@ def validate_quote_comparison_payload(comparison: dict[str, Any], *, require_nam
             raise ValueError("Each offer must include a total price greater than zero.")
 
 
-def build_quote_bid_import_result(dataframe: pd.DataFrame) -> dict[str, Any]:
+def build_quote_bid_import_result(dataframe: pd.DataFrame, *, text_already_normalized: bool = False) -> dict[str, Any]:
     bids: list[dict[str, Any]] = []
-    optional_fields = set(QUOTE_COMPARE_OPTIONAL_FIELDS)
     skipped_row_count = 0
     numeric_preview: list[dict[str, float]] = []
     positive_total_count = 0
+    has_total_price = "Total Price" in dataframe.columns
+    import_frame = dataframe.reindex(columns=[
+        "Supplier",
+        "Supplier Name",
+        "Product Name",
+        "Unit",
+        "Quantity",
+        "Unit Price",
+        "Total Price",
+        "Date",
+        "Currency",
+        "Delivery Time",
+        "Payment Terms",
+        "Valid Until",
+        "Notes"
+    ], fill_value="")
 
-    for index, row in enumerate(dataframe.iterrows(), start=1):
-        _, row_values = row
+    def normalize_import_text(value: Any) -> str:
+        if text_already_normalized and isinstance(value, str):
+            return value
+        return normalize_text_value(value)
+
+    for index, row_values in enumerate(import_frame.itertuples(index=False, name=None), start=1):
         row_context = f"uploaded dataframe row {index}"
-        supplier_name = normalize_text_value(row_values.get("Supplier", row_values.get("Supplier Name", "")))
-        product_name = normalize_text_value(row_values.get("Product Name", ""))
-        unit = normalize_text_value(row_values.get("Unit", ""))
+        (
+            supplier_value,
+            supplier_name_value,
+            product_name_value,
+            unit_value,
+            quantity_value,
+            unit_price_value,
+            total_price_value,
+            quote_date_value,
+            currency_value,
+            delivery_time_value,
+            payment_terms_value,
+            valid_until_value,
+            notes_value
+        ) = row_values
+        supplier_name = normalize_import_text(supplier_value or supplier_name_value)
+        product_name = normalize_import_text(product_name_value)
+        unit = normalize_import_text(unit_value)
 
         quantity = coerce_numeric_value(
-            row_values.get("Quantity", 0),
+            quantity_value,
             field_name="Quantity",
             context=row_context
         )
         unit_price = coerce_numeric_value(
-            row_values.get("Unit Price", 0),
+            unit_price_value,
             field_name="Unit Price",
             context=row_context
         )
         total_price = (
             coerce_numeric_value(
-                row_values.get("Total Price", 0),
+                total_price_value,
                 field_name="Total Price",
                 context=row_context
             )
-            if "Total Price" in optional_fields and "Total Price" in dataframe.columns
+            if has_total_price
             else 0.0
         )
 
@@ -2621,7 +2664,7 @@ def build_quote_bid_import_result(dataframe: pd.DataFrame) -> dict[str, Any]:
             logger.warning(
                 "[Compare Prices upload] skipping row with empty resolved supplier | row_index=%s | supplier_value=%r | product_name=%r | quantity=%r | unit_price=%r",
                 index,
-                row_values.get("Supplier", row_values.get("Supplier Name", "")),
+                supplier_value or supplier_name_value,
                 product_name,
                 quantity,
                 unit_price
@@ -2669,12 +2712,12 @@ def build_quote_bid_import_result(dataframe: pd.DataFrame) -> dict[str, Any]:
             "quantity": round(quantity, 4),
             "unit_price": round(unit_price, 4),
             "total_price": round(resolved_total, 4),
-            "quote_date": normalize_text_value(row_values.get("Date", "")),
-            "currency": normalize_text_value(row_values.get("Currency", "")).upper() or "USD",
-            "delivery_time": normalize_text_value(row_values.get("Delivery Time", "")),
-            "payment_term": normalize_text_value(row_values.get("Payment Terms", "")),
-            "valid_until": normalize_text_value(row_values.get("Valid Until", "")),
-            "notes": normalize_text_value(row_values.get("Notes", ""))
+            "quote_date": normalize_import_text(quote_date_value),
+            "currency": normalize_import_text(currency_value).upper() or "USD",
+            "delivery_time": normalize_import_text(delivery_time_value),
+            "payment_term": normalize_import_text(payment_terms_value),
+            "valid_until": normalize_import_text(valid_until_value),
+            "notes": normalize_import_text(notes_value)
         })
 
     logger.info(
@@ -2717,15 +2760,14 @@ def normalize_quote_compare_mapped_dataframe(
 
     for column in text_columns:
         if column in normalized.columns:
-            normalized[column] = normalized[column].map(normalize_text_value)
+            normalized[column] = normalized[column].fillna("").map(normalize_text_value)
 
     supplier_source_column = str((selected_mapping or {}).get("Supplier") or "").strip()
     supplier_column_exists = supplier_source_column in (source_columns or [])
     supplier_preview: list[str] = []
     supplier_non_empty_count = 0
     if "Supplier" in normalized.columns:
-        supplier_series = normalized["Supplier"].fillna("").map(normalize_text_value)
-        normalized["Supplier"] = supplier_series
+        supplier_series = normalized["Supplier"]
         supplier_preview = supplier_series.head(10).tolist()
         supplier_non_empty_count = int(supplier_series.astype(bool).sum())
 
@@ -2878,8 +2920,12 @@ def calculate_quote_comparison(comparison: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_analysis_dataframe_from_quote_comparison(comparison: dict[str, Any]) -> pd.DataFrame:
-    normalized_comparison = normalize_quote_comparison_payload(comparison or {})
+def build_analysis_dataframe_from_quote_comparison(
+    comparison: dict[str, Any],
+    *,
+    comparison_is_normalized: bool = False
+) -> pd.DataFrame:
+    normalized_comparison = comparison if comparison_is_normalized else normalize_quote_comparison_payload(comparison or {})
     validate_quote_comparison_payload(normalized_comparison)
     upload_id = normalized_comparison.get("upload_id") or str(uuid.uuid4())
 
@@ -2962,7 +3008,11 @@ def persist_quote_compare_analysis_results(
 ) -> pd.DataFrame:
     persist_started_at = perf_counter()
     build_df_started_at = perf_counter()
-    source_df = build_analysis_dataframe_from_quote_comparison(comparison)
+    normalized_comparison = normalize_quote_comparison_payload(comparison or {})
+    source_df = build_analysis_dataframe_from_quote_comparison(
+        normalized_comparison,
+        comparison_is_normalized=True
+    )
     log_perf("quote_compare.build_analysis_dataframe", build_df_started_at)
     normalized_upload_id = str(upload_id or source_df["upload_id"].iloc[0]).strip()
     source_df["upload_id"] = normalized_upload_id
@@ -2987,8 +3037,8 @@ def persist_quote_compare_analysis_results(
         result_df,
         upload_id=normalized_upload_id,
         source_name=source_name,
-        source_type=str(normalize_quote_comparison_payload(comparison or {}).get("source_type") or "manual"),
-        comparison_name=str(normalize_quote_comparison_payload(comparison or {}).get("name") or source_name or "Compare Prices analysis"),
+        source_type=str(normalized_comparison.get("source_type") or "manual"),
+        comparison_name=str(normalized_comparison.get("name") or source_name or "Compare Prices analysis"),
         is_deduplicated=True
     )
     log_perf("quote_compare.persist_active_analysis", persist_storage_started_at)
@@ -4343,6 +4393,7 @@ def build_page_context(
         "request": request,
         "active_view": active_view,
         "is_authenticated": is_authenticated,
+        "current_user_id": current_user_id,
         "has_analysis": has_analysis,
         "has_saved_recipes": has_saved_recipes,
         "recipes_has_visible_content": recipes_has_visible_content,
@@ -4916,7 +4967,7 @@ def create_app() -> FastAPI:
             )
             log_perf("confirm.mapping_normalization", mapping_started_at)
             import_started_at = perf_counter()
-            import_result = build_quote_bid_import_result(mapped_df)
+            import_result = build_quote_bid_import_result(mapped_df, text_already_normalized=True)
             if import_result["valid_row_count"] <= 0:
                 raise ValueError("No valid supplier offer rows were found after filtering invalid or missing data.")
             log_perf("confirm.import_rows", import_started_at)
