@@ -5905,3 +5905,30 @@ async def admin_generate_license(request: Request):
     new_code = create_unique_license_code()
     redirect_url = "/admin/licenses?" + urlencode({"success": new_code})
     return RedirectResponse(url=redirect_url, status_code=303)
+
+import sqlite3
+from datetime import datetime
+import hashlib
+
+def seed_admin():
+    password = "123456"
+    hashed = hashlib.sha256(password.encode()).hexdigest()
+
+    conn = sqlite3.connect("auth.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    INSERT OR IGNORE INTO users (email, password_hash, created_at, is_active, is_admin)
+    VALUES (?, ?, ?, ?, ?)
+    """, (
+        "admin@test.com",
+        hashed,
+        datetime.utcnow().isoformat(),
+        1,
+        1
+    ))
+
+    conn.commit()
+    conn.close()
+
+seed_admin()
