@@ -5357,7 +5357,8 @@ def send_password_reset_email(email: str, reset_link: str) -> None:
         data=payload,
         headers={
             "Authorization": f"Bearer {RESEND_API_KEY}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "User-Agent": "purchase-price-analyzer/1.0"
         },
         method="POST"
     )
