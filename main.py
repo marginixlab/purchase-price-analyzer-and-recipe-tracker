@@ -5911,24 +5911,29 @@ from datetime import datetime
 import hashlib
 
 def seed_admin():
-    password = "123456"
-    hashed = hashlib.sha256(password.encode()).hexdigest()
+    try:
+        password = "123456"
+        hashed = hashlib.sha256(password.encode()).hexdigest()
 
-    conn = sqlite3.connect("auth.db")
-    cursor = conn.cursor()
+        conn = sqlite3.connect("auth.db")
+        cursor = conn.cursor()
 
-    cursor.execute("""
-    INSERT OR IGNORE INTO users (email, password_hash, created_at, is_active, is_admin)
-    VALUES (?, ?, ?, ?, ?)
-    """, (
-        "admin@test.com",
-        hashed,
-        datetime.utcnow().isoformat(),
-        1,
-        1
-    ))
+        cursor.execute("""
+        INSERT OR IGNORE INTO users (email, password_hash, created_at, is_active, is_admin)
+        VALUES (?, ?, ?, ?, ?)
+        """, (
+            "admin@test.com",
+            hashed,
+            datetime.utcnow().isoformat(),
+            1,
+            1
+        ))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+        conn.close()
+        print("Admin seed ok")
+
+    except Exception as e:
+        print("Seed error:", e)
 
 seed_admin()
