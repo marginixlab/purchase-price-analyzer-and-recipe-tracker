@@ -2931,10 +2931,11 @@ def append_analysis_history_rows(
     upload_id: str,
     source_name: str,
     source_type: str,
-    comparison_name: str
+    comparison_name: str,
+    is_deduplicated: bool = False
 ) -> None:
     now = datetime.now(timezone.utc).isoformat()
-    current_upload_df = deduplicate_analysis_frame(result_df)
+    current_upload_df = result_df.copy() if is_deduplicated else deduplicate_analysis_frame(result_df)
     latest_date_series = current_upload_df["Date"].dropna() if "Date" in current_upload_df.columns else pd.Series(dtype="datetime64[ns]")
     store = {
         "uploads": [{
@@ -2966,11 +2967,16 @@ def persist_quote_compare_analysis_results(
     normalized_upload_id = str(upload_id or source_df["upload_id"].iloc[0]).strip()
     source_df["upload_id"] = normalized_upload_id
     analysis_started_at = perf_counter()
-    analyze_dataframe(source_df, source_name=source_name)
+    _, analyzed_df = analyze_dataframe(
+        source_df,
+        source_name=source_name,
+        persist_latest_results=False,
+        return_result_df=True
+    )
     log_perf("quote_compare.analyze_dataframe", analysis_started_at)
-    reload_started_at = perf_counter()
-    result_df = load_current_upload_analysis_frame()
-    log_perf("quote_compare.reload_latest_results", reload_started_at)
+    dedupe_started_at = perf_counter()
+    result_df = deduplicate_analysis_frame(analyzed_df)
+    log_perf("quote_compare.deduplicate_results", dedupe_started_at)
     if "upload_id" in result_df.columns:
         result_df["upload_id"] = result_df["upload_id"].fillna("").astype(str)
         result_df.loc[:, "upload_id"] = normalized_upload_id
@@ -2982,7 +2988,8 @@ def persist_quote_compare_analysis_results(
         upload_id=normalized_upload_id,
         source_name=source_name,
         source_type=str(normalize_quote_comparison_payload(comparison or {}).get("source_type") or "manual"),
-        comparison_name=str(normalize_quote_comparison_payload(comparison or {}).get("name") or source_name or "Compare Prices analysis")
+        comparison_name=str(normalize_quote_comparison_payload(comparison or {}).get("name") or source_name or "Compare Prices analysis"),
+        is_deduplicated=True
     )
     log_perf("quote_compare.persist_active_analysis", persist_storage_started_at)
     log_perf("quote_compare.total_analysis_pipeline", persist_started_at)
@@ -4058,7 +4065,13 @@ def build_ai_answer(question: str, rows: list[dict[str, Any]] | None = None) -> 
     return answer
 
 
-def analyze_dataframe(df: pd.DataFrame, *, source_name: str) -> dict:
+def analyze_dataframe(
+    df: pd.DataFrame,
+    *,
+    source_name: str,
+    persist_latest_results: bool = True,
+    return_result_df: bool = False
+) -> dict | tuple[dict, pd.DataFrame]:
     analysis_started_at = perf_counter()
     required_columns = REQUIRED_ANALYSIS_FIELDS
     missing_columns = [col for col in required_columns if col not in df.columns]
@@ -4163,12 +4176,13 @@ def analyze_dataframe(df: pd.DataFrame, *, source_name: str) -> dict:
         result_df.loc[:, existing_rounded_columns] = result_df[existing_rounded_columns].round(2)
     log_perf("analyze.result_materialization", result_started_at)
 
-    write_started_at = perf_counter()
-    latest_results_path = get_current_latest_results_path()
-    result_df.to_csv(latest_results_path, index=False)
-    log_perf("analyze.write_csv", write_started_at)
-    LATEST_ANALYSIS_CACHE["signature"] = None
-    LATEST_ANALYSIS_CACHE["context"] = None
+    if persist_latest_results:
+        write_started_at = perf_counter()
+        latest_results_path = get_current_latest_results_path()
+        result_df.to_csv(latest_results_path, index=False)
+        log_perf("analyze.write_csv", write_started_at)
+        LATEST_ANALYSIS_CACHE["signature"] = None
+        LATEST_ANALYSIS_CACHE["context"] = None
     context_started_at = perf_counter()
     context = build_analysis_context_from_results(
         result_df,
@@ -4183,6 +4197,8 @@ def analyze_dataframe(df: pd.DataFrame, *, source_name: str) -> dict:
     )
     log_perf("analyze.response_build", context_started_at)
     log_perf("analyze.total", analysis_started_at)
+    if return_result_df:
+        return context, result_df
     return context
 
 
