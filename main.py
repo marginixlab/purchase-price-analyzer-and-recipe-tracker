@@ -37,6 +37,12 @@ logging.basicConfig(
 logger = logging.getLogger("price_analyzer")
 
 
+def log_perf(label: str, started_at: float) -> float:
+    elapsed_ms = (perf_counter() - started_at) * 1000
+    logger.info("[PERF] %s: %.1fms", label, elapsed_ms)
+    return elapsed_ms
+
+
 def env_flag(name: str, default: bool) -> bool:
     raw_value = os.getenv(name)
     if raw_value is None:
@@ -925,6 +931,7 @@ def apply_column_mapping(
 def read_uploaded_dataframe(file: UploadFile) -> pd.DataFrame:
     filename = file.filename or ""
     extension = Path(filename).suffix.lower()
+    read_started_at = perf_counter()
 
     if not filename:
         raise ValueError("No file was uploaded.")
@@ -952,6 +959,7 @@ def read_uploaded_dataframe(file: UploadFile) -> pd.DataFrame:
         if extension == ".csv":
             file.file.seek(0)
             dataframe = pd.read_csv(file.file, dtype=object)
+            log_perf("read_file.csv", read_started_at)
         elif extension == ".xlsx":
             try:
                 file.file.seek(0)
@@ -960,6 +968,7 @@ def read_uploaded_dataframe(file: UploadFile) -> pd.DataFrame:
                     "[upload debug] parsed .xlsx with engine=openpyxl: filename=%s",
                     filename
                 )
+                log_perf("read_file.xlsx.openpyxl", read_started_at)
             except ImportError:
                 raise
             except Exception as openpyxl_exc:
@@ -976,6 +985,7 @@ def read_uploaded_dataframe(file: UploadFile) -> pd.DataFrame:
                         "[upload debug] parsed .xlsx with fallback engine=calamine: filename=%s",
                         filename
                     )
+                    log_perf("read_file.xlsx.calamine", read_started_at)
                 except ImportError as calamine_exc:
                     logger.warning(
                         "[upload debug] calamine unavailable for filename=%s extension=%s error=%s",
@@ -999,6 +1009,7 @@ def read_uploaded_dataframe(file: UploadFile) -> pd.DataFrame:
         elif extension == ".xls":
             file.file.seek(0)
             dataframe = pd.read_excel(file.file, dtype=object)
+            log_perf("read_file.xls", read_started_at)
         else:
             raise ValueError("Unsupported file type. Please upload a CSV or Excel file (.csv, .xlsx, or .xls).")
     except ImportError as exc:
@@ -2948,14 +2959,22 @@ def persist_quote_compare_analysis_results(
     source_name: str,
     upload_id: str | None = None
 ) -> pd.DataFrame:
+    persist_started_at = perf_counter()
+    build_df_started_at = perf_counter()
     source_df = build_analysis_dataframe_from_quote_comparison(comparison)
+    log_perf("quote_compare.build_analysis_dataframe", build_df_started_at)
     normalized_upload_id = str(upload_id or source_df["upload_id"].iloc[0]).strip()
     source_df["upload_id"] = normalized_upload_id
+    analysis_started_at = perf_counter()
     analyze_dataframe(source_df, source_name=source_name)
+    log_perf("quote_compare.analyze_dataframe", analysis_started_at)
+    reload_started_at = perf_counter()
     result_df = load_current_upload_analysis_frame()
+    log_perf("quote_compare.reload_latest_results", reload_started_at)
     if "upload_id" in result_df.columns:
         result_df["upload_id"] = result_df["upload_id"].fillna("").astype(str)
         result_df.loc[:, "upload_id"] = normalized_upload_id
+    persist_storage_started_at = perf_counter()
     result_df = assign_analysis_row_ids(result_df, upload_id=normalized_upload_id)
     save_current_upload_analysis_frame(result_df)
     append_analysis_history_rows(
@@ -2965,6 +2984,8 @@ def persist_quote_compare_analysis_results(
         source_type=str(normalize_quote_comparison_payload(comparison or {}).get("source_type") or "manual"),
         comparison_name=str(normalize_quote_comparison_payload(comparison or {}).get("name") or source_name or "Compare Prices analysis")
     )
+    log_perf("quote_compare.persist_active_analysis", persist_storage_started_at)
+    log_perf("quote_compare.total_analysis_pipeline", persist_started_at)
     return result_df
 
 
@@ -4038,15 +4059,20 @@ def build_ai_answer(question: str, rows: list[dict[str, Any]] | None = None) -> 
 
 
 def analyze_dataframe(df: pd.DataFrame, *, source_name: str) -> dict:
+    analysis_started_at = perf_counter()
     required_columns = REQUIRED_ANALYSIS_FIELDS
     missing_columns = [col for col in required_columns if col not in df.columns]
     if missing_columns:
         raise ValueError(f"Missing required columns: {', '.join(missing_columns)}")
 
+    normalize_started_at = perf_counter()
     working_df = df.copy()
     working_df["Product Name"] = working_df["Product Name"].astype(str).str.strip()
     working_df["Supplier"] = working_df["Supplier"].astype(str).str.strip()
     working_df["Unit"] = working_df["Unit"].fillna("unit").astype(str).str.strip().replace("", "unit")
+    log_perf("analyze.normalize", normalize_started_at)
+
+    cleaning_started_at = perf_counter()
     working_df["Quantity"] = pd.to_numeric(working_df["Quantity"], errors="coerce")
     working_df["Unit Price"] = pd.to_numeric(working_df["Unit Price"], errors="coerce")
     working_df["Date"] = pd.to_datetime(working_df["Date"], errors="coerce")
@@ -4071,8 +4097,14 @@ def analyze_dataframe(df: pd.DataFrame, *, source_name: str) -> dict:
         working_df["upload_id"] = working_df["upload_id"].fillna("").astype(str).str.strip()
     if "row_id" in working_df.columns:
         working_df["row_id"] = working_df["row_id"].fillna("").astype(str).str.strip()
+    log_perf("analyze.clean_types", cleaning_started_at)
+
+    grouping_started_at = perf_counter()
     grouping_columns = ["Product Name", "Unit"]
     working_df["Average Price"] = working_df.groupby(grouping_columns)["Unit Price"].transform("mean")
+    log_perf("analyze.groupby_average", grouping_started_at)
+
+    calculations_started_at = perf_counter()
     working_df["Overpay Pct"] = ((working_df["Unit Price"] - working_df["Average Price"]) / working_df["Average Price"].replace(0, pd.NA)) * 100
     working_df["Overpay Pct"] = working_df["Overpay Pct"].fillna(0)
     working_df["Overpay"] = (working_df["Unit Price"] - working_df["Average Price"]).clip(lower=0)
@@ -4080,16 +4112,13 @@ def analyze_dataframe(df: pd.DataFrame, *, source_name: str) -> dict:
     working_df["Total Amount"] = working_df["Unit Price"] * working_df["Quantity"]
     working_df["Product Key"] = working_df["Product Name"] + " | " + working_df["Unit"]
     working_df["Product Display"] = working_df["Product Name"] + " (" + working_df["Unit"] + ")"
+    working_df["Status"] = "Normal"
+    overpay_pct = working_df["Overpay Pct"]
+    working_df.loc[overpay_pct >= 5, "Status"] = "Overpay"
+    working_df.loc[overpay_pct <= -5, "Status"] = "Good Deal"
+    log_perf("analyze.price_calculations", calculations_started_at)
 
-    def get_status(value):
-        if value >= 5:
-            return "Overpay"
-        if value <= -5:
-            return "Good Deal"
-        return "Normal"
-
-    working_df["Status"] = working_df["Overpay Pct"].apply(get_status)
-
+    result_started_at = perf_counter()
     total_rows = len(working_df)
     overpay_items = int((working_df["Status"] == "Overpay").sum())
     estimated_extra_spend = round(working_df["Savings Opportunity"].sum(), 2)
@@ -4120,64 +4149,80 @@ def analyze_dataframe(df: pd.DataFrame, *, source_name: str) -> dict:
     result_columns = leading_columns + result_columns + trailing_columns
 
     result_df = working_df[result_columns].copy()
-    result_df["Quantity"] = result_df["Quantity"].round(2)
-    result_df["Unit Price"] = result_df["Unit Price"].round(2)
-    result_df["Total Amount"] = result_df["Total Amount"].round(2)
-    result_df["Average Price"] = result_df["Average Price"].round(2)
-    result_df["Overpay"] = result_df["Overpay"].round(2)
-    result_df["Savings Opportunity"] = result_df["Savings Opportunity"].round(2)
-    result_df["Overpay Pct"] = result_df["Overpay Pct"].round(2)
+    rounded_columns = [
+        "Quantity",
+        "Unit Price",
+        "Total Amount",
+        "Average Price",
+        "Overpay",
+        "Savings Opportunity",
+        "Overpay Pct"
+    ]
+    existing_rounded_columns = [column for column in rounded_columns if column in result_df.columns]
+    if existing_rounded_columns:
+        result_df.loc[:, existing_rounded_columns] = result_df[existing_rounded_columns].round(2)
+    log_perf("analyze.result_materialization", result_started_at)
 
+    write_started_at = perf_counter()
     latest_results_path = get_current_latest_results_path()
     result_df.to_csv(latest_results_path, index=False)
+    log_perf("analyze.write_csv", write_started_at)
     LATEST_ANALYSIS_CACHE["signature"] = None
     LATEST_ANALYSIS_CACHE["context"] = None
-    return build_analysis_context_from_results(result_df, source_name=source_name)
+    context_started_at = perf_counter()
+    context = build_analysis_context_from_results(
+        result_df,
+        source_name=source_name,
+        precomputed_summary={
+            "total_rows": total_rows,
+            "overpay_items": overpay_items,
+            "estimated_extra_spend": estimated_extra_spend,
+            "total_spend": total_spend,
+            "overpay_rate": overpay_rate
+        }
+    )
+    log_perf("analyze.response_build", context_started_at)
+    log_perf("analyze.total", analysis_started_at)
+    return context
 
 
-def build_analysis_context_from_results(result_df: pd.DataFrame, *, source_name: str) -> dict[str, Any]:
+def build_analysis_context_from_results(
+    result_df: pd.DataFrame,
+    *,
+    source_name: str,
+    precomputed_summary: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    context_started_at = perf_counter()
+    summary_started_at = perf_counter()
     rows = result_df.to_dict(orient="records")
-    total_rows = len(result_df)
-    overpay_items = int((result_df["Status"] == "Overpay").sum())
-    estimated_extra_spend = round(result_df["Savings Opportunity"].sum(), 2)
-    total_spend = round(result_df["Total Amount"].sum(), 2)
-    overpay_rate = round((overpay_items / total_rows) * 100, 2) if total_rows else 0
+    if precomputed_summary is None:
+        total_rows = len(result_df)
+        overpay_items = int((result_df["Status"] == "Overpay").sum())
+        estimated_extra_spend = round(result_df["Savings Opportunity"].sum(), 2)
+        total_spend = round(result_df["Total Amount"].sum(), 2)
+        overpay_rate = round((overpay_items / total_rows) * 100, 2) if total_rows else 0
+    else:
+        total_rows = int(precomputed_summary.get("total_rows", len(result_df)))
+        overpay_items = int(precomputed_summary.get("overpay_items", 0))
+        estimated_extra_spend = round(float(precomputed_summary.get("estimated_extra_spend", 0)), 2)
+        total_spend = round(float(precomputed_summary.get("total_spend", 0)), 2)
+        overpay_rate = round(float(precomputed_summary.get("overpay_rate", 0)), 2)
+    log_perf("analysis_context.summary", summary_started_at)
 
-    top_overpay = (
-        result_df[result_df["Status"] == "Overpay"]
-        .sort_values("Savings Opportunity", ascending=False)
-        .head(5)
-    )
-
-    savings_by_product = (
-        result_df.groupby("Product Display", as_index=False)["Savings Opportunity"]
+    aggregation_started_at = perf_counter()
+    overpay_df = result_df[result_df["Status"] == "Overpay"]
+    top_overpay = overpay_df.nlargest(5, "Savings Opportunity")
+    top_savings_by_product = (
+        result_df.groupby("Product Display", sort=False)["Savings Opportunity"]
         .sum()
-        .sort_values("Savings Opportunity", ascending=False)
-        .head(5)
+        .nlargest(5)
     )
-
     status_counts = result_df["Status"].value_counts().to_dict()
-
-    best_saving_supplier_df = (
-        result_df.groupby("Supplier", as_index=False)["Savings Opportunity"]
-        .sum()
-        .sort_values("Savings Opportunity", ascending=False)
-    )
-    best_saving_supplier = (
-        best_saving_supplier_df.iloc[0]["Supplier"]
-        if not best_saving_supplier_df.empty else "N/A"
-    )
-
-    highest_risk_product_df = (
-        result_df[result_df["Status"] == "Overpay"]
-        .groupby("Product Display", as_index=False)["Savings Opportunity"]
-        .sum()
-        .sort_values("Savings Opportunity", ascending=False)
-    )
-    highest_risk_product = (
-        highest_risk_product_df.iloc[0]["Product Display"]
-        if not highest_risk_product_df.empty else "N/A"
-    )
+    savings_by_supplier = result_df.groupby("Supplier", sort=False)["Savings Opportunity"].sum()
+    best_saving_supplier = savings_by_supplier.idxmax() if not savings_by_supplier.empty else "N/A"
+    highest_risk_product_series = overpay_df.groupby("Product Display", sort=False)["Savings Opportunity"].sum()
+    highest_risk_product = highest_risk_product_series.idxmax() if not highest_risk_product_series.empty else "N/A"
+    log_perf("analysis_context.aggregate_rank", aggregation_started_at)
 
     insights = []
     if highest_risk_product != "N/A":
@@ -4192,11 +4237,12 @@ def build_analysis_context_from_results(result_df: pd.DataFrame, *, source_name:
     charts = {
         "top_overpay_labels": top_overpay["Product Display"].tolist(),
         "top_overpay_values": top_overpay["Savings Opportunity"].round(2).tolist(),
-        "savings_labels": savings_by_product["Product Display"].tolist(),
-        "savings_values": savings_by_product["Savings Opportunity"].round(2).tolist(),
+        "savings_labels": top_savings_by_product.index.tolist(),
+        "savings_values": top_savings_by_product.round(2).tolist(),
         "status_labels": list(status_counts.keys()),
         "status_values": list(status_counts.values())
     }
+    log_perf("analysis_context.serialize", context_started_at)
 
     return {
         "filename": source_name,
@@ -4793,6 +4839,7 @@ def create_app() -> FastAPI:
         session_id: str | None = Form(None)
     ):
         filename = file.filename or ""
+        request_started_at = perf_counter()
 
         try:
             parsed_mapping = json.loads(mappings)
@@ -4808,6 +4855,7 @@ def create_app() -> FastAPI:
             )
 
         try:
+            load_source_started_at = perf_counter()
             session_payload = validate_quote_compare_active_session(load_quote_compare_active_session(session_id))
             if file is not None and (file.filename or ""):
                 df = read_uploaded_dataframe(file)
@@ -4825,6 +4873,8 @@ def create_app() -> FastAPI:
                 )
             else:
                 raise ValueError("The uploaded supplier file is no longer available. Please upload it again.")
+            log_perf("confirm.load_source_dataframe", load_source_started_at)
+            mapping_started_at = perf_counter()
             full_mapping = {
                 field_name: parsed_mapping.get(field_name)
                 for field_name in [*QUOTE_COMPARE_REQUIRED_FIELDS, *QUOTE_COMPARE_OPTIONAL_FIELDS]
@@ -4848,9 +4898,13 @@ def create_app() -> FastAPI:
                 "[Compare Prices upload] confirm mapping debug | dataframe_columns_after_rename=%s",
                 list(mapped_df.columns)
             )
+            log_perf("confirm.mapping_normalization", mapping_started_at)
+            import_started_at = perf_counter()
             import_result = build_quote_bid_import_result(mapped_df)
             if import_result["valid_row_count"] <= 0:
                 raise ValueError("No valid supplier offer rows were found after filtering invalid or missing data.")
+            log_perf("confirm.import_rows", import_started_at)
+            comparison_started_at = perf_counter()
             normalized_comparison = normalize_quote_comparison_payload({
                 "upload_id": session_id,
                 "name": Path(filename).stem.replace("_", " ").strip() or "Uploaded quote comparison",
@@ -4859,11 +4913,14 @@ def create_app() -> FastAPI:
                 "bids": import_result["bids"]
             })
             evaluation = calculate_quote_comparison(normalized_comparison)
+            log_perf("confirm.compare_calculation", comparison_started_at)
+            persistence_started_at = perf_counter()
             persist_quote_compare_analysis_results(
                 normalized_comparison,
                 source_name=filename or normalized_comparison["name"] or "Compare Prices analysis",
                 upload_id=session_id
             )
+            log_perf("confirm.persist_analysis", persistence_started_at)
             if session_id:
                 lightweight_session_payload = {
                     "session_id": session_id,
@@ -4903,7 +4960,8 @@ def create_app() -> FastAPI:
                 status_code=400
             )
 
-        return JSONResponse({
+        response_started_at = perf_counter()
+        response = JSONResponse({
             "success": True,
             "session_id": session_id,
             "comparison": normalized_comparison,
@@ -4914,6 +4972,9 @@ def create_app() -> FastAPI:
                 f"{import_result['skipped_row_count']} rows skipped due to invalid or missing data."
             )
         })
+        log_perf("confirm.response_build", response_started_at)
+        log_perf("confirm.total", request_started_at)
+        return response
 
     @app.post("/quote-compare/evaluate")
     def evaluate_quote_comparison(payload: QuoteComparisonPayload):
