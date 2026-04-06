@@ -6,12 +6,20 @@ import logging
 import random
 import re
 import shutil
+import contextvars
+import os
 import uuid
+import base64
+import hashlib
+import hmac
+import secrets
+import threading
 from datetime import date, datetime, timezone
 from pathlib import Path
-from time import perf_counter
+from time import monotonic, perf_counter
 from typing import Any
 from urllib.parse import urlencode
+from urllib.request import Request as UrlRequest, urlopen
 
 import pandas as pd
 from fastapi import FastAPI, File, Form, Request, UploadFile
@@ -28,9 +36,30 @@ logging.basicConfig(
 )
 logger = logging.getLogger("price_analyzer")
 
+
+def env_flag(name: str, default: bool) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_int(name: str, default: int) -> int:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        parsed_value = int(raw_value)
+    except ValueError:
+        logger.warning("Invalid integer for %s; falling back to default.", name)
+        return default
+    return parsed_value if parsed_value > 0 else default
+
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 TEMPLATES_DIR = BASE_DIR / "templates"
+DATA_DIR = BASE_DIR / "data"
+USER_DATA_DIR = DATA_DIR / "users"
 INDEX_TEMPLATE = "index.html"
 LATEST_RESULTS_PATH = BASE_DIR / "latest_results.csv"
 ANALYSIS_HISTORY_PATH = BASE_DIR / "analysis_history.json"
@@ -52,6 +81,10 @@ ANALYSIS_HISTORY_CACHE: dict[str, Any] = {
     "signature": None,
     "store": None
 }
+CURRENT_STORAGE_USER_ID: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "current_storage_user_id",
+    default=None
+)
 OPTIONAL_UNIT_COLUMNS = ["Purchase Unit", "Unit"]
 OPTIONAL_QUANTITY_COLUMNS = ["Quantity", "Qty"]
 OPTIONAL_UNIT_PRICE_COLUMNS = ["Unit Price", "Price"]
@@ -246,6 +279,114 @@ ANALYSIS_DEDUPE_TEXT_COLUMNS = {
     "Product Name": "product",
     "Unit": "unit"
 }
+APP_ENV = (
+    os.getenv("APP_ENV")
+    or os.getenv("ENV")
+    or os.getenv("FASTAPI_ENV")
+    or "development"
+).strip().lower()
+IS_PRODUCTION = APP_ENV in {"prod", "production"}
+DEBUG_MODE = env_flag("DEBUG", not IS_PRODUCTION)
+MAX_UPLOAD_SIZE_BYTES = env_int("MAX_UPLOAD_SIZE_BYTES", 10 * 1024 * 1024)
+PASSWORD_RESET_TOKEN_TTL_SECONDS = env_int("PASSWORD_RESET_TOKEN_TTL_SECONDS", 60 * 60)
+RATE_LIMIT_STORE: dict[str, list[float]] = {}
+RATE_LIMIT_LOCK = threading.Lock()
+UPLOAD_ROUTE_PATHS = {
+    "/quote-compare/upload/inspect",
+    "/quote-compare/upload/confirm"
+}
+RATE_LIMIT_RULES = {
+    "login": {"limit": env_int("RATE_LIMIT_LOGIN_MAX_ATTEMPTS", 10), "window_seconds": env_int("RATE_LIMIT_LOGIN_WINDOW_SECONDS", 60)},
+    "forgot_password": {"limit": env_int("RATE_LIMIT_FORGOT_PASSWORD_MAX_ATTEMPTS", 5), "window_seconds": env_int("RATE_LIMIT_FORGOT_PASSWORD_WINDOW_SECONDS", 300)},
+    "reset_password": {"limit": env_int("RATE_LIMIT_RESET_PASSWORD_MAX_ATTEMPTS", 5), "window_seconds": env_int("RATE_LIMIT_RESET_PASSWORD_WINDOW_SECONDS", 300)},
+    "admin_license_generate": {"limit": env_int("RATE_LIMIT_ADMIN_LICENSE_GENERATE_MAX_ATTEMPTS", 10), "window_seconds": env_int("RATE_LIMIT_ADMIN_LICENSE_GENERATE_WINDOW_SECONDS", 60)}
+}
+
+
+def format_upload_size_limit(limit_bytes: int) -> str:
+    if limit_bytes % (1024 * 1024) == 0:
+        return f"{limit_bytes // (1024 * 1024)} MB"
+    return f"{round(limit_bytes / (1024 * 1024), 1)} MB"
+
+
+def get_upload_size_limit_message(limit_bytes: int = MAX_UPLOAD_SIZE_BYTES) -> str:
+    return f"File is too large. Maximum upload size is {format_upload_size_limit(limit_bytes)}."
+
+
+def get_request_client_identifier(request: Request) -> str:
+    forwarded_for = str(request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    real_ip = str(request.headers.get("x-real-ip") or "").strip()
+    client_host = getattr(request.client, "host", "") or ""
+    return forwarded_for or real_ip or client_host or "unknown"
+
+
+def check_rate_limit(bucket: str, identifier: str, *, limit: int, window_seconds: int) -> int | None:
+    now = monotonic()
+    bucket_key = f"{bucket}:{identifier}"
+    window_start = now - window_seconds
+    with RATE_LIMIT_LOCK:
+        attempts = RATE_LIMIT_STORE.get(bucket_key, [])
+        attempts = [attempt for attempt in attempts if attempt > window_start]
+        if len(attempts) >= limit:
+            retry_after = max(1, int(min(attempts) + window_seconds - now))
+            RATE_LIMIT_STORE[bucket_key] = attempts
+            return retry_after
+        attempts.append(now)
+        RATE_LIMIT_STORE[bucket_key] = attempts
+    return None
+
+
+def build_rate_limited_json_response(message: str, retry_after: int) -> JSONResponse:
+    return JSONResponse(
+        content={"success": False, "message": message, "detail": message},
+        status_code=429,
+        headers={"Retry-After": str(retry_after)}
+    )
+
+
+def check_named_rate_limit(
+    request: Request,
+    rule_name: str,
+    *,
+    identifier_suffix: str = ""
+) -> int | None:
+    rule = RATE_LIMIT_RULES[rule_name]
+    client_identifier = get_request_client_identifier(request)
+    identifier = f"{client_identifier}|{identifier_suffix}" if identifier_suffix else client_identifier
+    return check_rate_limit(
+        rule_name,
+        identifier,
+        limit=int(rule["limit"]),
+        window_seconds=int(rule["window_seconds"])
+    )
+
+
+def ensure_upload_size_within_limit(
+    file: UploadFile,
+    *,
+    limit_bytes: int = MAX_UPLOAD_SIZE_BYTES
+) -> int:
+    filename = file.filename or "uploaded file"
+    try:
+        file.file.seek(0, os.SEEK_END)
+        size_bytes = int(file.file.tell())
+        file.file.seek(0)
+    except Exception as exc:
+        logger.exception("Failed to inspect upload size: %s", filename)
+        raise ValueError("The uploaded file could not be prepared for reading.") from exc
+
+    if size_bytes <= 0:
+        raise ValueError("The uploaded file is empty.")
+    if size_bytes > limit_bytes:
+        raise ValueError(get_upload_size_limit_message(limit_bytes))
+    return size_bytes
+
+
+def build_upload_size_error_response() -> JSONResponse:
+    return JSONResponse(
+        content={"success": False, "message": get_upload_size_limit_message()},
+        status_code=413
+    )
 ANALYSIS_DEDUPE_NUMBER_COLUMNS = {
     "Quantity": 6,
     "Unit Price": 4
@@ -253,10 +394,75 @@ ANALYSIS_DEDUPE_NUMBER_COLUMNS = {
 
 
 def ensure_app_paths() -> None:
+    USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
     if not STATIC_DIR.is_dir():
         raise RuntimeError(f"Static directory not found: {STATIC_DIR}")
     if not TEMPLATES_DIR.is_dir():
         raise RuntimeError(f"Templates directory not found: {TEMPLATES_DIR}")
+
+
+def get_current_user_id(request: Request | None) -> int | None:
+    if request is None:
+        return None
+
+    raw_user_id = getattr(getattr(request, "state", None), "auth_user_id", None)
+    try:
+        return int(raw_user_id) if raw_user_id is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def get_storage_user_id(user_id: int | str | None = None) -> int | None:
+    if user_id is not None:
+        try:
+            return int(user_id)
+        except (TypeError, ValueError):
+            return None
+    return CURRENT_STORAGE_USER_ID.get()
+
+
+def get_user_storage_root(user_id: int | str | None) -> Path:
+    normalized_user_id = str(user_id or "").strip() or "anonymous"
+    user_root = USER_DATA_DIR / normalized_user_id
+    user_root.mkdir(parents=True, exist_ok=True)
+    return user_root
+
+
+def get_user_latest_results_path(user_id: int | str | None) -> Path:
+    return get_user_storage_root(user_id) / "latest_results.csv"
+
+
+def get_current_latest_results_path(user_id: int | str | None = None) -> Path:
+    return get_user_latest_results_path(get_storage_user_id(user_id))
+
+
+def get_user_recipes_path(user_id: int | str | None) -> Path:
+    return get_user_storage_root(user_id) / "recipes.json"
+
+
+def get_user_quote_comparisons_path(user_id: int | str | None) -> Path:
+    return get_user_storage_root(user_id) / "quote_comparisons.json"
+
+
+def get_user_analysis_history_path(user_id: int | str | None) -> Path:
+    return get_user_storage_root(user_id) / "analysis_history.json"
+
+
+def get_user_upload_cache_dir(user_id: int | str | None) -> Path:
+    upload_cache_dir = get_user_storage_root(user_id) / "quote_compare_uploads"
+    upload_cache_dir.mkdir(parents=True, exist_ok=True)
+    return upload_cache_dir
+
+
+def get_user_session_cache_dir(user_id: int | str | None) -> Path:
+    session_cache_dir = get_user_storage_root(user_id) / "quote_compare_sessions"
+    session_cache_dir.mkdir(parents=True, exist_ok=True)
+    return session_cache_dir
+
+
+def get_user_session_file_path(user_id: int | str | None, session_id: str) -> Path:
+    normalized_session_id = str(session_id or "").strip()
+    return get_user_session_cache_dir(user_id) / f"{normalized_session_id}.json"
 
 
 def build_templates() -> Jinja2Templates:
@@ -300,7 +506,8 @@ def safe_template_response(
 
 
 def redirect_if_authenticated(request: Request) -> RedirectResponse | None:
-    if request.cookies.get("user_id"):
+    auth_user_id = getattr(request.state, "auth_user_id", None)
+    if auth_user_id:
         return RedirectResponse(url="/", status_code=303)
     return None
 
@@ -713,14 +920,17 @@ def read_uploaded_dataframe(file: UploadFile) -> pd.DataFrame:
         raise ValueError("No file was uploaded.")
 
     try:
+        size_bytes = ensure_upload_size_within_limit(file)
         file.file.seek(0)
         first_byte = file.file.read(1)
         file.file.seek(0)
     except Exception as exc:
+        if isinstance(exc, ValueError):
+            raise
         logger.exception("Failed to reset uploaded file pointer: %s", filename)
         raise ValueError("The uploaded file could not be prepared for reading.") from exc
 
-    if not first_byte:
+    if not first_byte or size_bytes <= 0:
         raise ValueError("The uploaded file is empty.")
 
     try:
@@ -810,26 +1020,28 @@ def read_uploaded_dataframe(file: UploadFile) -> pd.DataFrame:
     return dataframe
 
 
-def ensure_quote_compare_upload_cache_dir() -> None:
-    QUOTE_COMPARE_UPLOAD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+def ensure_quote_compare_upload_cache_dir(user_id: int | str | None = None) -> Path:
+    return get_user_upload_cache_dir(get_storage_user_id(user_id))
 
 
-def ensure_quote_compare_session_cache_dir() -> None:
-    QUOTE_COMPARE_SESSION_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+def ensure_quote_compare_session_cache_dir(user_id: int | str | None = None) -> Path:
+    return get_user_session_cache_dir(get_storage_user_id(user_id))
 
 
-def get_quote_compare_session_path(session_id: str) -> Path:
-    ensure_quote_compare_session_cache_dir()
-    return QUOTE_COMPARE_SESSION_CACHE_DIR / f"{session_id}.json"
+def get_quote_compare_session_path(session_id: str, user_id: int | str | None = None) -> Path:
+    resolved_user_id = get_storage_user_id(user_id)
+    ensure_quote_compare_session_cache_dir(resolved_user_id)
+    return get_user_session_file_path(resolved_user_id, session_id)
 
 
-def cache_quote_compare_upload(file: UploadFile, session_id: str) -> str:
+def cache_quote_compare_upload(file: UploadFile, session_id: str, user_id: int | str | None = None) -> str:
     filename = file.filename or ""
     extension = Path(filename).suffix.lower()
     if not filename:
         raise ValueError("No file was uploaded.")
-    ensure_quote_compare_upload_cache_dir()
-    cache_path = QUOTE_COMPARE_UPLOAD_CACHE_DIR / f"{session_id}{extension}"
+    resolved_user_id = get_storage_user_id(user_id)
+    upload_cache_dir = ensure_quote_compare_upload_cache_dir(resolved_user_id)
+    cache_path = upload_cache_dir / f"{session_id}{extension}"
     try:
         file.file.seek(0)
         cache_path.write_bytes(file.file.read())
@@ -840,13 +1052,26 @@ def cache_quote_compare_upload(file: UploadFile, session_id: str) -> str:
     return str(cache_path)
 
 
-def read_cached_quote_compare_upload(cache_path: str | None, filename: str = "") -> pd.DataFrame:
+def read_cached_quote_compare_upload(
+    cache_path: str | None,
+    filename: str = "",
+    user_id: int | str | None = None
+) -> pd.DataFrame:
     normalized_path = str(cache_path or "").strip()
     if not normalized_path:
         raise ValueError("The uploaded supplier file is no longer available. Please upload it again.")
     source_path = Path(normalized_path)
+    expected_cache_dir = ensure_quote_compare_upload_cache_dir(get_storage_user_id(user_id)).resolve()
+    try:
+        resolved_source_path = source_path.resolve()
+    except FileNotFoundError:
+        resolved_source_path = source_path
+    if expected_cache_dir not in resolved_source_path.parents:
+        raise ValueError("The uploaded supplier file is no longer available. Please upload it again.")
     if not source_path.exists() or not source_path.is_file():
         raise ValueError("The uploaded supplier file is no longer available. Please upload it again.")
+    if source_path.stat().st_size > MAX_UPLOAD_SIZE_BYTES:
+        raise ValueError(get_upload_size_limit_message())
 
     class CachedUploadFile:
         def __init__(self, path: Path, original_name: str):
@@ -947,6 +1172,15 @@ def generate_access_code() -> str:
     middle = "".join(random.choice(READABLE_CODE_ALPHABET) for _ in range(4))
     suffix = "".join(random.choice(READABLE_CODE_ALPHABET) for _ in range(3))
     return f"{prefix}-{middle}-{suffix}"
+
+
+def generate_license_code() -> str:
+    segments = [
+        "".join(random.choice(READABLE_CODE_ALPHABET) for _ in range(4)),
+        "".join(random.choice(READABLE_CODE_ALPHABET) for _ in range(4)),
+        "".join(random.choice(READABLE_CODE_ALPHABET) for _ in range(4))
+    ]
+    return "-".join(segments)
 
 
 def create_unique_access_code() -> str:
@@ -1347,63 +1581,61 @@ def normalize_text_value(value: Any) -> str:
     return str(normalized_value).strip()
 
 
-def ensure_recipes_file() -> None:
-    if RECIPES_PATH.exists():
+def ensure_recipes_file(user_id: int | str | None = None) -> None:
+    recipes_path = get_user_recipes_path(get_storage_user_id(user_id))
+    if recipes_path.exists():
         return
-    RECIPES_PATH.write_text(json.dumps({"recipes": []}, indent=2), encoding="utf-8")
+    recipes_path.write_text(json.dumps({"recipes": []}, indent=2), encoding="utf-8")
 
 
-def load_recipes_store() -> dict[str, Any]:
-    ensure_recipes_file()
+def load_recipes_store(user_id: int | str | None = None) -> dict[str, Any]:
+    resolved_user_id = get_storage_user_id(user_id)
+    recipes_path = get_user_recipes_path(resolved_user_id)
+    ensure_recipes_file(resolved_user_id)
     try:
-        store = json.loads(RECIPES_PATH.read_text(encoding="utf-8"))
+        store = json.loads(recipes_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Invalid recipes file: {RECIPES_PATH}") from exc
+        raise RuntimeError(f"Invalid recipes file: {recipes_path}") from exc
 
     recipes = store.get("recipes")
     if not isinstance(recipes, list):
         store["recipes"] = []
-        save_recipes_store(store)
+        save_recipes_store(store, resolved_user_id)
     return store
 
 
-def save_recipes_store(store: dict[str, Any]) -> None:
-    RECIPES_PATH.write_text(json.dumps(store, indent=2), encoding="utf-8")
+def save_recipes_store(store: dict[str, Any], user_id: int | str | None = None) -> None:
+    recipes_path = get_user_recipes_path(get_storage_user_id(user_id))
+    recipes_path.write_text(json.dumps(store, indent=2), encoding="utf-8")
 
 
-def ensure_quote_comparisons_file() -> None:
-    if QUOTE_COMPARISONS_PATH.exists():
+def ensure_quote_comparisons_file(user_id: int | str | None = None) -> None:
+    comparisons_path = get_user_quote_comparisons_path(get_storage_user_id(user_id))
+    if comparisons_path.exists():
         return
-    QUOTE_COMPARISONS_PATH.write_text(
+    comparisons_path.write_text(
         json.dumps({"comparisons": [], "active_sessions": {}}, indent=2),
         encoding="utf-8"
     )
 
 
-def ensure_analysis_history_file() -> None:
-    if ANALYSIS_HISTORY_PATH.exists():
+def ensure_analysis_history_file(user_id: int | str | None = None) -> None:
+    analysis_history_path = get_user_analysis_history_path(get_storage_user_id(user_id))
+    if analysis_history_path.exists():
         return
-    ANALYSIS_HISTORY_PATH.write_text(
+    analysis_history_path.write_text(
         json.dumps({"uploads": [], "rows": []}, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8"
     )
 
 
-def reset_workspace_data_store() -> None:
-    for file_path in (LATEST_RESULTS_PATH, ANALYSIS_HISTORY_PATH):
-        try:
-            if file_path.exists():
-                file_path.unlink()
-        except FileNotFoundError:
-            continue
+def reset_workspace_data_store(user_id: int | str | None = None) -> None:
+    resolved_user_id = get_storage_user_id(user_id)
+    user_storage_root = get_user_storage_root(resolved_user_id)
 
-    for directory in (QUOTE_COMPARE_SESSION_CACHE_DIR, QUOTE_COMPARE_UPLOAD_CACHE_DIR):
-        if directory.exists():
-            shutil.rmtree(directory, ignore_errors=True)
-        directory.mkdir(parents=True, exist_ok=True)
-
-    ensure_recipes_file()
-    ensure_analysis_history_file()
+    if user_storage_root.exists():
+        shutil.rmtree(user_storage_root, ignore_errors=True)
+    user_storage_root.mkdir(parents=True, exist_ok=True)
 
     QUOTE_COMPARE_STORE_CACHE["signature"] = None
     QUOTE_COMPARE_STORE_CACHE["store"] = None
@@ -1413,11 +1645,14 @@ def reset_workspace_data_store() -> None:
     LATEST_ANALYSIS_CACHE["context"] = None
 
 
-def load_quote_comparisons_store() -> dict[str, Any]:
-    ensure_quote_comparisons_file()
+def load_quote_comparisons_store(user_id: int | str | None = None) -> dict[str, Any]:
+    resolved_user_id = get_storage_user_id(user_id)
+    comparisons_path = get_user_quote_comparisons_path(resolved_user_id)
+    ensure_quote_comparisons_file(resolved_user_id)
     cache_signature = (
-        QUOTE_COMPARISONS_PATH.stat().st_mtime_ns,
-        QUOTE_COMPARISONS_PATH.stat().st_size
+        str(comparisons_path),
+        comparisons_path.stat().st_mtime_ns,
+        comparisons_path.stat().st_size
     )
     if (
         QUOTE_COMPARE_STORE_CACHE["signature"] == cache_signature
@@ -1425,9 +1660,9 @@ def load_quote_comparisons_store() -> dict[str, Any]:
     ):
         return QUOTE_COMPARE_STORE_CACHE["store"]
     try:
-        store = json.loads(QUOTE_COMPARISONS_PATH.read_text(encoding="utf-8"))
+        store = json.loads(comparisons_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Invalid quote comparisons file: {QUOTE_COMPARISONS_PATH}") from exc
+        raise RuntimeError(f"Invalid quote comparisons file: {comparisons_path}") from exc
 
     changed = False
     comparisons = store.get("comparisons")
@@ -1439,31 +1674,36 @@ def load_quote_comparisons_store() -> dict[str, Any]:
         store["active_sessions"] = {}
         changed = True
     if changed:
-        save_quote_comparisons_store(store)
+        save_quote_comparisons_store(store, resolved_user_id)
         return QUOTE_COMPARE_STORE_CACHE["store"]
     QUOTE_COMPARE_STORE_CACHE["signature"] = cache_signature
     QUOTE_COMPARE_STORE_CACHE["store"] = store
     return store
 
 
-def save_quote_comparisons_store(store: dict[str, Any]) -> None:
+def save_quote_comparisons_store(store: dict[str, Any], user_id: int | str | None = None) -> None:
+    comparisons_path = get_user_quote_comparisons_path(get_storage_user_id(user_id))
     safe_store = make_json_safe(store)
-    QUOTE_COMPARISONS_PATH.write_text(
+    comparisons_path.write_text(
         json.dumps(safe_store, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8"
     )
     QUOTE_COMPARE_STORE_CACHE["signature"] = (
-        QUOTE_COMPARISONS_PATH.stat().st_mtime_ns,
-        QUOTE_COMPARISONS_PATH.stat().st_size
+        str(comparisons_path),
+        comparisons_path.stat().st_mtime_ns,
+        comparisons_path.stat().st_size
     )
     QUOTE_COMPARE_STORE_CACHE["store"] = safe_store
 
 
-def load_analysis_history_store() -> dict[str, Any]:
-    ensure_analysis_history_file()
+def load_analysis_history_store(user_id: int | str | None = None) -> dict[str, Any]:
+    resolved_user_id = get_storage_user_id(user_id)
+    analysis_history_path = get_user_analysis_history_path(resolved_user_id)
+    ensure_analysis_history_file(resolved_user_id)
     cache_signature = (
-        ANALYSIS_HISTORY_PATH.stat().st_mtime_ns,
-        ANALYSIS_HISTORY_PATH.stat().st_size
+        str(analysis_history_path),
+        analysis_history_path.stat().st_mtime_ns,
+        analysis_history_path.stat().st_size
     )
     if (
         ANALYSIS_HISTORY_CACHE["signature"] == cache_signature
@@ -1472,9 +1712,9 @@ def load_analysis_history_store() -> dict[str, Any]:
         return ANALYSIS_HISTORY_CACHE["store"]
 
     try:
-        store = json.loads(ANALYSIS_HISTORY_PATH.read_text(encoding="utf-8"))
+        store = json.loads(analysis_history_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Invalid analysis history file: {ANALYSIS_HISTORY_PATH}") from exc
+        raise RuntimeError(f"Invalid analysis history file: {analysis_history_path}") from exc
 
     changed = False
     if not isinstance(store.get("uploads"), list):
@@ -1484,7 +1724,7 @@ def load_analysis_history_store() -> dict[str, Any]:
         store["rows"] = []
         changed = True
     if changed:
-        save_analysis_history_store(store)
+        save_analysis_history_store(store, resolved_user_id)
         return ANALYSIS_HISTORY_CACHE["store"]
 
     ANALYSIS_HISTORY_CACHE["signature"] = cache_signature
@@ -1492,21 +1732,24 @@ def load_analysis_history_store() -> dict[str, Any]:
     return store
 
 
-def save_analysis_history_store(store: dict[str, Any]) -> None:
+def save_analysis_history_store(store: dict[str, Any], user_id: int | str | None = None) -> None:
+    analysis_history_path = get_user_analysis_history_path(get_storage_user_id(user_id))
     safe_store = make_json_safe(store)
-    ANALYSIS_HISTORY_PATH.write_text(
+    analysis_history_path.write_text(
         json.dumps(safe_store, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8"
     )
     ANALYSIS_HISTORY_CACHE["signature"] = (
-        ANALYSIS_HISTORY_PATH.stat().st_mtime_ns,
-        ANALYSIS_HISTORY_PATH.stat().st_size
+        str(analysis_history_path),
+        analysis_history_path.stat().st_mtime_ns,
+        analysis_history_path.stat().st_size
     )
     ANALYSIS_HISTORY_CACHE["store"] = safe_store
 
 
 def seed_analysis_history_from_latest_results() -> None:
-    if not LATEST_RESULTS_PATH.exists():
+    latest_results_path = get_current_latest_results_path()
+    if not latest_results_path.exists():
         return
 
     store = load_analysis_history_store()
@@ -1522,7 +1765,7 @@ def seed_analysis_history_from_latest_results() -> None:
     if legacy_df.empty:
         return
 
-    upload_id = f"legacy-{LATEST_RESULTS_PATH.stat().st_mtime_ns}"
+    upload_id = f"legacy-{latest_results_path.stat().st_mtime_ns}"
     if "upload_id" not in legacy_df.columns:
         legacy_df["upload_id"] = upload_id
     else:
@@ -1642,15 +1885,17 @@ def assign_analysis_row_ids(frame: pd.DataFrame, *, upload_id: str) -> pd.DataFr
 
 
 def load_current_upload_analysis_frame() -> pd.DataFrame:
-    if not LATEST_RESULTS_PATH.exists():
+    latest_results_path = get_current_latest_results_path()
+    if not latest_results_path.exists():
         return pd.DataFrame()
 
-    frame = pd.read_csv(LATEST_RESULTS_PATH)
+    frame = pd.read_csv(latest_results_path)
     return deduplicate_analysis_frame(frame)
 
 
 def save_current_upload_analysis_frame(frame: pd.DataFrame) -> None:
-    frame.to_csv(LATEST_RESULTS_PATH, index=False)
+    latest_results_path = get_current_latest_results_path()
+    frame.to_csv(latest_results_path, index=False)
     LATEST_ANALYSIS_CACHE["signature"] = None
     LATEST_ANALYSIS_CACHE["context"] = None
 
@@ -1675,24 +1920,31 @@ def hydrate_dataframe_from_session(columns: list[str], records: list[dict[str, A
     return dataframe
 
 
-def save_quote_compare_active_session(session_id: str, payload: dict[str, Any]) -> None:
+def save_quote_compare_active_session(
+    session_id: str,
+    payload: dict[str, Any],
+    user_id: int | str | None = None
+) -> None:
     normalized_payload = make_json_safe(payload)
     normalized_payload["session_id"] = session_id
-    session_path = get_quote_compare_session_path(session_id)
+    session_path = get_quote_compare_session_path(session_id, user_id=user_id)
     session_path.write_text(
         json.dumps(normalized_payload, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8"
     )
 
 
-def load_quote_compare_active_session(session_id: str | None) -> dict[str, Any] | None:
+def load_quote_compare_active_session(
+    session_id: str | None,
+    user_id: int | str | None = None
+) -> dict[str, Any] | None:
     if not session_id:
         return None
     normalized_session_id = str(session_id).strip()
     if not normalized_session_id:
         return None
 
-    session_path = get_quote_compare_session_path(normalized_session_id)
+    session_path = get_quote_compare_session_path(normalized_session_id, user_id=user_id)
     if session_path.exists():
         try:
             payload = json.loads(session_path.read_text(encoding="utf-8"))
@@ -1700,9 +1952,7 @@ def load_quote_compare_active_session(session_id: str | None) -> dict[str, Any] 
         except json.JSONDecodeError:
             logger.warning("Compare Prices session file is invalid: %s", session_path)
             return None
-
-    # Backward-compatible fallback for previously stored sessions in the shared store.
-    return load_quote_comparisons_store().get("active_sessions", {}).get(normalized_session_id)
+    return None
 
 
 def validate_quote_compare_active_session(session_payload: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -1922,10 +2172,11 @@ def find_guide_answer(question: str) -> dict[str, Any]:
 
 
 def load_latest_results_frame() -> pd.DataFrame | None:
-    if not LATEST_RESULTS_PATH.exists():
+    latest_results_path = get_current_latest_results_path()
+    if not latest_results_path.exists():
         return None
     try:
-        frame = pd.read_csv(LATEST_RESULTS_PATH)
+        frame = pd.read_csv(latest_results_path)
     except Exception:
         logger.exception("Failed to load latest results for Guide context")
         return None
@@ -2693,12 +2944,13 @@ def persist_quote_compare_analysis_results(
     return result_df
 
 
-def get_latest_quote_compare_analysis_session() -> dict[str, Any] | None:
-    if not QUOTE_COMPARE_SESSION_CACHE_DIR.exists():
+def get_latest_quote_compare_analysis_session(user_id: int | str | None = None) -> dict[str, Any] | None:
+    session_cache_dir = ensure_quote_compare_session_cache_dir(get_storage_user_id(user_id))
+    if not session_cache_dir.exists():
         return None
 
     session_files = sorted(
-        QUOTE_COMPARE_SESSION_CACHE_DIR.glob("*.json"),
+        session_cache_dir.glob("*.json"),
         key=lambda path: path.stat().st_mtime_ns,
         reverse=True
     )
@@ -2751,7 +3003,8 @@ def restore_latest_quote_compare_analysis_results() -> pd.DataFrame | None:
 
 
 def has_recipe_analysis_source() -> bool:
-    if LATEST_RESULTS_PATH.exists():
+    latest_results_path = get_current_latest_results_path()
+    if latest_results_path.exists():
         try:
             frame = load_current_upload_analysis_frame()
             if not frame.empty:
@@ -2775,7 +3028,7 @@ def get_latest_analysis_upload_meta() -> dict[str, Any] | None:
 
 
 def load_analysis_history_frame() -> pd.DataFrame:
-    if not LATEST_RESULTS_PATH.exists():
+    if not get_current_latest_results_path().exists():
         return pd.DataFrame()
     return load_current_upload_analysis_frame()
 
@@ -2822,7 +3075,7 @@ def normalize_recipe_analysis_frame(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_recipe_analysis_dataframe(*, scope: str = "current_upload") -> pd.DataFrame:
-    if LATEST_RESULTS_PATH.exists():
+    if get_current_latest_results_path().exists():
         try:
             return normalize_recipe_analysis_frame(load_current_upload_analysis_frame())
         except ValueError:
@@ -3304,9 +3557,10 @@ def enrich_saved_recipes_with_costs(recipes: list[dict[str, Any]], frame: pd.Dat
 
 def normalize_ai_rows(rows: list[dict[str, Any]] | None = None) -> pd.DataFrame:
     if rows is None:
-        if not LATEST_RESULTS_PATH.exists():
+        latest_results_path = get_current_latest_results_path()
+        if not latest_results_path.exists():
             raise ValueError("No analyzed dataset is available yet.")
-        source_rows = pd.read_csv(LATEST_RESULTS_PATH).to_dict(orient="records")
+        source_rows = pd.read_csv(latest_results_path).to_dict(orient="records")
     else:
         source_rows = rows
 
@@ -3866,7 +4120,8 @@ def analyze_dataframe(df: pd.DataFrame, *, source_name: str) -> dict:
     result_df["Savings Opportunity"] = result_df["Savings Opportunity"].round(2)
     result_df["Overpay Pct"] = result_df["Overpay Pct"].round(2)
 
-    result_df.to_csv(LATEST_RESULTS_PATH, index=False)
+    latest_results_path = get_current_latest_results_path()
+    result_df.to_csv(latest_results_path, index=False)
     LATEST_ANALYSIS_CACHE["signature"] = None
     LATEST_ANALYSIS_CACHE["context"] = None
     return build_analysis_context_from_results(result_df, source_name=source_name)
@@ -3965,12 +4220,14 @@ def build_home_redirect(**params) -> RedirectResponse:
 
 
 def load_latest_analysis_context(*, source_name: str | None = None, demo_mode: bool = False) -> dict:
-    if not LATEST_RESULTS_PATH.exists():
+    latest_results_path = get_current_latest_results_path()
+    if not latest_results_path.exists():
         raise ValueError("No results available yet. Please upload a file first.")
 
     cache_signature = (
-        LATEST_RESULTS_PATH.stat().st_mtime_ns,
-        LATEST_RESULTS_PATH.stat().st_size,
+        str(latest_results_path),
+        latest_results_path.stat().st_mtime_ns,
+        latest_results_path.stat().st_size,
         source_name or "Previous analysis",
         bool(demo_mode)
     )
@@ -3980,7 +4237,7 @@ def load_latest_analysis_context(*, source_name: str | None = None, demo_mode: b
     ):
         return dict(LATEST_ANALYSIS_CACHE["context"])
 
-    latest_results_df = pd.read_csv(LATEST_RESULTS_PATH)
+    latest_results_df = pd.read_csv(latest_results_path)
     analysis_context = build_analysis_context_from_results(
         latest_results_df,
         source_name=source_name or "Previous analysis"
@@ -4000,7 +4257,9 @@ def build_page_context(
     active_view: str = "quote_compare"
 ) -> dict[str, Any]:
     context_started_at = perf_counter()
-    is_authenticated = bool(request.cookies.get("user_id"))
+    is_authenticated = bool(getattr(request.state, "auth_user_id", None))
+    current_user_id = get_current_user_id(request)
+    latest_results_path = get_current_latest_results_path(current_user_id)
     has_saved_recipes = False
     if active_view == "recipes":
         try:
@@ -4008,7 +4267,7 @@ def build_page_context(
         except Exception:
             logger.exception("Failed to inspect saved recipes while building page context")
             has_saved_recipes = False
-    has_analysis = has_recipe_analysis_source() if active_view == "recipes" else LATEST_RESULTS_PATH.exists()
+    has_analysis = has_recipe_analysis_source() if active_view == "recipes" else latest_results_path.exists()
     recipes_has_visible_content = has_analysis or has_saved_recipes
     context: dict[str, Any] = {
         "request": request,
@@ -4058,12 +4317,19 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     async def log_startup_state():
         logger.info("Starting price analyzer app")
+        logger.info(
+            "Runtime config | app_env=%s debug=%s secure_cookies=%s max_upload_size=%s",
+            APP_ENV,
+            DEBUG_MODE,
+            AUTH_COOKIE_SECURE,
+            format_upload_size_limit(MAX_UPLOAD_SIZE_BYTES)
+        )
+        if IS_PRODUCTION and not RESEND_API_KEY:
+            logger.warning("Production mode is enabled but RESEND_API_KEY is not set. Password reset emails will fail to send.")
         logger.info("Base directory: %s", BASE_DIR)
         logger.info("Templates directory verified: %s", TEMPLATES_DIR)
         logger.info("Static directory mounted: %s", STATIC_DIR)
         ensure_auth_db()
-        ensure_codes_file()
-        logger.info("Access codes file ready: %s", CODES_PATH)
         ensure_recipes_file()
         logger.info("Recipes file ready: %s", RECIPES_PATH)
         ensure_quote_comparisons_file()
@@ -4119,34 +4385,35 @@ def create_app() -> FastAPI:
 
     @app.post("/validate-code")
     def validate_code(payload: AccessSessionPayload):
-        logger.info(
-            "POST /validate-code received | code=%s | incoming session_id=%s",
+        logger.warning(
+            "Legacy access-code validation attempt blocked | code=%s | session_id=%s",
             normalize_access_code(payload.code),
             normalize_session_id(payload.session_id)
         )
-        validation_result = validate_access_code_session(payload.code, payload.session_id)
-        logger.info(
-            "POST /validate-code response | code=%s | success=%s | session_id=%s | message=%s",
-            validation_result.get("code"),
-            validation_result.get("success"),
-            validation_result.get("session_id"),
-            validation_result.get("message")
+        return JSONResponse(
+            content={"success": False, "detail": "Legacy access system disabled"},
+            status_code=410
         )
-        return validation_result
 
     @app.post("/logout")
     def logout(payload: AccessSessionPayload):
-        success = logout_access_code_session(payload.code, payload.session_id)
-        return {"success": success}
+        logger.warning(
+            "Legacy access-code logout attempt blocked | code=%s | session_id=%s",
+            normalize_access_code(payload.code),
+            normalize_session_id(payload.session_id)
+        )
+        return JSONResponse(
+            content={"success": False, "detail": "Legacy access system disabled"},
+            status_code=410
+        )
 
     @app.get("/generate-code")
     def generate_code():
-        new_code = create_unique_access_code()
-        return {
-            "code": new_code,
-            "active": True,
-            "session_id": None
-        }
+        logger.warning("Legacy access-code generation attempt blocked")
+        return JSONResponse(
+            content={"success": False, "detail": "Legacy access system disabled"},
+            status_code=410
+        )
 
     @app.get("/quote-compare/download-sample-csv")
     def download_quote_compare_sample_csv():
@@ -4251,7 +4518,8 @@ def create_app() -> FastAPI:
             normalized_recipe = normalize_recipe_payload(payload.model_dump())
             calculation = calculate_recipe_cost(normalized_recipe, frame)
         except ValueError as exc:
-            return JSONResponse({"success": False, "message": str(exc)}, status_code=400)
+            status_code = 413 if str(exc) == get_upload_size_limit_message() else 400
+            return JSONResponse({"success": False, "message": str(exc)}, status_code=status_code)
 
         return JSONResponse({
             "success": True,
@@ -4267,7 +4535,8 @@ def create_app() -> FastAPI:
             calculation = calculate_recipe_cost(normalized_recipe, frame)
             pricing_metrics = calculate_recipe_pricing_metrics(normalized_recipe, calculation)
         except ValueError as exc:
-            return JSONResponse({"success": False, "message": str(exc)}, status_code=400)
+            status_code = 413 if str(exc) == get_upload_size_limit_message() else 400
+            return JSONResponse({"success": False, "message": str(exc)}, status_code=status_code)
 
         now = datetime.now(timezone.utc).isoformat()
         store = load_recipes_store()
@@ -4693,16 +4962,203 @@ app = create_app()
 
 from pydantic import BaseModel
 import sqlite3
-import hashlib
 from fastapi import Request
 from fastapi.responses import RedirectResponse, JSONResponse
 from datetime import datetime
 
-AUTH_DB_PATH = BASE_DIR / "auth.db"
+
+AUTH_DB_PATH = Path(os.getenv("AUTH_DB_PATH", str(BASE_DIR / "auth.db"))).expanduser()
 DEFAULT_TEST_LICENSE_CODE = "TEST-123-ABC"
+SEED_DEFAULT_TEST_LICENSE = env_flag("SEED_DEFAULT_TEST_LICENSE", not IS_PRODUCTION)
+AUTH_COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "user_id").strip() or "user_id"
+AUTH_COOKIE_MAX_AGE_SECONDS = env_int("AUTH_COOKIE_MAX_AGE_SECONDS", 60 * 60 * 24 * 14)
+AUTH_COOKIE_SAMESITE = os.getenv("AUTH_COOKIE_SAMESITE", "lax").strip().lower() or "lax"
+if AUTH_COOKIE_SAMESITE not in {"lax", "strict", "none"}:
+    logger.warning("Invalid AUTH_COOKIE_SAMESITE value %r. Falling back to 'lax'.", AUTH_COOKIE_SAMESITE)
+    AUTH_COOKIE_SAMESITE = "lax"
+AUTH_COOKIE_SECURE = env_flag("AUTH_COOKIE_SECURE", IS_PRODUCTION)
+PASSWORD_HASH_ITERATIONS = env_int("PASSWORD_HASH_ITERATIONS", 200_000)
+RESEND_API_KEY = (os.getenv("RESEND_API_KEY") or "").strip()
+RESEND_FROM_EMAIL = (os.getenv("RESEND_FROM_EMAIL") or "onboarding@resend.dev").strip()
+ADMIN_EMAIL = (
+    os.getenv("ADMIN_EMAIL")
+    or os.getenv("ADMIN_USER_EMAIL")
+    or ""
+).strip().lower()
+AUTH_SECRET_KEY_FROM_ENV = (
+    os.getenv("AUTH_SECRET_KEY")
+    or os.getenv("SECRET_KEY")
+    or ""
+).strip()
+AUTH_SECRET_KEY = AUTH_SECRET_KEY_FROM_ENV or f"dev-only-{BASE_DIR.resolve()}"
+AUTH_SHOW_RESET_LINK_IN_RESPONSE = env_flag("AUTH_SHOW_RESET_LINK_IN_RESPONSE", not IS_PRODUCTION)
+
+if IS_PRODUCTION and not AUTH_SECRET_KEY_FROM_ENV:
+    raise RuntimeError("Production mode requires AUTH_SECRET_KEY or SECRET_KEY to be set.")
+
+if IS_PRODUCTION and AUTH_SECRET_KEY.startswith("dev-only-"):
+    raise RuntimeError("Production mode cannot use the development fallback auth secret.")
+
+if IS_PRODUCTION and AUTH_SHOW_RESET_LINK_IN_RESPONSE:
+    logger.warning("Disabling reset-link exposure because APP_ENV is production.")
+    AUTH_SHOW_RESET_LINK_IN_RESPONSE = False
+
+if AUTH_COOKIE_SAMESITE == "none" and not AUTH_COOKIE_SECURE:
+    logger.warning("AUTH_COOKIE_SAMESITE='none' requires secure cookies. Enabling AUTH_COOKIE_SECURE.")
+    AUTH_COOKIE_SECURE = True
+
+if AUTH_SECRET_KEY.startswith("dev-only-"):
+    logger.warning(
+        "Using development fallback auth secret. Set AUTH_SECRET_KEY or SECRET_KEY for persistent secure sessions."
+    )
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    derived_key = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        PASSWORD_HASH_ITERATIONS
+    )
+    password_digest = base64.urlsafe_b64encode(derived_key).decode("ascii")
+    return f"pbkdf2_sha256${PASSWORD_HASH_ITERATIONS}${salt}${password_digest}"
+
+
+def hash_reset_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def create_password_reset_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def verify_password(password: str, stored_hash: str | None) -> tuple[bool, bool]:
+    if not stored_hash:
+        return False, False
+
+    if stored_hash.startswith("pbkdf2_sha256$"):
+        try:
+            _, iteration_text, salt, password_digest = stored_hash.split("$", 3)
+            iterations = max(int(iteration_text), 1)
+            derived_key = hashlib.pbkdf2_hmac(
+                "sha256",
+                password.encode("utf-8"),
+                salt.encode("utf-8"),
+                iterations
+            )
+            computed_digest = base64.urlsafe_b64encode(derived_key).decode("ascii")
+            return hmac.compare_digest(computed_digest, password_digest), False
+        except (TypeError, ValueError):
+            logger.warning("Stored password hash has an invalid PBKDF2 format.")
+            return False, False
+
+    legacy_sha256 = hashlib.sha256(password.encode("utf-8")).hexdigest()
+    return hmac.compare_digest(legacy_sha256, stored_hash), True
+
+
+def create_auth_cookie_value(user_id: int) -> str:
+    expires_at = int(datetime.now(timezone.utc).timestamp()) + AUTH_COOKIE_MAX_AGE_SECONDS
+    payload = f"{user_id}:{expires_at}"
+    signature = hmac.new(
+        AUTH_SECRET_KEY.encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256
+    ).hexdigest()
+    token = f"{payload}:{signature}"
+    return base64.urlsafe_b64encode(token.encode("utf-8")).decode("ascii")
+
+
+def get_user_by_id(user_id: int) -> sqlite3.Row | None:
+    conn = sqlite3.connect(str(AUTH_DB_PATH))
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, email, is_active, is_admin FROM users WHERE id = ?",
+            (user_id,)
+        )
+        return cursor.fetchone()
+    finally:
+        conn.close()
+
+
+def resolve_authenticated_user_id(request: Request) -> tuple[int | None, bool]:
+    raw_cookie = request.cookies.get(AUTH_COOKIE_NAME)
+    if not raw_cookie:
+        return None, False
+
+    try:
+        decoded_token = base64.urlsafe_b64decode(raw_cookie.encode("ascii")).decode("utf-8")
+        user_id_text, expires_at_text, signature = decoded_token.split(":", 2)
+        payload = f"{user_id_text}:{expires_at_text}"
+        expected_signature = hmac.new(
+            AUTH_SECRET_KEY.encode("utf-8"),
+            payload.encode("utf-8"),
+            hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected_signature):
+            return None, True
+
+        expires_at = int(expires_at_text)
+        if expires_at <= int(datetime.now(timezone.utc).timestamp()):
+            return None, True
+
+        user_id = int(user_id_text)
+    except (ValueError, TypeError, UnicodeDecodeError, base64.binascii.Error):
+        return None, True
+
+    user_row = get_user_by_id(user_id)
+    if not user_row or not bool(user_row["is_active"]):
+        return None, True
+
+    return int(user_row["id"]), False
+
+
+def clear_auth_cookie(response: JSONResponse | RedirectResponse | HTMLResponse) -> None:
+    response.delete_cookie(
+        key=AUTH_COOKIE_NAME,
+        path="/",
+        httponly=True,
+        samesite=AUTH_COOKIE_SAMESITE,
+        secure=AUTH_COOKIE_SECURE
+    )
+
+
+def get_request_auth_user(request: Request) -> dict[str, Any] | None:
+    auth_user = getattr(request.state, "auth_user", None)
+    return auth_user if isinstance(auth_user, dict) else None
+
+
+def require_admin_user(
+    request: Request,
+    *,
+    failure_status_code: int = 303
+) -> RedirectResponse | JSONResponse | None:
+    auth_user = get_request_auth_user(request)
+    if auth_user and bool(auth_user.get("is_admin")):
+        return None
+
+    if getattr(request.state, "auth_user_id", None):
+        if failure_status_code == 303:
+            return RedirectResponse(url="/", status_code=303)
+        return build_auth_json_response(
+            success=False,
+            detail="Admin access required.",
+            status_code=failure_status_code
+        )
+
+    if failure_status_code == 303:
+        return RedirectResponse(url="/login", status_code=303)
+    return build_auth_json_response(
+        success=False,
+        detail="Authentication required.",
+        status_code=401
+    )
 
 
 def ensure_auth_db() -> None:
+    AUTH_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(AUTH_DB_PATH))
     try:
         cursor = conn.cursor()
@@ -4712,7 +5168,8 @@ def ensure_auth_db() -> None:
                 email TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
                 created_at TEXT NOT NULL,
-                is_active INTEGER NOT NULL DEFAULT 1
+                is_active INTEGER NOT NULL DEFAULT 1,
+                is_admin INTEGER NOT NULL DEFAULT 0
             )
         """)
         cursor.execute("""
@@ -4721,16 +5178,268 @@ def ensure_auth_db() -> None:
                 code TEXT NOT NULL UNIQUE,
                 is_used INTEGER NOT NULL DEFAULT 0,
                 used_by_user_id INTEGER,
+                created_at TEXT,
                 activated_at TEXT,
+                used_at TEXT,
                 status TEXT NOT NULL DEFAULT 'active'
             )
         """)
         cursor.execute("""
-            INSERT OR IGNORE INTO license_codes (code, is_used, status)
-            VALUES (?, 0, 'active')
-        """, (DEFAULT_TEST_LICENSE_CODE,))
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                used_at TEXT
+            )
+        """)
+        user_columns = {
+            row[1]
+            for row in cursor.execute("PRAGMA table_info(users)").fetchall()
+        }
+        if "is_admin" not in user_columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
+
+        existing_columns = {
+            row[1]
+            for row in cursor.execute("PRAGMA table_info(license_codes)").fetchall()
+        }
+        if "created_at" not in existing_columns:
+            cursor.execute("ALTER TABLE license_codes ADD COLUMN created_at TEXT")
+        if "used_at" not in existing_columns:
+            cursor.execute("ALTER TABLE license_codes ADD COLUMN used_at TEXT")
+
+        reset_token_columns = {
+            row[1]
+            for row in cursor.execute("PRAGMA table_info(password_reset_tokens)").fetchall()
+        }
+        if "used_at" not in reset_token_columns:
+            cursor.execute("ALTER TABLE password_reset_tokens ADD COLUMN used_at TEXT")
+
+        if SEED_DEFAULT_TEST_LICENSE:
+            seeded_created_at = datetime.now().isoformat()
+            cursor.execute("""
+                INSERT OR IGNORE INTO license_codes (code, is_used, status, created_at)
+                VALUES (?, 0, 'active', ?)
+            """, (DEFAULT_TEST_LICENSE_CODE, seeded_created_at))
+            cursor.execute("""
+                UPDATE license_codes
+                SET created_at = COALESCE(created_at, ?),
+                    used_at = COALESCE(used_at, activated_at)
+                WHERE code = ?
+            """, (seeded_created_at, DEFAULT_TEST_LICENSE_CODE))
+        elif IS_PRODUCTION:
+            cursor.execute(
+                "UPDATE license_codes SET status = 'inactive' WHERE code = ? AND is_used = 0",
+                (DEFAULT_TEST_LICENSE_CODE,)
+            )
+        if ADMIN_EMAIL:
+            cursor.execute(
+                "UPDATE users SET is_admin = 1 WHERE lower(email) = ?",
+                (ADMIN_EMAIL,)
+            )
         conn.commit()
         logger.info("Auth database ready: %s", AUTH_DB_PATH)
+    finally:
+        conn.close()
+
+
+def list_license_codes() -> list[dict[str, Any]]:
+    conn = sqlite3.connect(str(AUTH_DB_PATH))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("""
+            SELECT
+                lc.code,
+                lc.is_used,
+                lc.status,
+                lc.used_by_user_id,
+                CASE
+                    WHEN lc.used_by_user_id IS NULL THEN '-'
+                    WHEN u.email IS NULL OR trim(u.email) = '' THEN 'unknown'
+                    ELSE u.email
+                END AS used_by_email,
+                lc.created_at,
+                COALESCE(used_at, activated_at) AS used_at
+            FROM license_codes lc
+            LEFT JOIN users u
+                ON lc.used_by_user_id = u.id
+            ORDER BY
+                datetime(lc.created_at) DESC,
+                lc.id DESC
+        """).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def create_unique_license_code() -> str:
+    conn = sqlite3.connect(str(AUTH_DB_PATH))
+    try:
+        cursor = conn.cursor()
+        while True:
+            candidate = generate_license_code()
+            existing = cursor.execute(
+                "SELECT 1 FROM license_codes WHERE code = ?",
+                (candidate,)
+            ).fetchone()
+            if existing:
+                continue
+
+            created_at = datetime.now().isoformat()
+            cursor.execute("""
+                INSERT INTO license_codes (code, is_used, status, created_at)
+                VALUES (?, 0, 'active', ?)
+            """, (candidate, created_at))
+            conn.commit()
+            return candidate
+    finally:
+        conn.close()
+
+
+def build_password_reset_link(request: Request, token: str) -> str:
+    base_url = str(request.base_url).rstrip("/")
+    return f"{base_url}/reset-password?{urlencode({'token': token})}"
+
+
+def send_password_reset_email(email: str, reset_link: str) -> None:
+    if not RESEND_API_KEY:
+        raise RuntimeError("RESEND_API_KEY is not configured.")
+
+    payload = json.dumps({
+        "from": RESEND_FROM_EMAIL,
+        "to": [email],
+        "subject": "Reset your password",
+        "text": f"Click the link below to reset your password:\n\n{reset_link}"
+    }).encode("utf-8")
+    request = UrlRequest(
+        "https://api.resend.com/emails",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Content-Type": "application/json"
+        },
+        method="POST"
+    )
+    with urlopen(request, timeout=15) as response:
+        status_code = getattr(response, "status", response.getcode())
+        if int(status_code) >= 300:
+            raise RuntimeError(f"Resend request failed with status {status_code}.")
+
+
+def create_password_reset_request(email: str, request: Request) -> str | None:
+    normalized_email = str(email or "").strip().lower()
+    if not normalized_email:
+        return None
+
+    conn = sqlite3.connect(str(AUTH_DB_PATH))
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.cursor()
+        user = cursor.execute(
+            "SELECT id, email, is_active FROM users WHERE email = ?",
+            (normalized_email,)
+        ).fetchone()
+        if not user or not bool(user["is_active"]):
+            return None
+
+        raw_token = create_password_reset_token()
+        created_at = datetime.now(timezone.utc)
+        expires_at = created_at.timestamp() + PASSWORD_RESET_TOKEN_TTL_SECONDS
+        cursor.execute(
+            "UPDATE password_reset_tokens SET used_at = COALESCE(used_at, ?) WHERE user_id = ? AND used_at IS NULL",
+            (created_at.isoformat(), int(user["id"]))
+        )
+        cursor.execute("""
+            INSERT INTO password_reset_tokens (user_id, token_hash, expires_at, created_at, used_at)
+            VALUES (?, ?, ?, ?, NULL)
+        """, (
+            int(user["id"]),
+            hash_reset_token(raw_token),
+            datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat(),
+            created_at.isoformat()
+        ))
+        conn.commit()
+        reset_link = build_password_reset_link(request, raw_token)
+        if AUTH_SHOW_RESET_LINK_IN_RESPONSE:
+            logger.info("Password reset link for %s: %s", normalized_email, reset_link)
+        else:
+            logger.info("Password reset requested for %s", normalized_email)
+        if IS_PRODUCTION:
+            try:
+                send_password_reset_email(normalized_email, reset_link)
+                logger.info("Password reset email sent to %s via Resend", normalized_email)
+            except Exception:
+                logger.exception("Failed to send password reset email via Resend for %s", normalized_email)
+        return reset_link
+    finally:
+        conn.close()
+
+
+def get_password_reset_token_record(token: str) -> tuple[sqlite3.Row | None, str | None]:
+    normalized_token = str(token or "").strip()
+    if not normalized_token:
+        return None, "Reset link is missing or invalid."
+
+    conn = sqlite3.connect(str(AUTH_DB_PATH))
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute("""
+            SELECT
+                prt.id,
+                prt.user_id,
+                prt.expires_at,
+                prt.created_at,
+                prt.used_at,
+                u.email,
+                u.is_active
+            FROM password_reset_tokens prt
+            JOIN users u
+                ON prt.user_id = u.id
+            WHERE prt.token_hash = ?
+        """, (hash_reset_token(normalized_token),)).fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return None, "This reset link is invalid."
+    if row["used_at"]:
+        return None, "This reset link has already been used."
+    try:
+        expires_at = datetime.fromisoformat(str(row["expires_at"]))
+    except ValueError:
+        return None, "This reset link is invalid."
+    if expires_at <= datetime.now(timezone.utc):
+        return None, "This reset link has expired."
+    if not bool(row["is_active"]):
+        return None, "This account is not active."
+    return row, None
+
+
+def consume_password_reset_token(token: str, new_password: str) -> tuple[bool, str]:
+    token_row, error_message = get_password_reset_token_record(token)
+    if token_row is None:
+        return False, error_message or "Reset failed."
+
+    updated_at = datetime.now(timezone.utc).isoformat()
+    conn = sqlite3.connect(str(AUTH_DB_PATH))
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?",
+            (hash_password(new_password), int(token_row["user_id"]))
+        )
+        cursor.execute(
+            "UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL",
+            (updated_at, int(token_row["user_id"]))
+        )
+        conn.commit()
+        return True, "Your password has been reset successfully."
+    except Exception:
+        conn.rollback()
+        logger.exception("Password reset completion failed for user_id=%s", token_row["user_id"])
+        return False, "Password reset failed."
     finally:
         conn.close()
 
@@ -4739,12 +5448,26 @@ def ensure_auth_db() -> None:
 async def check_auth(request: Request, call_next):
     path = request.url.path
 
+    if path in UPLOAD_ROUTE_PATHS:
+        raw_content_length = str(request.headers.get("content-length") or "").strip()
+        if raw_content_length:
+            try:
+                content_length = int(raw_content_length)
+            except ValueError:
+                content_length = 0
+            if content_length > (MAX_UPLOAD_SIZE_BYTES + 1024 * 1024):
+                return build_upload_size_error_response()
+
     allowed_paths = [
         "/login",
         "/activate",
+        "/forgot-password",
+        "/reset-password",
         "/api/login",
         "/api/logout",
         "/api/activate",
+        "/api/forgot-password",
+        "/api/reset-password",
         "/docs",
         "/openapi.json",
         "/redoc",
@@ -4753,14 +5476,36 @@ async def check_auth(request: Request, call_next):
     ]
 
     if any(path.startswith(p) for p in allowed_paths):
+        auth_user_id, should_clear_cookie = resolve_authenticated_user_id(request)
+        request.state.auth_user_id = auth_user_id
+        auth_user = dict(get_user_by_id(auth_user_id)) if auth_user_id else None
+        request.state.auth_user = auth_user
+        request.state.auth_is_admin = bool(auth_user and auth_user.get("is_admin"))
+        storage_token = CURRENT_STORAGE_USER_ID.set(auth_user_id)
+        try:
+            response = await call_next(request)
+            if should_clear_cookie:
+                clear_auth_cookie(response)
+            return response
+        finally:
+            CURRENT_STORAGE_USER_ID.reset(storage_token)
+
+    auth_user_id, should_clear_cookie = resolve_authenticated_user_id(request)
+    request.state.auth_user_id = auth_user_id
+    auth_user = dict(get_user_by_id(auth_user_id)) if auth_user_id else None
+    request.state.auth_user = auth_user
+    request.state.auth_is_admin = bool(auth_user and auth_user.get("is_admin"))
+    if not auth_user_id:
+        response = RedirectResponse(url="/login", status_code=303)
+        if should_clear_cookie:
+            clear_auth_cookie(response)
+        return response
+
+    storage_token = CURRENT_STORAGE_USER_ID.set(auth_user_id)
+    try:
         return await call_next(request)
-
-    user_id = request.cookies.get("user_id")
-
-    if not user_id:
-        return RedirectResponse(url="/login", status_code=303)
-
-    return await call_next(request)
+    finally:
+        CURRENT_STORAGE_USER_ID.reset(storage_token)
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -4793,10 +5538,51 @@ async def activate_page(request: Request):
     )
 
 
+@app.get("/forgot-password", response_class=HTMLResponse)
+async def forgot_password_page(request: Request):
+    redirect_response = redirect_if_authenticated(request)
+    if redirect_response is not None:
+        return redirect_response
+
+    return safe_template_response(
+        request,
+        "forgot_password.html",
+        {
+            "request": request,
+            "reset_link_enabled": AUTH_SHOW_RESET_LINK_IN_RESPONSE
+        }
+    )
+
+
+@app.get("/reset-password", response_class=HTMLResponse)
+async def reset_password_page(request: Request, token: str | None = None):
+    token_row, token_error = get_password_reset_token_record(token or "")
+    return safe_template_response(
+        request,
+        "reset_password.html",
+        {
+            "request": request,
+            "token": str(token or "").strip(),
+            "token_valid": token_row is not None,
+            "token_error": token_error,
+        }
+    )
+
+
 class ActivatePayload(BaseModel):
     email: str
     password: str
     code: str
+
+
+class ForgotPasswordPayload(BaseModel):
+    email: str
+
+
+class ResetPasswordPayload(BaseModel):
+    token: str
+    password: str
+    confirm_password: str
 
 
 def build_auth_json_response(
@@ -4894,22 +5680,24 @@ async def activate(payload: ActivatePayload):
                 status_code=400
             )
 
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        password_hash = hash_password(password)
         activated_at = datetime.now().isoformat()
 
+        is_admin = 1 if ADMIN_EMAIL and email == ADMIN_EMAIL else 0
         cursor.execute("""
-            INSERT INTO users (email, password_hash, created_at, is_active)
-            VALUES (?, ?, ?, ?)
-        """, (email, password_hash, activated_at, 1))
+            INSERT INTO users (email, password_hash, created_at, is_active, is_admin)
+            VALUES (?, ?, ?, ?, ?)
+        """, (email, password_hash, activated_at, 1, is_admin))
         user_id = cursor.lastrowid
 
         cursor.execute("""
             UPDATE license_codes
             SET is_used = 1,
                 used_by_user_id = ?,
-                activated_at = ?
+                activated_at = ?,
+                used_at = ?
             WHERE code = ?
-        """, (user_id, activated_at, code))
+        """, (user_id, activated_at, activated_at, code))
 
         if cursor.rowcount != 1:
             raise RuntimeError("License code update did not complete as expected.")
@@ -4948,41 +5736,124 @@ class LoginPayload(BaseModel):
 
 
 @app.post("/api/login")
-async def login(payload: LoginPayload):
-    email = payload.email
-    password = payload.password
+async def login(payload: LoginPayload, request: Request):
+    email = str(payload.email or "").strip().lower()
+    password = str(payload.password or "")
+    retry_after = check_named_rate_limit(request, "login", identifier_suffix=email)
+    if retry_after is not None:
+        return build_rate_limited_json_response(
+            "Too many login attempts. Please wait a minute and try again.",
+            retry_after
+        )
 
     conn = sqlite3.connect(str(AUTH_DB_PATH))
-    cursor = conn.cursor()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, password_hash, is_active FROM users WHERE email = ?",
+            (email,)
+        )
+        user = cursor.fetchone()
 
-    cursor.execute("SELECT id, password_hash FROM users WHERE email = ?", (email,))
-    user = cursor.fetchone()
+        if not user:
+            return {"success": False, "message": "User not found"}
 
-    if not user:
+        user_id, stored_hash, is_active = user
+        if not bool(is_active):
+            return {"success": False, "message": "Account inactive"}
+
+        password_valid, requires_upgrade = verify_password(password, stored_hash)
+        if not password_valid:
+            return {"success": False, "message": "Wrong password"}
+
+        if requires_upgrade:
+            cursor.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ?",
+                (hash_password(password), user_id)
+            )
+            conn.commit()
+    finally:
         conn.close()
-        return {"success": False, "message": "User not found"}
-
-    user_id, stored_hash = user
-    password_hash = hashlib.sha256(password.encode()).hexdigest()
-
-    if password_hash != stored_hash:
-        conn.close()
-        return {"success": False, "message": "Wrong password"}
-
-    conn.close()
 
     response = JSONResponse(
         content={"success": True, "message": "Login successful"}
     )
     response.set_cookie(
-        key="user_id",
-        value=str(user_id),
+        key=AUTH_COOKIE_NAME,
+        value=create_auth_cookie_value(int(user_id)),
         httponly=True,
-        samesite="lax",
-        secure=False,
-        path="/"
+        samesite=AUTH_COOKIE_SAMESITE,
+        secure=AUTH_COOKIE_SECURE,
+        path="/",
+        max_age=AUTH_COOKIE_MAX_AGE_SECONDS
     )
     return response
+
+
+@app.post("/api/forgot-password")
+async def forgot_password(payload: ForgotPasswordPayload, request: Request):
+    email = str(payload.email or "").strip().lower()
+    reset_link = None
+    retry_after = check_named_rate_limit(request, "forgot_password", identifier_suffix=email)
+    if retry_after is not None:
+        return build_rate_limited_json_response(
+            "Too many password reset requests. Please wait a few minutes and try again.",
+            retry_after
+        )
+
+    try:
+        if email:
+            reset_link = create_password_reset_request(email, request)
+    except Exception:
+        logger.exception("Password reset request failed for email=%s", email)
+
+    response_payload: dict[str, Any] = {
+        "success": True,
+        "message": "If an account exists for this email, reset instructions have been sent."
+    }
+    if reset_link and AUTH_SHOW_RESET_LINK_IN_RESPONSE:
+        response_payload["reset_link"] = reset_link
+    return JSONResponse(content=response_payload, status_code=200)
+
+
+@app.post("/api/reset-password")
+async def reset_password(payload: ResetPasswordPayload, request: Request):
+    token = str(payload.token or "").strip()
+    password = str(payload.password or "")
+    confirm_password = str(payload.confirm_password or "")
+    retry_after = check_named_rate_limit(request, "reset_password", identifier_suffix=hash_reset_token(token) if token else "")
+    if retry_after is not None:
+        return build_rate_limited_json_response(
+            "Too many password reset attempts. Please wait a few minutes and try again.",
+            retry_after
+        )
+
+    if not token:
+        return build_auth_json_response(
+            success=False,
+            detail="Reset link is missing or invalid.",
+            status_code=400
+        )
+    if not password:
+        return build_auth_json_response(
+            success=False,
+            detail="New password is required.",
+            status_code=400
+        )
+    if password != confirm_password:
+        return build_auth_json_response(
+            success=False,
+            detail="Passwords do not match.",
+            status_code=400
+        )
+
+    success, message = consume_password_reset_token(token, password)
+    return build_auth_json_response(
+        success=success,
+        message=message if success else None,
+        detail=None if success else message,
+        status_code=200 if success else 400
+    )
 
 
 @app.post("/api/logout")
@@ -4990,5 +5861,47 @@ async def auth_logout():
     response = JSONResponse(
         content={"success": True, "message": "Logout successful"}
     )
-    response.delete_cookie(key="user_id", path="/")
+    clear_auth_cookie(response)
     return response
+
+
+@app.get("/admin/licenses", response_class=HTMLResponse)
+async def admin_licenses_page(request: Request):
+    admin_gate = require_admin_user(request)
+    if admin_gate is not None:
+        return admin_gate
+
+    success_message = str(request.query_params.get("success") or "").strip()
+    error_message = str(request.query_params.get("error") or "").strip()
+    return safe_template_response(
+        request,
+        "admin_licenses.html",
+        {
+            "request": request,
+            "licenses": list_license_codes(),
+            "generated_code": success_message,
+            "error_message": error_message,
+            "is_admin_only": True
+        }
+    )
+
+
+@app.post("/admin/licenses/generate")
+async def admin_generate_license(request: Request):
+    admin_gate = require_admin_user(request, failure_status_code=403)
+    if admin_gate is not None:
+        return admin_gate
+    retry_after = check_named_rate_limit(
+        request,
+        "admin_license_generate",
+        identifier_suffix=str(getattr(request.state, "auth_user_id", "") or "admin")
+    )
+    if retry_after is not None:
+        redirect_url = "/admin/licenses?" + urlencode({
+            "error": "Too many license generation requests. Please wait a minute and try again."
+        })
+        return RedirectResponse(url=redirect_url, status_code=303)
+
+    new_code = create_unique_license_code()
+    redirect_url = "/admin/licenses?" + urlencode({"success": new_code})
+    return RedirectResponse(url=redirect_url, status_code=303)

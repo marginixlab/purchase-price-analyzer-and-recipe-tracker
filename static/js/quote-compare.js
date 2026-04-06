@@ -154,6 +154,14 @@
         }
     }
 
+    function hasPersistedQuoteCompareActiveSession() {
+        try {
+            return Boolean(String(sessionStorage.getItem(QUOTE_COMPARE_ACTIVE_SESSION_KEY) || "").trim());
+        } catch (error) {
+            return false;
+        }
+    }
+
     function clearQuoteCompareResumeFlag() {
         try {
             const url = new URL(window.location.href);
@@ -6612,6 +6620,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
         let hasBackendAnalysis = false;
         const forceStartHome = shouldForceQuoteCompareStart();
         const resumeRequested = shouldResumeQuoteCompareSession();
+        const hasPersistedActiveSession = hasPersistedQuoteCompareActiveSession();
         try {
             try {
                 const scopePayload = await fetchJson("/analysis/scope-bootstrap?scope=current_upload");
@@ -6622,7 +6631,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             hardResetRequested = Boolean(window.PriceAnalyzerBootGuard?.didHardReset?.());
             if (hardResetRequested) {
                 resetQuoteCompareUploadState(state);
-            } else if (!hasBackendAnalysis && !resumeRequested) {
+            } else if (!hasBackendAnalysis && !resumeRequested && !hasPersistedActiveSession) {
                 clearPersistedQuoteCompareState();
                 resetQuoteCompareUploadState(state);
             } else {

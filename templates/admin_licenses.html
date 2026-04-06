@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>License Admin | Purchase Price Analyzer</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/css/styles.css') }}">
+    <style>
+        body.admin-page {
+            min-height: 100vh;
+            margin: 0;
+            background:
+                radial-gradient(circle at top left, rgba(109, 168, 255, 0.16), transparent 30%),
+                linear-gradient(160deg, var(--bg-top), var(--bg-bottom));
+            color: var(--text);
+            font-family: var(--font-body);
+        }
+
+        .admin-shell {
+            width: min(1180px, calc(100% - 32px));
+            margin: 0 auto;
+            padding: 28px 0 42px;
+        }
+
+        .admin-header,
+        .admin-card {
+            border: 1px solid var(--border-soft);
+            border-radius: 26px;
+            background: var(--surface-strong);
+            box-shadow: var(--shadow);
+        }
+
+        .admin-header {
+            display: grid;
+            gap: 18px;
+            padding: 28px;
+            margin-bottom: 22px;
+        }
+
+        .admin-kicker {
+            display: inline-flex;
+            width: fit-content;
+            padding: 8px 12px;
+            border-radius: 999px;
+            background: var(--surface-chip);
+            color: var(--accent-primary);
+            font-size: 0.82rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .admin-title {
+            margin: 0;
+            font-family: var(--font-heading);
+            font-size: clamp(2rem, 4vw, 3rem);
+            color: var(--text-strong);
+        }
+
+        .admin-copy {
+            margin: 0;
+            max-width: 62ch;
+            color: var(--text-secondary);
+            line-height: 1.7;
+        }
+
+        .admin-actions {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .admin-generate-form {
+            margin: 0;
+        }
+
+        .admin-btn,
+        .admin-copy-btn,
+        .admin-link {
+            appearance: none;
+            border: 1px solid var(--border-strong);
+            border-radius: 14px;
+            min-height: 46px;
+            padding: 0 16px;
+            font: inherit;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+        }
+
+        .admin-btn {
+            background: var(--accent-primary);
+            border-color: var(--accent-primary);
+            color: #fff;
+            box-shadow: var(--button-shadow);
+        }
+
+        .admin-btn:hover,
+        .admin-copy-btn:hover,
+        .admin-link:hover {
+            transform: translateY(-1px);
+        }
+
+        .admin-link {
+            display: inline-flex;
+            align-items: center;
+            text-decoration: none;
+            background: transparent;
+            color: var(--text);
+        }
+
+        .admin-notice {
+            margin-top: 18px;
+            padding: 14px 16px;
+            border-radius: 18px;
+            border: 1px solid var(--alert-success-border);
+            background: var(--alert-success-bg);
+            color: var(--alert-success-text);
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+        }
+
+        .admin-notice.error {
+            border-color: var(--alert-error-border);
+            background: var(--alert-error-bg);
+            color: var(--alert-error-text);
+        }
+
+        .admin-notice strong {
+            font-family: var(--font-heading);
+            font-size: 1rem;
+        }
+
+        .admin-card {
+            overflow: hidden;
+        }
+
+        .admin-table-wrap {
+            overflow-x: auto;
+        }
+
+        .admin-table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 760px;
+        }
+
+        .admin-table th,
+        .admin-table td {
+            padding: 14px 16px;
+            text-align: left;
+            border-bottom: 1px solid var(--line-soft);
+            vertical-align: middle;
+        }
+
+        .admin-table th {
+            background: var(--table-head-bg);
+            color: var(--table-head-text);
+            font-size: 0.84rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+
+        .admin-table tbody tr {
+            background: var(--row-normal);
+        }
+
+        .admin-table tbody tr:hover {
+            background: var(--row-hover);
+        }
+
+        .admin-code {
+            font-family: var(--font-heading);
+            font-size: 1rem;
+            color: var(--text-strong);
+            letter-spacing: 0.06em;
+        }
+
+        .admin-meta {
+            color: var(--text-secondary);
+            font-size: 0.94rem;
+        }
+
+        .admin-pill {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 92px;
+            padding: 7px 12px;
+            border-radius: 999px;
+            background: var(--pill-normal-bg);
+            color: var(--pill-normal-text);
+            font-size: 0.84rem;
+            font-weight: 700;
+            text-transform: capitalize;
+        }
+
+        .admin-pill.used {
+            background: var(--pill-overpay-bg);
+            color: var(--pill-overpay-text);
+        }
+
+        .admin-pill.active {
+            background: var(--pill-good-bg);
+            color: var(--pill-good-text);
+        }
+
+        .admin-copy-btn {
+            background: transparent;
+            color: var(--text);
+        }
+
+        .admin-empty {
+            padding: 28px;
+            color: var(--text-secondary);
+        }
+
+        @media (max-width: 760px) {
+            .admin-shell {
+                width: min(100% - 20px, 1180px);
+                padding-top: 18px;
+            }
+
+            .admin-header {
+                padding: 22px 18px;
+            }
+
+            .admin-actions {
+                align-items: stretch;
+            }
+
+            .admin-btn,
+            .admin-link,
+            .admin-copy-btn {
+                width: 100%;
+                justify-content: center;
+            }
+        }
+    </style>
+</head>
+<body class="admin-page">
+    <main class="admin-shell">
+        <section class="admin-header">
+            <span class="admin-kicker">Internal License Admin</span>
+            <div>
+                <h1 class="admin-title">License code management</h1>
+                <p class="admin-copy">Create activation codes, review which ones are already used, and keep the current activation flow running on top of the same `license_codes` table.</p>
+                {% if is_admin_only %}
+                <p class="admin-copy">This page is restricted to admin users only.</p>
+                {% endif %}
+            </div>
+            <div class="admin-actions">
+                <form class="admin-generate-form" method="post" action="/admin/licenses/generate">
+                    <button class="admin-btn" type="submit">Generate New Code</button>
+                </form>
+                <a class="admin-link" href="/">Back to app</a>
+            </div>
+            {% if generated_code %}
+            <div class="admin-notice" role="status" aria-live="polite">
+                <span><strong>New code created:</strong> <span class="admin-code">{{ generated_code }}</span></span>
+                <button class="admin-copy-btn" type="button" data-copy-code="{{ generated_code }}">Copy Code</button>
+            </div>
+            {% endif %}
+            {% if error_message %}
+            <div class="admin-notice error" role="alert" aria-live="polite">
+                <span><strong>Request blocked:</strong> {{ error_message }}</span>
+            </div>
+            {% endif %}
+        </section>
+
+        <section class="admin-card">
+            {% if licenses %}
+            <div class="admin-table-wrap">
+                <table class="admin-table">
+                    <thead>
+                        <tr>
+                            <th>Code</th>
+                            <th>Usage</th>
+                            <th>Status</th>
+                            <th>Used By Email</th>
+                            <th>Created</th>
+                            <th>Used</th>
+                            <th>Copy</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for license in licenses %}
+                        <tr>
+                            <td><span class="admin-code">{{ license.code }}</span></td>
+                            <td>
+                                <span class="admin-pill {% if license.is_used %}used{% else %}active{% endif %}">
+                                    {% if license.is_used %}Used{% else %}Unused{% endif %}
+                                </span>
+                            </td>
+                            <td><span class="admin-meta">{{ license.status or "active" }}</span></td>
+                            <td><span class="admin-meta">{{ license.used_by_email }}</span></td>
+                            <td><span class="admin-meta">{{ license.created_at or "-" }}</span></td>
+                            <td><span class="admin-meta">{{ license.used_at or "-" }}</span></td>
+                            <td><button class="admin-copy-btn" type="button" data-copy-code="{{ license.code }}">Copy</button></td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="admin-empty">No license codes found.</div>
+            {% endif %}
+        </section>
+    </main>
+
+    <script>
+        document.querySelectorAll("[data-copy-code]").forEach((button) => {
+            button.addEventListener("click", async () => {
+                const code = button.getAttribute("data-copy-code") || "";
+                if (!code) return;
+
+                const originalLabel = button.textContent;
+                try {
+                    await navigator.clipboard.writeText(code);
+                    button.textContent = "Copied";
+                } catch (error) {
+                    button.textContent = "Copy failed";
+                }
+
+                window.setTimeout(() => {
+                    button.textContent = originalLabel;
+                }, 1400);
+            });
+        });
+    </script>
+</body>
+</html>

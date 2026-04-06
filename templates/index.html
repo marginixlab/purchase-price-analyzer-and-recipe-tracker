@@ -4,9 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Purchase Price Analyzer</title>
+    {% if not is_authenticated %}
     <script>
         document.documentElement.classList.add("auth-pending");
     </script>
+    {% endif %}
     <link rel="stylesheet" href="{{ url_for('static', path='/css/styles.css') }}">
     <style>
         #quoteCompareWorkspaceView[data-qc-ready="false"] #quoteCompareApp {
@@ -14,7 +16,7 @@
         }
     </style>
 </head>
-<body data-active-view="{{ active_view }}" data-is-authenticated="{{ 'true' if is_authenticated else 'false' }}" class="app-booting">
+<body data-active-view="{{ active_view }}" data-is-authenticated="{{ 'true' if is_authenticated else 'false' }}" class="{% if not is_authenticated %}app-booting{% endif %}">
     <section class="access-shell" id="accessShell" hidden>
         <div class="access-atmosphere" aria-hidden="true">
             <div class="access-gradient-layer"></div>
@@ -48,7 +50,7 @@
         </div>
     </section>
 
-    <div class="container app-shell app-shell-locked" id="appShell" hidden>
+    <div class="container app-shell{% if not is_authenticated %} app-shell-locked{% endif %}" id="appShell" {% if not is_authenticated %}hidden{% endif %}>
         <header class="page-header">
             <div class="brand-lockup">
                 <div class="brand-kicker">Purchase Price Analyzer - Recipe Creater & Tracker </div>
@@ -57,7 +59,7 @@
             <div class="header-actions">
                 <a id="guideLinkButton" class="secondary-btn workspace-toggle-btn {% if active_view == 'guide' %}is-active{% endif %}" href="/guide">Guide</a>
                 <a id="notesWorkspaceButton" class="secondary-btn workspace-toggle-btn {% if active_view == 'notes' %}is-active{% endif %}" href="/notes">Notes</a>
-                <button id="logoutButton" class="secondary-btn" type="button" hidden>Log Out</button>
+                <button id="logoutButton" class="secondary-btn" type="button">Log Out</button>
             </div>
         </header>
 
@@ -1461,7 +1463,21 @@
             };
         })();
     </script>
-    <script defer src="{{ url_for('static', path='/js/access-code.js') }}"></script>
+    {% if is_authenticated %}
+    <script>
+        document.addEventListener("DOMContentLoaded", () => {
+            const logoutButton = document.getElementById("logoutButton");
+            if (!logoutButton) return;
+            logoutButton.addEventListener("click", async () => {
+                try {
+                    await fetch("/api/logout", { method: "POST" });
+                } finally {
+                    window.location.href = "/login";
+                }
+            });
+        });
+    </script>
+    {% endif %}
     <script defer src="{{ url_for('static', path='/js/workspace-reset.js') }}"></script>
     <script defer src="{{ url_for('static', path='/js/workspace-notes.js') }}"></script>
     {% if active_view == 'guide' %}
