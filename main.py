@@ -1875,7 +1875,7 @@ def build_analysis_dedupe_key_series(frame: pd.DataFrame) -> pd.Series:
     )
 
 
-def deduplicate_analysis_frame(frame: pd.DataFrame) -> pd.DataFrame:
+def deduplicate_analysis_frame(frame: pd.DataFrame, *, keep_dedupe_key: bool = False) -> pd.DataFrame:
     if frame.empty:
         return frame.copy()
 
@@ -1890,7 +1890,8 @@ def deduplicate_analysis_frame(frame: pd.DataFrame) -> pd.DataFrame:
 
     deduped_frame["_analysis_dedupe_key"] = build_analysis_dedupe_key_series(deduped_frame)
     deduped_frame = deduped_frame.drop_duplicates(subset=["_analysis_dedupe_key"], keep="last").copy()
-    deduped_frame = deduped_frame.drop(columns=["_analysis_dedupe_key"], errors="ignore")
+    if not keep_dedupe_key:
+        deduped_frame = deduped_frame.drop(columns=["_analysis_dedupe_key"], errors="ignore")
 
     sort_columns = [column for column in ["Date", "Product Name", "Supplier"] if column in deduped_frame.columns]
     if sort_columns:
@@ -1905,13 +1906,13 @@ def assign_analysis_row_ids(frame: pd.DataFrame, *, upload_id: str) -> pd.DataFr
         return frame.copy()
 
     identified_frame = frame.copy()
-    dedupe_keys = build_analysis_dedupe_key_series(identified_frame)
+    dedupe_keys = identified_frame["_analysis_dedupe_key"] if "_analysis_dedupe_key" in identified_frame.columns else build_analysis_dedupe_key_series(identified_frame)
     identified_frame["row_id"] = [
         str(uuid.uuid5(uuid.NAMESPACE_URL, f"{str(upload_id).strip()}|{dedupe_key}"))
         for dedupe_key in dedupe_keys.tolist()
     ]
     identified_frame["upload_id"] = str(upload_id).strip()
-    return identified_frame
+    return identified_frame.drop(columns=["_analysis_dedupe_key"], errors="ignore")
 
 
 def load_current_upload_analysis_frame() -> pd.DataFrame:
@@ -1950,13 +1951,38 @@ def hydrate_dataframe_from_session(columns: list[str], records: list[dict[str, A
     return dataframe
 
 
+def get_json_payload_size_bytes(payload: Any) -> int:
+    try:
+        return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    except Exception:
+        return 0
+
+
+def compact_quote_compare_evaluation_for_session(evaluation: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(evaluation, dict):
+        return None
+    return {
+        "summary": evaluation.get("summary") if isinstance(evaluation.get("summary"), dict) else {},
+        "currencies": evaluation.get("currencies") if isinstance(evaluation.get("currencies"), list) else [],
+        "insights": evaluation.get("insights") if isinstance(evaluation.get("insights"), list) else []
+    }
+
+
+def compact_quote_compare_active_session_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    compacted_payload = dict(payload or {})
+    if str(compacted_payload.get("step") or "").strip().lower() == "analyze":
+        compacted_payload["evaluation"] = compact_quote_compare_evaluation_for_session(compacted_payload.get("evaluation")) or {}
+    return compacted_payload
+
+
 def save_quote_compare_active_session(
     session_id: str,
     payload: dict[str, Any],
     user_id: int | str | None = None
 ) -> None:
     resolved_user_id = get_storage_user_id(user_id)
-    normalized_payload = make_json_safe(payload)
+    payload_before_normalize_bytes = get_json_payload_size_bytes(payload)
+    normalized_payload = make_json_safe(compact_quote_compare_active_session_payload(payload))
     normalized_payload["session_id"] = session_id
     session_cache_dir = ensure_quote_compare_session_cache_dir(resolved_user_id)
     for existing_session_path in session_cache_dir.glob("*.json"):
@@ -1973,6 +1999,14 @@ def save_quote_compare_active_session(
     get_user_active_quote_compare_session_path(resolved_user_id).write_text(
         session_payload,
         encoding="utf-8"
+    )
+    logger.info(
+        "[Compare Prices active session persist] session_id=%s payload_before_bytes=%s payload_after_bytes=%s persisted_bytes=%s step=%s",
+        bool(session_id),
+        payload_before_normalize_bytes,
+        get_json_payload_size_bytes(normalized_payload),
+        len(session_payload.encode("utf-8")),
+        normalized_payload.get("step")
     )
 
 
@@ -2028,6 +2062,8 @@ def validate_quote_compare_active_session(session_payload: dict[str, Any] | None
     if not isinstance(comparison, dict) or not isinstance(evaluation, dict):
         return None
 
+    session_payload = dict(session_payload)
+    session_payload["evaluation"] = compact_quote_compare_evaluation_for_session(evaluation) or {}
     return session_payload
 
 
@@ -2930,21 +2966,9 @@ def build_analysis_dataframe_from_quote_comparison(
     upload_id = normalized_comparison.get("upload_id") or str(uuid.uuid4())
 
     rows: list[dict[str, Any]] = []
-    for index, bid in enumerate(normalized_comparison["bids"], start=1):
-        row_id = str(uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            "|".join([
-                upload_id,
-                str(index),
-                str(bid.get("supplier_name", "")),
-                str(bid.get("product_name", "")),
-                str(bid.get("unit", "")),
-                str(bid.get("quote_date", ""))
-            ])
-        ))
+    for bid in normalized_comparison["bids"]:
         rows.append({
             "upload_id": upload_id,
-            "row_id": row_id,
             "Product Name": bid.get("product_name", ""),
             "Supplier": bid.get("supplier_name", ""),
             "Unit": bid.get("unit", ""),
@@ -2960,7 +2984,6 @@ def build_analysis_dataframe_from_quote_comparison(
 
     dataframe_columns = [
         "upload_id",
-        "row_id",
         *REQUIRED_ANALYSIS_FIELDS,
         "Currency",
         "Delivery Time",
@@ -3025,14 +3048,18 @@ def persist_quote_compare_analysis_results(
     )
     log_perf("quote_compare.analyze_dataframe", analysis_started_at)
     dedupe_started_at = perf_counter()
-    result_df = deduplicate_analysis_frame(analyzed_df)
+    result_df = deduplicate_analysis_frame(analyzed_df, keep_dedupe_key=True)
     log_perf("quote_compare.deduplicate_results", dedupe_started_at)
     if "upload_id" in result_df.columns:
         result_df["upload_id"] = result_df["upload_id"].fillna("").astype(str)
         result_df.loc[:, "upload_id"] = normalized_upload_id
     persist_storage_started_at = perf_counter()
+    assign_ids_started_at = perf_counter()
     result_df = assign_analysis_row_ids(result_df, upload_id=normalized_upload_id)
+    log_perf("quote_compare.assign_row_ids", assign_ids_started_at)
+    save_frame_started_at = perf_counter()
     save_current_upload_analysis_frame(result_df)
+    log_perf("quote_compare.save_latest_results", save_frame_started_at)
     log_perf("quote_compare.persist_active_analysis", persist_storage_started_at)
     log_perf("quote_compare.total_analysis_pipeline", persist_started_at)
     return result_df
@@ -4736,6 +4763,8 @@ def create_app() -> FastAPI:
             load_quote_compare_active_session(session_id)
         )
         active_session_loaded_at = perf_counter()
+        comparisons_bytes = get_json_payload_size_bytes(comparisons)
+        active_session_bytes = get_json_payload_size_bytes(active_session)
 
         response_payload = {
             "success": True,
@@ -4745,7 +4774,7 @@ def create_app() -> FastAPI:
         response_json = json.dumps(response_payload, ensure_ascii=False, separators=(",", ":"))
         response_serialized_at = perf_counter()
         logger.info(
-            "[Compare Prices bootstrap timing] session_id=%s include_comparisons=%s total_ms=%.1f store_load_ms=%.1f comparisons_ms=%.1f active_session_ms=%.1f response_serialize_ms=%.1f response_bytes=%s comparisons=%s",
+            "[Compare Prices bootstrap timing] session_id=%s include_comparisons=%s total_ms=%.1f store_load_ms=%.1f comparisons_ms=%.1f active_session_ms=%.1f response_serialize_ms=%.1f response_bytes=%s active_session_bytes=%s comparisons_bytes=%s active_session_comparison_bytes=%s active_session_evaluation_bytes=%s active_session_headers_bytes=%s active_session_field_reviews_bytes=%s comparisons=%s",
             bool(session_id),
             include_comparisons,
             (response_serialized_at - request_started_at) * 1000,
@@ -4754,6 +4783,12 @@ def create_app() -> FastAPI:
             (active_session_loaded_at - comparisons_loaded_at) * 1000,
             (response_serialized_at - active_session_loaded_at) * 1000,
             len(response_json.encode("utf-8")),
+            active_session_bytes,
+            comparisons_bytes,
+            get_json_payload_size_bytes((active_session or {}).get("comparison")),
+            get_json_payload_size_bytes((active_session or {}).get("evaluation")),
+            get_json_payload_size_bytes((active_session or {}).get("headers")),
+            get_json_payload_size_bytes((active_session or {}).get("field_reviews")),
             len(comparisons)
         )
         return JSONResponse(response_payload)
@@ -4981,6 +5016,7 @@ def create_app() -> FastAPI:
             )
             log_perf("confirm.persist_analysis", persistence_started_at)
             if session_id:
+                session_payload_started_at = perf_counter()
                 lightweight_session_payload = {
                     "session_id": session_id,
                     "file_id": (session_payload or {}).get("file_id") or session_id,
@@ -5003,10 +5039,18 @@ def create_app() -> FastAPI:
                     "comparison": normalized_comparison,
                     "evaluation": evaluation
                 }
+                logger.info(
+                    "[Compare Prices analyze session payload] session_id=%s comparison_bytes=%s evaluation_bytes=%s total_bytes_before_persist=%s",
+                    bool(session_id),
+                    get_json_payload_size_bytes(lightweight_session_payload.get("comparison")),
+                    get_json_payload_size_bytes(lightweight_session_payload.get("evaluation")),
+                    get_json_payload_size_bytes(lightweight_session_payload)
+                )
                 save_quote_compare_active_session(
                     session_id,
                     lightweight_session_payload
                 )
+                log_perf("confirm.save_active_session", session_payload_started_at)
         except ValueError as exc:
             return JSONResponse({"success": False, "message": str(exc)}, status_code=400)
         except Exception:
