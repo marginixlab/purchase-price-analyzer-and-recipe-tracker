@@ -9,6 +9,19 @@
         { id: "negotiation_reminders", title: "Negotiation Reminders" }
     ];
 
+    function getAuthUserStorageSuffix() {
+        const rawUserId = String(document.body?.dataset?.authUserId || "").trim();
+        return rawUserId || "anonymous";
+    }
+
+    function getScopedStorageKey(baseKey) {
+        return `${baseKey}:${getAuthUserStorageSuffix()}`;
+    }
+
+    function getNotesItemsStorageKey() {
+        return getScopedStorageKey(NOTES_ITEMS_KEY);
+    }
+
     function getElements() {
         return {
             workspace: document.getElementById("notesWorkspace"),
@@ -26,7 +39,7 @@
     function readNoteItems() {
         let raw = "";
         try {
-            raw = String(window.localStorage.getItem(NOTES_ITEMS_KEY) || "").trim();
+            raw = String(window.localStorage.getItem(getNotesItemsStorageKey()) || "").trim();
         } catch (error) {
             raw = "";
         }
@@ -53,7 +66,7 @@
 
     function writeNoteItems(items) {
         try {
-            window.localStorage.setItem(NOTES_ITEMS_KEY, JSON.stringify((items || []).slice(0, MAX_NOTES)));
+            window.localStorage.setItem(getNotesItemsStorageKey(), JSON.stringify((items || []).slice(0, MAX_NOTES)));
         } catch (error) {
             return;
         }
@@ -554,8 +567,9 @@
             refreshNotesContext(elements);
         });
         window.addEventListener("storage", (event) => {
-            if (event.key === QUOTE_COMPARE_STATE_KEY || event.key === NOTES_ITEMS_KEY) {
-                if (event.key === NOTES_ITEMS_KEY) {
+            const notesItemsStorageKey = getNotesItemsStorageKey();
+            if (event.key === QUOTE_COMPARE_STATE_KEY || event.key === NOTES_ITEMS_KEY || event.key === notesItemsStorageKey) {
+                if (event.key === NOTES_ITEMS_KEY || event.key === notesItemsStorageKey) {
                     const state = getState();
                     state.items = readNoteItems();
                     if (state.editingId && !state.items.some((item) => item.id === state.editingId)) {

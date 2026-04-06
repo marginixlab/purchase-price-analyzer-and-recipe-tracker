@@ -40,6 +40,19 @@
     let isInitializing = false;
     let isSyncingUrl = false;
 
+    function getAuthUserStorageSuffix() {
+        const rawUserId = String(document.body?.dataset?.authUserId || "").trim();
+        return rawUserId || "anonymous";
+    }
+
+    function getScopedWorkspacePreferenceKey(key) {
+        return `${key}:${getAuthUserStorageSuffix()}`;
+    }
+
+    function isUserScopedWorkspacePreference(key) {
+        return key === "workspaceNotes" || key === "workspaceNotesV2";
+    }
+
     function isReloadNavigation() {
         try {
             const navigationEntry = performance.getEntriesByType("navigation")[0];
@@ -88,8 +101,9 @@
     }
 
     function readWorkspacePreference(key) {
+        const storageKey = isUserScopedWorkspacePreference(key) ? getScopedWorkspacePreferenceKey(key) : key;
         try {
-            const stored = window.localStorage.getItem(key);
+            const stored = window.localStorage.getItem(storageKey);
             return stored === null ? workspaceDefaults[key] : stored;
         } catch (error) {
             return workspaceDefaults[key];
@@ -97,8 +111,9 @@
     }
 
     function writeWorkspacePreference(key, value) {
+        const storageKey = isUserScopedWorkspacePreference(key) ? getScopedWorkspacePreferenceKey(key) : key;
         try {
-            window.localStorage.setItem(key, value);
+            window.localStorage.setItem(storageKey, value);
         } catch (error) {
             return;
         }

@@ -16,7 +16,7 @@
         }
     </style>
 </head>
-<body data-active-view="{{ active_view }}" data-is-authenticated="{{ 'true' if is_authenticated else 'false' }}" class="{% if not is_authenticated %}app-booting{% endif %}">
+<body data-active-view="{{ active_view }}" data-is-authenticated="{{ 'true' if is_authenticated else 'false' }}" data-auth-user-id="{{ current_user_id if current_user_id is not none else '' }}" class="{% if not is_authenticated %}app-booting{% endif %}">
     {% if not is_authenticated %}
     <section class="access-shell" id="accessShell" hidden>
         <div class="access-atmosphere" aria-hidden="true">

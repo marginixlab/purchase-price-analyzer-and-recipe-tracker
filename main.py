@@ -3033,14 +3033,6 @@ def persist_quote_compare_analysis_results(
     persist_storage_started_at = perf_counter()
     result_df = assign_analysis_row_ids(result_df, upload_id=normalized_upload_id)
     save_current_upload_analysis_frame(result_df)
-    append_analysis_history_rows(
-        result_df,
-        upload_id=normalized_upload_id,
-        source_name=source_name,
-        source_type=str(normalized_comparison.get("source_type") or "manual"),
-        comparison_name=str(normalized_comparison.get("name") or source_name or "Compare Prices analysis"),
-        is_deduplicated=True
-    )
     log_perf("quote_compare.persist_active_analysis", persist_storage_started_at)
     log_perf("quote_compare.total_analysis_pipeline", persist_started_at)
     return result_df
