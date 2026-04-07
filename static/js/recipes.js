@@ -501,7 +501,9 @@
             bootstrapPromise: null,
             bootstrapSequence: 0,
             firstVisiblePaintLogged: false,
-            frontendBootstrapRequestCount: 0
+            frontendBootstrapRequestCount: 0,
+            deferredBootstrapRenderFrame: 0,
+            deferredBootstrapRenderToken: 0
         };
     }
 
@@ -880,18 +882,22 @@
         elements.recipeIngredientsList.innerHTML = state.draft.ingredients.map((ingredient, index) => {
             const normalizedIngredient = normalizeIngredientDraft(ingredient, state);
             state.draft.ingredients[index] = normalizedIngredient;
-            const productResults = getFilteredProducts(state, normalizedIngredient.product_name);
-            const productOptions = productResults
-                .map((product) => `
-                    <button
-                        type="button"
-                        class="recipe-product-option"
-                        data-select-product="${escapeHtml(product.product_name)}"
-                        data-index="${index}"
-                    >${escapeHtml(product.product_name)}</button>
-                `)
-                .join("");
             const productDropdownOpen = state.openProductDropdownIndex === index;
+            const productResults = productDropdownOpen
+                ? getFilteredProducts(state, normalizedIngredient.product_name)
+                : [];
+            const productOptions = productDropdownOpen
+                ? productResults
+                    .map((product) => `
+                        <button
+                            type="button"
+                            class="recipe-product-option"
+                            data-select-product="${escapeHtml(product.product_name)}"
+                            data-index="${index}"
+                        >${escapeHtml(product.product_name)}</button>
+                    `)
+                    .join("")
+                : "";
             const purchaseUnitType = getUnitType(normalizedIngredient.purchase_unit);
             const purchaseBaseUnit = resolvePurchaseBaseUnit(
                 normalizedIngredient.purchase_unit,
@@ -1219,6 +1225,65 @@
         renderRecipeLibrary(elements, state);
     }
 
+    function cancelDeferredBootstrapRender(state) {
+        if (state.deferredBootstrapRenderFrame) {
+            window.cancelAnimationFrame(state.deferredBootstrapRenderFrame);
+            state.deferredBootstrapRenderFrame = 0;
+        }
+    }
+
+    function applyBootstrapRenderPhases(elements, state, {
+        renderStartedAt,
+        analysisAvailable,
+        invalidDraftProducts = []
+    }) {
+        const renderToken = Number(state.deferredBootstrapRenderToken || 0) + 1;
+        state.deferredBootstrapRenderToken = renderToken;
+        cancelDeferredBootstrapRender(state);
+
+        const blockingStartedAt = performance.now();
+        renderScopeSummary(elements, state);
+        renderEditor(elements, state);
+        renderCalculation(elements, analysisAvailable ? state.calculation : null);
+        applyDraftValidationFeedback(elements, invalidDraftProducts);
+        const renderBlockTime = Number((performance.now() - blockingStartedAt).toFixed(1));
+        logRecipesPerf("recipes.render_block_time", {
+            phase: "bootstrap_initial",
+            renderBlockTimeMs: renderBlockTime,
+            analysisAvailable
+        });
+
+        state.deferredBootstrapRenderFrame = window.requestAnimationFrame(() => {
+            state.deferredBootstrapRenderFrame = 0;
+            if (state.deferredBootstrapRenderToken !== renderToken) {
+                return;
+            }
+            const deferredStartedAt = performance.now();
+            renderRecipeCollections(elements, state);
+            const deferredCollectionsMs = Number((performance.now() - deferredStartedAt).toFixed(1));
+            logRecipesPerf("recipes.render_block_time", {
+                phase: "bootstrap_deferred_collections",
+                renderBlockTimeMs: deferredCollectionsMs,
+                analysisAvailable
+            });
+            window.requestAnimationFrame(() => {
+                if (state.deferredBootstrapRenderToken !== renderToken) {
+                    return;
+                }
+                logRecipesPerf("recipes.first_visible_paint", {
+                    totalMs: Number((performance.now() - renderStartedAt).toFixed(1)),
+                    analysisAvailable
+                });
+                logRecipesPerf("recipes.total_render_time", {
+                    totalMs: Number((performance.now() - renderStartedAt).toFixed(1)),
+                    initialRenderBlockTimeMs: renderBlockTime,
+                    deferredCollectionsMs,
+                    analysisAvailable
+                });
+            });
+        });
+    }
+
     function renderEditor(elements, state) {
         if (!state.draft.ingredients.length) {
             state.draft.ingredients = [createEmptyIngredient()];
@@ -1414,10 +1479,10 @@
             state.targetFoodCostPct = "";
             state.scopeSummary = data.scope_summary || null;
             state.isLoaded = true;
-            renderScopeSummary(elements, state);
-            renderRecipeCollections(elements, state);
-            renderEditor(elements, state);
-            renderCalculation(elements, null);
+            applyBootstrapRenderPhases(elements, state, {
+                renderStartedAt: applyStartedAt,
+                analysisAvailable: false
+            });
             logRecipesPerf("recipes.bootstrap.apply", {
                 analysisAvailable,
                 productsCount: 0,
@@ -1435,10 +1500,11 @@
         state.draft = normalizeRecipeDraft(state.draft, state);
         const invalidDraftProducts = clearInvalidIngredientBindings(state);
         state.isLoaded = true;
-        renderScopeSummary(elements, state);
-        renderRecipeCollections(elements, state);
-        renderEditor(elements, state);
-        applyDraftValidationFeedback(elements, invalidDraftProducts);
+        applyBootstrapRenderPhases(elements, state, {
+            renderStartedAt: applyStartedAt,
+            analysisAvailable: true,
+            invalidDraftProducts
+        });
         logRecipesPerf("recipes.bootstrap.apply", {
             analysisAvailable,
             productsCount: state.products.length,
@@ -2225,20 +2291,6 @@
             totalMs: Number((performance.now() - initStartedAt).toFixed(1))
         });
 
-        const logFirstVisiblePaint = () => {
-            if (state.firstVisiblePaintLogged) {
-                return;
-            }
-            state.firstVisiblePaintLogged = true;
-            window.requestAnimationFrame(() => {
-                window.requestAnimationFrame(() => {
-                    logRecipesPerf("recipes.first_visible_paint", {
-                        totalMs: Number((performance.now() - initStartedAt).toFixed(1))
-                    });
-                });
-            });
-        };
-
         const refreshBootstrap = async () => {
             if (state.bootstrapPromise) {
                 return state.bootstrapPromise;
@@ -2252,7 +2304,6 @@
                         await calculateRecipe(elements, state, { quiet: true });
                     }
                     setStatus(elements);
-                    logFirstVisiblePaint();
                     logRecipesPerf("recipes.refresh_bootstrap", {
                         sequence: bootstrapSequence,
                         totalMs: Number((performance.now() - refreshStartedAt).toFixed(1)),

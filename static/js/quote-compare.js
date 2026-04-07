@@ -23,6 +23,8 @@
     const QUOTE_COMPARE_HISTORY_COLUMNS_KEY = "quote_compare_history_columns_v1";
     const QUOTE_COMPARE_HISTORY_COLUMNS_ORDER_KEY = "quote_compare_history_columns_order_v1";
     const OPPORTUNITY_CARD_BATCH_SIZE = 24;
+    const RESTORE_INITIAL_OPPORTUNITY_CARD_BATCH_SIZE = 8;
+    const RESTORE_INITIAL_ANALYSIS_VIEWPORT_END = 24;
     const ANALYSIS_ROW_HEIGHT = 132;
     const ANALYSIS_ROW_EXPANDED_HEIGHT = 324;
     const ANALYSIS_VIRTUAL_OVERSCAN = 6;
@@ -1748,7 +1750,10 @@
             historyViewport: { start: 0, end: 120, scrollTop: 0 },
             progressPhase: "",
             restorePerf: null,
-            deferPersistUntilStablePaint: false
+            deferPersistUntilStablePaint: false,
+            restoreAnalyzeSettled: true,
+            restoreTargetOpportunityRenderCount: OPPORTUNITY_CARD_BATCH_SIZE,
+            restoreTargetAnalysisViewport: null
         };
     }
 
@@ -2566,6 +2571,28 @@
         state.currentScreen = screen;
         state.currentStep = step;
         if (markRestore) {
+            state.restoreAnalyzeSettled = false;
+            state.restoreTargetOpportunityRenderCount = Math.max(
+                Number(state.opportunityRenderCount || OPPORTUNITY_CARD_BATCH_SIZE),
+                OPPORTUNITY_CARD_BATCH_SIZE
+            );
+            state.opportunityRenderCount = Math.min(
+                state.restoreTargetOpportunityRenderCount,
+                RESTORE_INITIAL_OPPORTUNITY_CARD_BATCH_SIZE
+            );
+            const currentViewport = state.analysisViewport || { start: 0, end: 80, scrollTop: 0 };
+            const restoreViewportStart = Math.max(0, Number(currentViewport.start || 0));
+            const restoreViewportEnd = Math.max(restoreViewportStart + 1, Number(currentViewport.end || 80));
+            state.restoreTargetAnalysisViewport = {
+                ...currentViewport
+            };
+            state.analysisViewport = {
+                ...currentViewport,
+                end: Math.min(
+                    restoreViewportEnd,
+                    restoreViewportStart + RESTORE_INITIAL_ANALYSIS_VIEWPORT_END
+                )
+            };
             state.isRestoringAnalyze = true;
             state.restoreRenderPassCount = 0;
             state.restorePerf = {
@@ -5991,6 +6018,12 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
         }
         updateCurrentFileSummary(elements, state);
         if (state.isRestoringAnalyze) {
+            logQuoteCompareRestore("quote_compare.restore.render_block_time", {
+                phase: state.restoreAnalyzeSettled ? "deferred_full" : "first_visible_batch",
+                durationMs: Number((performance.now() - renderStartedAt).toFixed(1)),
+                renderPassCount: state.renderPassCount,
+                restoreRenderPassCount: Number(state.restoreRenderPassCount || 0)
+            });
             logQuoteCompareRestore("quote_compare.restore.table_dom_ms", {
                 durationMs: Number((tableDomEndedAt - tableDomStartedAt).toFixed(1))
             });
@@ -7123,8 +7156,24 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
                         restoreRenderPassCount: Number(state.restoreRenderPassCount || 0)
                     });
                     requestAnimationFrame(() => {
+                        if (!state.restoreAnalyzeSettled) {
+                            state.restoreAnalyzeSettled = true;
+                            state.opportunityRenderCount = Math.max(
+                                Number(state.restoreTargetOpportunityRenderCount || OPPORTUNITY_CARD_BATCH_SIZE),
+                                OPPORTUNITY_CARD_BATCH_SIZE
+                            );
+                            state.analysisViewport = {
+                                ...(state.restoreTargetAnalysisViewport || state.analysisViewport || {})
+                            };
+                            renderApp(elements, state, { preserveScroll: true });
+                        }
                         logQuoteCompareRestore("quote_compare.restore.stable_paint", {
                             totalInitMs: Number((performance.now() - initStartedAt).toFixed(1)),
+                            renderPassCount: state.renderPassCount,
+                            restoreRenderPassCount: Number(state.restoreRenderPassCount || 0)
+                        });
+                        logQuoteCompareRestore("quote_compare.restore.total_render_time", {
+                            totalMs: Number((performance.now() - initStartedAt).toFixed(1)),
                             renderPassCount: state.renderPassCount,
                             restoreRenderPassCount: Number(state.restoreRenderPassCount || 0)
                         });
