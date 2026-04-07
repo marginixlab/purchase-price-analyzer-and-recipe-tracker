@@ -198,10 +198,10 @@
             const scopeLabel = summary.scope_label || "Current File";
             elements.quoteDataScopeSummary.textContent = rowCount
                 ? `${scopeLabel} • ${productCount} products • ${rowCount} rows`
-                : `${scopeLabel} • No analyzed file yet`;
+                : "No analyzed file yet";
         } catch (error) {
             state.hasSharedScopeAnalysis = false;
-            elements.quoteDataScopeSummary.textContent = "Current File";
+            elements.quoteDataScopeSummary.textContent = "No analyzed file yet";
         }
         updateCurrentFileSummary(elements, state);
         updateContinueAnalysisButton(elements, state);
@@ -313,7 +313,7 @@
         if (elements.quoteDataScopeSummary) {
             elements.quoteDataScopeSummary.textContent = rowCount
                 ? `${scopeLabel} • ${productCount} products • ${rowCount} rows`
-                : `${scopeLabel} • No analyzed file yet`;
+                : "No analyzed file yet";
         }
         updateCurrentFileSummary(elements, state);
         updateContinueAnalysisButton(elements, state);
@@ -334,7 +334,7 @@
             applySharedScopeSummaryPayload(elements, state, resolvedPayload || { has_analysis: false, scope_summary: null });
         } catch (error) {
             state.hasSharedScopeAnalysis = false;
-            elements.quoteDataScopeSummary.textContent = "Current File";
+            elements.quoteDataScopeSummary.textContent = "No analyzed file yet";
             updateCurrentFileSummary(elements, state);
             updateContinueAnalysisButton(elements, state);
         }
@@ -1336,6 +1336,9 @@
             sessionStorage.removeItem(QUOTE_COMPARE_STATE_KEY);
             sessionStorage.removeItem(QUOTE_COMPARE_SCROLL_KEY);
             sessionStorage.removeItem(QUOTE_COMPARE_LAST_SCREEN_KEY);
+            if (window.__analysisScopeBootstrapCache && typeof window.__analysisScopeBootstrapCache === "object") {
+                window.__analysisScopeBootstrapCache = {};
+            }
         } catch (error) {
             // Ignore storage failures.
         }
@@ -1441,6 +1444,60 @@
         if (message) {
             setStatus(state, message, "info");
         }
+    }
+
+    function clearQuoteCompareFrontendCaches() {
+        try {
+            localStorage.removeItem(QUOTE_COMPARE_MAPPING_MEMORY_KEY);
+        } catch (error) {
+            // Ignore storage failures.
+        }
+        if (window.__analysisScopeBootstrapCache && typeof window.__analysisScopeBootstrapCache === "object") {
+            window.__analysisScopeBootstrapCache = {};
+        }
+        console.info("[PERF] quote_compare.reset.cache_cleared", {
+            clearedAnalysisScopeCache: true,
+            clearedMappingMemory: true
+        });
+    }
+
+    function resetQuoteCompareFrontendState(elements, state) {
+        cancelRestoreAnalyzeDeferredRender(state);
+        window.clearTimeout(state.persistSessionTimer);
+        window.clearTimeout(state.analysisFilterTimer);
+        window.clearTimeout(state.historyRowClickTimer);
+        clearQuoteComparePersistIdleHandle(state);
+        clearPersistedQuoteCompareState();
+        clearQuoteCompareFrontendCaches();
+
+        const freshState = createState();
+        Object.keys(state).forEach((key) => {
+            if (!(key in freshState)) {
+                delete state[key];
+            }
+        });
+        Object.assign(state, freshState);
+        state.lastPersistedSnapshot = "";
+        state.hasSharedScopeAnalysis = false;
+        state.dataScopeSummary = null;
+
+        setSharedAnalysisAvailability(false);
+        if (elements.quoteDataScopeSummary) {
+            elements.quoteDataScopeSummary.textContent = "No analyzed file yet";
+        }
+        if (elements.continueAnalysisButton) {
+            elements.continueAnalysisButton.hidden = true;
+        }
+        renderApp(elements, state);
+        writeScrollPosition(elements, 0);
+        console.info("[PERF] quote_compare.reset.frontend_state_cleared", {
+            currentScreen: state.currentScreen,
+            currentStep: state.currentStep
+        });
+        console.info("[PERF] quote_compare.reset.empty_state_rendered", {
+            currentScreen: state.currentScreen,
+            hasAnalysis: Boolean(state.hasSharedScopeAnalysis)
+        });
     }
 
     function hydratePersistedState(state, snapshot) {
@@ -7361,7 +7418,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
     function exposeApi(elements, state) {
         window.resetQuoteCompareToStep1 = function resetQuoteCompareToStep1() {
             setQuoteCompareReady(elements, false);
-            openUploadFlow(elements, state);
+            resetQuoteCompareFrontendState(elements, state);
             setQuoteCompareReady(elements, true);
         };
 
