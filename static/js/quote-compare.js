@@ -148,7 +148,7 @@
         }
         const summary = state.dataScopeSummary || {};
         const rowCount = Number(summary.row_count || 0);
-        const productCount = Number(summary.product_count || 0);
+        const productCount = Number(summary.product_name_count || summary.product_count || 0);
         if (rowCount) {
             elements.quoteDataScopeSummary.textContent = `${fileName} • ${productCount} products • ${rowCount} rows`;
         }
@@ -194,7 +194,7 @@
             state.hasSharedScopeAnalysis = Boolean(data?.has_analysis);
             const summary = state.dataScopeSummary || {};
             const rowCount = Number(summary.row_count || 0);
-            const productCount = Number(summary.product_count || 0);
+            const productCount = Number(summary.product_name_count || summary.product_count || 0);
             const scopeLabel = summary.scope_label || "Current File";
             elements.quoteDataScopeSummary.textContent = rowCount
                 ? `${scopeLabel} • ${productCount} products • ${rowCount} rows`
@@ -292,6 +292,7 @@
                 scope_label: "Current File",
                 row_count: rowCount,
                 product_count: Number(summary?.productCount || 0),
+                product_name_count: Number(summary?.productCount || 0),
                 supplier_count: Number(summary?.supplierCount || 0),
                 current_upload_id: String(comparison.upload_id || state?.activeSessionId || state?.manualUploadId || "").trim(),
                 current_upload_name: String(comparison.name || state?.file?.name || "").trim(),
@@ -308,7 +309,7 @@
         state.hasSharedScopeAnalysis = Boolean(payload?.has_analysis);
         const summary = state.dataScopeSummary || {};
         const rowCount = Number(summary.row_count || 0);
-        const productCount = Number(summary.product_count || 0);
+        const productCount = Number(summary.product_name_count || summary.product_count || 0);
         const scopeLabel = summary.scope_label || "Current File";
         if (elements.quoteDataScopeSummary) {
             elements.quoteDataScopeSummary.textContent = rowCount
@@ -2640,7 +2641,16 @@
 
         bids.forEach((bid) => {
             if (bid.supplier_name) suppliers.add(String(bid.supplier_name).trim());
-            if (bid.product_name) products.add(`${String(bid.product_name).trim()}__${String(bid.unit || "").trim()}`);
+            if (bid.product_name) products.add(String(bid.product_name).trim());
+        });
+        console.info("[DEBUG] quote_compare.products_analyzed_count_check", {
+            uniqueProductNameCount: new Set(
+                bids
+                    .map((bid) => String(bid?.product_name || "").trim())
+                    .filter(Boolean)
+            ).size,
+            uniqueProductNameUnitCount: products.size,
+            currentCountUsed: products.size
         });
         const summary = {
             rowCount: bids.length,
@@ -2800,7 +2810,7 @@
 
     function renderAnalyzeSummaryGridMarkup(visibleSummary, activeAnalyzeTab, comparisonCurrency) {
         return `
-            <article class="summary-card qc2-summary-card-compact"><div class="summary-card-title">Products analyzed</div><div class="summary-card-value compact">${visibleSummary.productCount}</div><div class="summary-card-insight">${activeAnalyzeTab === "savings" ? "Visible Top Savings products in the current section." : "Visible product groups in the active filter."}</div></article>
+            <article class="summary-card qc2-summary-card-compact"><div class="summary-card-title">${activeAnalyzeTab === "savings" ? "Distinct products" : "Products analyzed"}</div><div class="summary-card-value compact">${visibleSummary.productCount}</div><div class="summary-card-insight">${activeAnalyzeTab === "savings" ? "Unique product names in the visible Top Savings cards." : "Visible product groups in the active filter."}</div></article>
             <article class="summary-card qc2-summary-card-compact"><div class="summary-card-title">Suppliers compared</div><div class="summary-card-value compact">${visibleSummary.supplierCount}</div><div class="summary-card-insight">${activeAnalyzeTab === "savings" ? "Unique suppliers across the visible Top Savings cards." : "Unique suppliers in the visible table view."}</div></article>
             <article class="summary-card qc2-summary-card-compact"><div class="summary-card-title">Pricing opportunities</div><div class="summary-card-value compact">${visibleSummary.pricingOpportunityCount}</div><div class="summary-card-insight">${activeAnalyzeTab === "savings" ? "Visible Top Savings cards with savings above zero." : "Visible rows with savings above zero in the active filter."}</div></article>
             <article class="summary-card qc2-summary-card-compact is-savings"><div class="summary-card-title">Total potential savings</div><div class="summary-card-value compact">${escapeHtml(formatCurrency(visibleSummary.totalPotentialSavings, comparisonCurrency))}</div><div class="summary-card-insight">${activeAnalyzeTab === "savings" ? "Sum of visible Top Savings card values." : "Sum of visible row savings in the active filter."}</div></article>
@@ -4864,7 +4874,7 @@
 
         filteredCards.forEach((card) => {
             const viewModel = getAnalysisTableViewModel(card);
-            productKeys.add(getProductUnitKey(card.productName, card.unit));
+            productKeys.add(String(card.productName || "").trim());
             const leftSupplier = getOfferSupplierLabel(viewModel.leftOffer);
             const rightSupplier = getOfferSupplierLabel(viewModel.rightOffer);
             if (leftSupplier) supplierKeys.add(getSupplierKey(leftSupplier));
@@ -4907,7 +4917,7 @@
         let totalPotentialSavings = 0;
 
         visibleCards.forEach((card) => {
-            productKeys.add(getProductUnitKey(card.productName, card.unit));
+            productKeys.add(String(card.productName || "").trim());
             const currentSupplier = getOfferSupplierLabel(card.currentOffer);
             const bestSupplier = getOfferSupplierLabel(card.bestOffer || card.referenceOffer);
             if (currentSupplier) supplierKeys.add(getSupplierKey(currentSupplier));

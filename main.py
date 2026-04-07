@@ -2588,6 +2588,23 @@ def count_unique_products_by_name_unit(
     return int(len(unique_products.drop_duplicates(subset=[product_column, unit_column]).index))
 
 
+def count_unique_product_names(
+    frame: pd.DataFrame,
+    *,
+    product_column: str = "Product Name"
+) -> int:
+    if frame.empty or product_column not in frame.columns:
+        return 0
+    unique_products = (
+        frame.loc[:, [product_column]]
+        .copy()
+        .fillna("")
+    )
+    unique_products[product_column] = unique_products[product_column].astype(str).str.strip()
+    unique_products = unique_products[unique_products[product_column].astype(bool)]
+    return int(len(unique_products.drop_duplicates(subset=[product_column]).index))
+
+
 def build_guide_analysis_snapshot() -> dict[str, Any] | None:
     frame = load_latest_results_frame()
     if frame is None:
@@ -2678,6 +2695,19 @@ def build_guide_analysis_snapshot() -> dict[str, Any] | None:
         {"label": "Products with savings", "value": str(compare_ready_products or 0)},
         {"label": "Visible savings", "value": format_currency(total_savings) if total_savings > 0 else "--"}
     ]
+
+    unique_product_name_count = int(frame[product_column].nunique()) if product_column else 0
+    unique_product_name_unit_count = (
+        count_unique_products_by_name_unit(frame, product_column=product_column, unit_column=unit_column)
+        if product_column and unit_column
+        else 0
+    )
+    print(
+        "[DEBUG] Products analyzed count check | "
+        f"unique Product Name count={unique_product_name_count} | "
+        f"unique Product Name + Unit count={unique_product_name_unit_count} | "
+        f"current count used={product_count}"
+    )
 
     return {
         "total_rows": total_rows,
@@ -3671,6 +3701,7 @@ def build_analysis_scope_summary(frame: pd.DataFrame, *, scope: str) -> dict[str
         "scope_label": get_analysis_scope_label("current_upload"),
         "row_count": int(len(frame.index)),
         "product_count": count_unique_products_by_name_unit(frame),
+        "product_name_count": count_unique_product_names(frame),
         "supplier_count": int(frame["Supplier"].nunique()) if "Supplier" in frame.columns and not frame.empty else 0,
         "current_upload_id": str((latest_upload or {}).get("upload_id") or "").strip(),
         "current_upload_name": str((latest_upload or {}).get("source_name") or "").strip(),
@@ -3692,6 +3723,7 @@ def build_analysis_scope_summary_with_upload(
         "scope_label": get_analysis_scope_label("current_upload"),
         "row_count": int(len(frame.index)),
         "product_count": count_unique_products_by_name_unit(frame),
+        "product_name_count": count_unique_product_names(frame),
         "supplier_count": int(frame["Supplier"].nunique()) if "Supplier" in frame.columns and not frame.empty else 0,
         "current_upload_id": str((latest_upload or {}).get("upload_id") or "").strip(),
         "current_upload_name": str((latest_upload or {}).get("source_name") or "").strip(),
@@ -3732,11 +3764,17 @@ def build_analysis_scope_summary_from_comparison(
                 pass
 
     sorted_dates = sorted(date_values)
+    product_names = {
+        str(bid.get("product_name") or "").strip()
+        for bid in normalized_bids
+        if isinstance(bid, dict) and str(bid.get("product_name") or "").strip()
+    }
     return {
         "scope": "current_upload",
         "scope_label": get_analysis_scope_label("current_upload"),
         "row_count": len(normalized_bids),
         "product_count": len(product_keys),
+        "product_name_count": len(product_names),
         "supplier_count": len(suppliers),
         "current_upload_id": str((latest_upload or {}).get("upload_id") or normalized_comparison.get("upload_id") or "").strip(),
         "current_upload_name": str((latest_upload or {}).get("source_name") or normalized_comparison.get("name") or "").strip(),
