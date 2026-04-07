@@ -3475,9 +3475,16 @@ def restore_latest_quote_compare_analysis_results() -> pd.DataFrame | None:
 def has_recipe_analysis_source() -> bool:
     latest_results_path = get_current_latest_results_path()
     if latest_results_path.exists():
+        cache_signature = get_recipe_analysis_cache_signature()
+        if (
+            cache_signature is not None
+            and RECIPE_ANALYSIS_CACHE["signature"] == cache_signature
+            and isinstance(RECIPE_ANALYSIS_CACHE["frame"], pd.DataFrame)
+        ):
+            return not RECIPE_ANALYSIS_CACHE["frame"].empty
         try:
-            frame = load_current_upload_analysis_frame()
-            if not frame.empty:
+            quick_probe = pd.read_csv(latest_results_path, nrows=1)
+            if not quick_probe.empty:
                 return True
         except Exception:
             logger.exception("Failed to inspect latest results while checking recipe analysis availability")
@@ -3649,6 +3656,51 @@ def build_analysis_scope_summary_with_upload(
         "date_range": {
             "start": dated_rows.min().strftime("%Y-%m-%d") if not dated_rows.empty else "",
             "end": dated_rows.max().strftime("%Y-%m-%d") if not dated_rows.empty else ""
+        }
+    }
+
+
+def build_analysis_scope_summary_from_comparison(
+    comparison: dict[str, Any] | None,
+    *,
+    latest_upload: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    normalized_comparison = comparison if isinstance(comparison, dict) else {}
+    bids = normalized_comparison.get("bids")
+    normalized_bids = bids if isinstance(bids, list) else []
+    product_keys: set[tuple[str, str]] = set()
+    suppliers: set[str] = set()
+    date_values: list[datetime] = []
+
+    for bid in normalized_bids:
+        if not isinstance(bid, dict):
+            continue
+        product_name = str(bid.get("product_name") or "").strip()
+        unit = str(bid.get("unit") or "").strip()
+        supplier_name = str(bid.get("supplier_name") or "").strip()
+        if product_name:
+            product_keys.add((product_name, unit))
+        if supplier_name:
+            suppliers.add(supplier_name)
+        raw_bid_date = str(bid.get("date") or "").strip()
+        if raw_bid_date:
+            try:
+                date_values.append(datetime.fromisoformat(raw_bid_date.replace("Z", "+00:00")))
+            except ValueError:
+                pass
+
+    sorted_dates = sorted(date_values)
+    return {
+        "scope": "current_upload",
+        "scope_label": get_analysis_scope_label("current_upload"),
+        "row_count": len(normalized_bids),
+        "product_count": len(product_keys),
+        "supplier_count": len(suppliers),
+        "current_upload_id": str((latest_upload or {}).get("upload_id") or normalized_comparison.get("upload_id") or "").strip(),
+        "current_upload_name": str((latest_upload or {}).get("source_name") or normalized_comparison.get("name") or "").strip(),
+        "date_range": {
+            "start": sorted_dates[0].strftime("%Y-%m-%d") if sorted_dates else "",
+            "end": sorted_dates[-1].strftime("%Y-%m-%d") if sorted_dates else ""
         }
     }
 
@@ -5394,18 +5446,72 @@ def create_app() -> FastAPI:
             RECIPE_BOOTSTRAP_METRICS_CONTEXT.reset(bootstrap_metrics_token)
 
     @app.get("/analysis/scope-bootstrap")
-    def analysis_scope_bootstrap(scope: str = "current_upload"):
+    def analysis_scope_bootstrap(scope: str = "current_upload", session_id: str | None = None):
+        request_started_at = perf_counter()
+        normalized_scope = str(scope or "current_upload").strip() or "current_upload"
+        fast_path_details: dict[str, Any] = {
+            "scope": normalized_scope,
+            "has_session_id": bool(str(session_id or "").strip()),
+            "fast_path": False,
+            "fast_path_reason": "frame_required"
+        }
+        overlap_reason = "analysis_frame_required"
+        endpoint_selection = "analysis.scope_bootstrap.frame"
+
+        if normalized_scope == "current_upload" and str(session_id or "").strip():
+            active_session_started_at = perf_counter()
+            active_session = validate_quote_compare_active_session(load_quote_compare_active_session(session_id))
+            fast_path_details["active_session_lookup_ms"] = round((perf_counter() - active_session_started_at) * 1000, 1)
+            if (
+                isinstance(active_session, dict)
+                and str(active_session.get("step") or "").strip().lower() == "analyze"
+                and isinstance(active_session.get("comparison"), dict)
+            ):
+                comparison = active_session["comparison"]
+                latest_upload = {
+                    "upload_id": str(comparison.get("upload_id") or "").strip(),
+                    "source_name": (
+                        str(active_session.get("filename") or "").strip()
+                        or str(comparison.get("name") or "").strip()
+                    )
+                }
+                summary = build_analysis_scope_summary_from_comparison(comparison, latest_upload=latest_upload)
+                response_payload = {
+                    "success": True,
+                    "has_analysis": bool(summary["row_count"]),
+                    "scope_options": build_analysis_scope_options(),
+                    "scope_summary": summary
+                }
+                response_json = json.dumps(response_payload, ensure_ascii=False, separators=(",", ":"))
+                fast_path_details["fast_path"] = True
+                fast_path_details["fast_path_reason"] = "active_session_comparison"
+                fast_path_details["response_bytes"] = len(response_json.encode("utf-8"))
+                fast_path_details["total_ms"] = round((perf_counter() - request_started_at) * 1000, 1)
+                overlap_reason = "reuse_active_session_comparison"
+                endpoint_selection = "analysis.scope_bootstrap.active_session"
+                log_perf_details("analysis.scope_bootstrap.fast_path", **fast_path_details)
+                log_perf_details("bootstrap_overlap_reason", endpoint="analysis.scope_bootstrap", reason=overlap_reason)
+                log_perf_details("step3_restore_endpoint_selection", endpoint="analysis.scope_bootstrap", selection=endpoint_selection)
+                return Response(content=response_json, media_type="application/json")
+
         try:
             frame = load_recipe_analysis_dataframe()
         except ValueError:
             frame = pd.DataFrame()
         summary = build_analysis_scope_summary(frame, scope="current_upload")
-        return JSONResponse({
+        response_payload = {
             "success": True,
             "has_analysis": not frame.empty,
             "scope_options": build_analysis_scope_options(),
             "scope_summary": summary
-        })
+        }
+        response_json = json.dumps(response_payload, ensure_ascii=False, separators=(",", ":"))
+        fast_path_details["response_bytes"] = len(response_json.encode("utf-8"))
+        fast_path_details["total_ms"] = round((perf_counter() - request_started_at) * 1000, 1)
+        log_perf_details("analysis.scope_bootstrap.fast_path", **fast_path_details)
+        log_perf_details("bootstrap_overlap_reason", endpoint="analysis.scope_bootstrap", reason=overlap_reason)
+        log_perf_details("step3_restore_endpoint_selection", endpoint="analysis.scope_bootstrap", selection=endpoint_selection)
+        return Response(content=response_json, media_type="application/json")
 
     @app.post("/workspace/reset")
     def workspace_reset():
@@ -5593,6 +5699,35 @@ def create_app() -> FastAPI:
         }
         response_json = json.dumps(response_payload, ensure_ascii=False, separators=(",", ":"))
         response_serialized_at = perf_counter()
+        fast_path_reason = (
+            "active_session_only"
+            if active_session and not include_comparisons
+            else ("comparisons_included" if include_comparisons else "no_active_session")
+        )
+        endpoint_selection = (
+            "quote_compare.bootstrap.active_session"
+            if active_session and not include_comparisons
+            else ("quote_compare.bootstrap.comparisons" if include_comparisons else "quote_compare.bootstrap.default")
+        )
+        log_perf_details(
+            "quote_compare.bootstrap.fast_path",
+            has_session_id=bool(session_id),
+            include_comparisons=include_comparisons,
+            fast_path=bool(active_session and not include_comparisons),
+            fast_path_reason=fast_path_reason,
+            total_ms=round((response_serialized_at - request_started_at) * 1000, 1),
+            response_bytes=len(response_json.encode("utf-8"))
+        )
+        log_perf_details(
+            "bootstrap_overlap_reason",
+            endpoint="quote_compare.bootstrap",
+            reason=("active_session_contains_step3_state" if active_session and not include_comparisons else "response_contract_requires_bootstrap")
+        )
+        log_perf_details(
+            "step3_restore_endpoint_selection",
+            endpoint="quote_compare.bootstrap",
+            selection=endpoint_selection
+        )
         logger.info(
             "[Compare Prices bootstrap timing] session_id=%s include_comparisons=%s total_ms=%.1f store_load_ms=%.1f comparisons_ms=%.1f active_session_ms=%.1f response_serialize_ms=%.1f response_bytes=%s active_session_bytes=%s comparisons_bytes=%s active_session_comparison_bytes=%s active_session_evaluation_bytes=%s active_session_headers_bytes=%s active_session_field_reviews_bytes=%s comparisons=%s",
             bool(session_id),
@@ -5611,7 +5746,7 @@ def create_app() -> FastAPI:
             get_json_payload_size_bytes((active_session or {}).get("field_reviews")),
             len(comparisons)
         )
-        return JSONResponse(response_payload)
+        return Response(content=response_json, media_type="application/json")
 
     @app.post("/quote-compare/demo-data")
     def quote_compare_demo_data():

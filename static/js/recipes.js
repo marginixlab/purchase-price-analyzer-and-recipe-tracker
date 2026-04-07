@@ -1,6 +1,7 @@
 (function () {
     const DEFAULT_PRICING_MODE = "latest_price";
     const SHARED_DATA_SCOPE_KEY = "shared_analysis_scope_v1";
+    const RECIPES_BOOTSTRAP_CACHE_KEY = "recipes_bootstrap_cache_v1";
     const RECIPE_UNIT_OPTIONS = ["g", "kg", "oz", "lb", "ml", "l", "fl oz", "each", "portion"];
     const PACKAGE_BASE_UNIT_OPTIONS = ["g", "ml", "each"];
     const UNIT_TYPE_MAP = {
@@ -108,6 +109,39 @@
             console.info(`[PERF] ${label}`, details);
         } catch (error) {
             return;
+        }
+    }
+
+    function getAuthUserStorageSuffix() {
+        const rawUserId = String(document.body?.dataset?.authUserId || "").trim();
+        return rawUserId || "anonymous";
+    }
+
+    function getRecipesBootstrapCacheKey() {
+        return `${RECIPES_BOOTSTRAP_CACHE_KEY}:${getAuthUserStorageSuffix()}`;
+    }
+
+    function readCachedRecipesBootstrap() {
+        try {
+            const rawValue = String(sessionStorage.getItem(getRecipesBootstrapCacheKey()) || "").trim();
+            if (!rawValue) {
+                return null;
+            }
+            const parsed = JSON.parse(rawValue);
+            return parsed && typeof parsed === "object" ? parsed : null;
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function writeCachedRecipesBootstrap(payload) {
+        try {
+            sessionStorage.setItem(getRecipesBootstrapCacheKey(), JSON.stringify({
+                savedAt: Date.now(),
+                payload
+            }));
+        } catch (error) {
+            // Ignore storage failures.
         }
     }
 
@@ -503,7 +537,9 @@
             firstVisiblePaintLogged: false,
             frontendBootstrapRequestCount: 0,
             deferredBootstrapRenderFrame: 0,
-            deferredBootstrapRenderToken: 0
+            deferredBootstrapRenderToken: 0,
+            bootstrapRefreshTimer: null,
+            lastObservedHasAnalysis: null
         };
     }
 
@@ -1546,6 +1582,7 @@
             count: state.frontendBootstrapRequestCount
         });
         const data = await fetchJson("/recipes/bootstrap");
+        writeCachedRecipesBootstrap(data);
         applyBootstrapData(elements, state, data, {
             analysisAvailable: hasAnalysis(elements)
         });
@@ -2311,6 +2348,7 @@
         renderEditor(elements, state);
         renderCalculation(elements, null);
         bindEvents(elements, state);
+        state.lastObservedHasAnalysis = hasAnalysis(elements);
         logRecipesPerf("recipes.init.frontend", {
             phase: "shell_render",
             totalMs: Number((performance.now() - initStartedAt).toFixed(1))
@@ -2348,13 +2386,40 @@
             return state.bootstrapPromise;
         };
 
-        await refreshBootstrap();
+        const scheduleBootstrapRefresh = (reason = "scheduled") => {
+            window.clearTimeout(state.bootstrapRefreshTimer);
+            state.bootstrapRefreshTimer = window.setTimeout(() => {
+                state.bootstrapRefreshTimer = null;
+                refreshBootstrap().catch((error) => {
+                    setStatus(elements, error.message, "error");
+                });
+            }, 0);
+            logRecipesPerf("recipes.refresh_bootstrap", {
+                phase: "scheduled",
+                reason
+            });
+        };
+
+        const cachedBootstrap = readCachedRecipesBootstrap();
+        if (cachedBootstrap?.payload) {
+            applyBootstrapData(elements, state, cachedBootstrap.payload, {
+                analysisAvailable: hasAnalysis(elements)
+            });
+            logRecipesPerf("recipes.bootstrap.frontend", {
+                phase: "cache_apply",
+                cacheAgeMs: Math.max(Date.now() - Number(cachedBootstrap.savedAt || 0), 0),
+                productsCount: Array.isArray(cachedBootstrap.payload.products) ? cachedBootstrap.payload.products.length : 0,
+                recipesCount: Array.isArray(cachedBootstrap.payload.recipes) ? cachedBootstrap.payload.recipes.length : 0
+            });
+        }
+
+        scheduleBootstrapRefresh("init");
         logRecipesPerf("recipes.init.frontend", {
             phase: "complete",
             totalMs: Number((performance.now() - initStartedAt).toFixed(1))
         });
         window.PriceAnalyzerRecipes = {
-            reloadSavedRecipes: refreshBootstrap
+            reloadSavedRecipes: () => refreshBootstrap()
         };
 
         window.addEventListener("storage", async (event) => {
@@ -2366,28 +2431,25 @@
                 return;
             }
             state.dataScope = nextScope;
-            try {
-                await refreshBootstrap();
-            } catch (error) {
-                setStatus(elements, error.message, "error");
-            }
+            scheduleBootstrapRefresh("storage_scope_change");
         });
 
         window.addEventListener("shared-analysis-context-updated", async () => {
             state.dataScope = readSharedDataScope();
-            try {
-                await refreshBootstrap();
-            } catch (error) {
-                setStatus(elements, error.message, "error");
-            }
+            scheduleBootstrapRefresh("shared_analysis_context_updated");
         });
 
         window.addEventListener("workspace-reset-completed", async () => {
-            await refreshBootstrap();
+            scheduleBootstrapRefresh("workspace_reset_completed");
         });
 
         const observer = new MutationObserver(() => {
-            refreshBootstrap();
+            const currentHasAnalysis = hasAnalysis(elements);
+            if (currentHasAnalysis === state.lastObservedHasAnalysis) {
+                return;
+            }
+            state.lastObservedHasAnalysis = currentHasAnalysis;
+            scheduleBootstrapRefresh("has_analysis_attribute_changed");
         });
         observer.observe(stateHost, {
             attributes: true,

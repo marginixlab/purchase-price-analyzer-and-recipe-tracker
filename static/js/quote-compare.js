@@ -214,47 +214,63 @@
         return window.__analysisScopeBootstrapCache;
     }
 
-    function setCachedAnalysisScopeBootstrap(scope, payload) {
+    function getAnalysisScopeBootstrapCacheKey(scope, sessionId = "") {
         const normalizedScope = String(scope || "current_upload").trim() || "current_upload";
+        const normalizedSessionId = String(sessionId || "").trim();
+        return normalizedSessionId ? `${normalizedScope}::${normalizedSessionId}` : normalizedScope;
+    }
+
+    function setCachedAnalysisScopeBootstrap(scope, payload, sessionId = "") {
+        const cacheKey = getAnalysisScopeBootstrapCacheKey(scope, sessionId);
         const store = getAnalysisScopeBootstrapCacheStore();
-        store[normalizedScope] = {
+        store[cacheKey] = {
             data: payload,
             timestamp: performance.now(),
             promise: null
         };
     }
 
-    async function getCachedAnalysisScopeBootstrap(scope = "current_upload", { force = false, maxAgeMs = 5000 } = {}) {
+    async function getCachedAnalysisScopeBootstrap(scope = "current_upload", { force = false, maxAgeMs = 5000, sessionId = "" } = {}) {
         const normalizedScope = String(scope || "current_upload").trim() || "current_upload";
+        const cacheKey = getAnalysisScopeBootstrapCacheKey(normalizedScope, sessionId);
         const store = getAnalysisScopeBootstrapCacheStore();
-        const cachedEntry = store[normalizedScope];
+        const cachedEntry = store[cacheKey];
         const now = performance.now();
         if (!force && cachedEntry?.data && (now - Number(cachedEntry.timestamp || 0)) <= maxAgeMs) {
             console.info("[compare prices scope bootstrap cache hit]", {
                 scope: normalizedScope,
+                sessionId: Boolean(String(sessionId || "").trim()),
                 ageMs: Number((now - Number(cachedEntry.timestamp || 0)).toFixed(1))
             });
             return cachedEntry.data;
         }
         if (!force && cachedEntry?.promise) {
             console.info("[compare prices scope bootstrap shared inflight]", {
-                scope: normalizedScope
+                scope: normalizedScope,
+                sessionId: Boolean(String(sessionId || "").trim())
             });
             return cachedEntry.promise;
         }
-        const query = normalizedScope ? `?scope=${encodeURIComponent(normalizedScope)}` : "";
+        const params = new URLSearchParams();
+        if (normalizedScope) {
+            params.set("scope", normalizedScope);
+        }
+        if (String(sessionId || "").trim()) {
+            params.set("session_id", String(sessionId).trim());
+        }
+        const query = params.toString() ? `?${params.toString()}` : "";
         const requestPromise = fetchJson(`/analysis/scope-bootstrap${query}`)
             .then((payload) => {
-                setCachedAnalysisScopeBootstrap(normalizedScope, payload);
+                setCachedAnalysisScopeBootstrap(normalizedScope, payload, sessionId);
                 return payload;
             })
             .finally(() => {
-                const latestEntry = store[normalizedScope];
+                const latestEntry = store[cacheKey];
                 if (latestEntry?.promise === requestPromise) {
                     latestEntry.promise = null;
                 }
             });
-        store[normalizedScope] = {
+        store[cacheKey] = {
             data: cachedEntry?.data || null,
             timestamp: cachedEntry?.timestamp || 0,
             promise: requestPromise
@@ -303,16 +319,17 @@
         updateContinueAnalysisButton(elements, state);
     }
 
-    async function refreshSharedScopeSummaryCached(elements, state, { scopePayload = null, force = false } = {}) {
+    async function refreshSharedScopeSummaryCached(elements, state, { scopePayload = null, force = false, sessionId = "" } = {}) {
         const refreshStartedAt = performance.now();
+        const resolvedSessionId = String(sessionId || state?.activeSessionId || "").trim();
         if (!elements.quoteDataScopeSummary) {
             updateContinueAnalysisButton(elements, state);
             return;
         }
         try {
-            const resolvedPayload = scopePayload || await getCachedAnalysisScopeBootstrap("current_upload", { force });
+            const resolvedPayload = scopePayload || await getCachedAnalysisScopeBootstrap("current_upload", { force, sessionId: resolvedSessionId });
             if (resolvedPayload) {
-                setCachedAnalysisScopeBootstrap("current_upload", resolvedPayload);
+                setCachedAnalysisScopeBootstrap("current_upload", resolvedPayload, resolvedSessionId);
             }
             applySharedScopeSummaryPayload(elements, state, resolvedPayload || { has_analysis: false, scope_summary: null });
         } catch (error) {
@@ -324,6 +341,7 @@
         console.info("[compare prices restore scope summary]", {
             durationMs: Number((performance.now() - refreshStartedAt).toFixed(1)),
             hadPrefetchedPayload: Boolean(scopePayload),
+            hadSessionId: Boolean(resolvedSessionId),
             hasAnalysis: Boolean(state.hasSharedScopeAnalysis)
         });
     }
@@ -390,8 +408,8 @@
         state.dataScope = "current_upload";
         setSharedAnalysisAvailability(true);
         const resolvedScopePayload = scopePayload || buildClientAnalysisScopePayload(state);
-        setCachedAnalysisScopeBootstrap("current_upload", resolvedScopePayload);
-        await refreshSharedScopeSummaryCached(elements, state, { scopePayload: resolvedScopePayload });
+        setCachedAnalysisScopeBootstrap("current_upload", resolvedScopePayload, state.activeSessionId);
+        await refreshSharedScopeSummaryCached(elements, state, { scopePayload: resolvedScopePayload, sessionId: state.activeSessionId });
         window.dispatchEvent(new CustomEvent("shared-analysis-context-updated", {
             detail: {
                 scope: "current_upload",
@@ -399,6 +417,24 @@
                 scopePayload: resolvedScopePayload
             }
         }));
+    }
+
+    function scheduleDeferredSharedScopeSummaryRefresh(elements, state, { force = false, reason = "deferred_init" } = {}) {
+        const scheduledAt = performance.now();
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                refreshSharedScopeSummaryCached(elements, state, {
+                    force,
+                    sessionId: state.activeSessionId
+                }).then(() => {
+                    console.info("[PERF] quote_compare.init.scope_bootstrap_deferred", {
+                        reason,
+                        durationMs: Number((performance.now() - scheduledAt).toFixed(1)),
+                        hasActiveSessionId: Boolean(state.activeSessionId)
+                    });
+                }).catch(() => null);
+            });
+        });
     }
 
     function findScrollableParent(node) {
@@ -1265,10 +1301,32 @@
         }
     }
 
+    function clearQuoteComparePersistIdleHandle(state) {
+        if (state.persistSessionIdleHandle && typeof window.cancelIdleCallback === "function") {
+            window.cancelIdleCallback(state.persistSessionIdleHandle);
+        } else if (state.persistSessionIdleHandle) {
+            window.clearTimeout(state.persistSessionIdleHandle);
+        }
+        state.persistSessionIdleHandle = 0;
+    }
+
+    function scheduleQuoteCompareSessionPersistWhenIdle(state, elements) {
+        clearQuoteComparePersistIdleHandle(state);
+        const persistTask = () => {
+            state.persistSessionIdleHandle = 0;
+            persistQuoteCompareSession(state, elements);
+        };
+        if (typeof window.requestIdleCallback === "function") {
+            state.persistSessionIdleHandle = window.requestIdleCallback(persistTask, { timeout: 250 });
+            return;
+        }
+        state.persistSessionIdleHandle = window.setTimeout(persistTask, 0);
+    }
+
     function scheduleQuoteCompareSessionPersist(state, elements) {
         window.clearTimeout(state.persistSessionTimer);
         state.persistSessionTimer = window.setTimeout(() => {
-            persistQuoteCompareSession(state, elements);
+            scheduleQuoteCompareSessionPersistWhenIdle(state, elements);
         }, 180);
     }
 
@@ -1745,6 +1803,7 @@
                 dateTo: ""
             },
             persistSessionTimer: null,
+            persistSessionIdleHandle: 0,
             analysisFilterTimer: null,
             historyRefreshFrame: 0,
             historyMemo: null,
@@ -7322,35 +7381,98 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
         setQuoteCompareReady(elements, false);
         const state = createState();
         let hardResetRequested = false;
-        let hasBackendAnalysis = false;
         let initialScopePayload = null;
+        let scopeBootstrapRequired = false;
+        let scopeBootstrapDeferred = false;
+        let bootstrapDependencyReason = "quote_compare_bootstrap_required";
+        let firstVisibleLogged = false;
+        let readyMarked = false;
         const forceStartHome = shouldForceQuoteCompareStart();
         const resumeRequested = shouldResumeQuoteCompareSession();
         const hasPersistedActiveSession = hasPersistedQuoteCompareActiveSession();
-        try {
-            try {
-                initialScopePayload = await getCachedAnalysisScopeBootstrap("current_upload");
-                hasBackendAnalysis = Boolean(initialScopePayload?.has_analysis);
-            } catch (error) {
-                hasBackendAnalysis = false;
+        const markFirstVisibleWithoutScope = () => {
+            if (firstVisibleLogged) {
+                return;
             }
+            firstVisibleLogged = true;
+            console.info("[PERF] quote_compare.init.first_visible_without_scope_ms", {
+                durationMs: Number((performance.now() - initStartedAt).toFixed(1)),
+                deferred: scopeBootstrapDeferred
+            });
+        };
+        const renderVisibleState = () => {
+            const renderStartedAt = performance.now();
+            renderApp(elements, state);
+            console.info("[compare prices initial render timing]", {
+                currentScreen: state.currentScreen,
+                durationMs: Number((performance.now() - renderStartedAt).toFixed(1))
+            });
+            requestAnimationFrame(() => {
+                markFirstVisibleWithoutScope();
+            });
+        };
+        try {
             hardResetRequested = Boolean(window.PriceAnalyzerBootGuard?.didHardReset?.());
             if (hardResetRequested) {
-                resetQuoteCompareUploadState(state);
-            } else if (!hasBackendAnalysis && !resumeRequested && !hasPersistedActiveSession) {
-                clearPersistedQuoteCompareState();
                 resetQuoteCompareUploadState(state);
             } else {
                 restoreQuoteCompareSession(state);
                 restoreHistoryUiPreferences(state);
+                if (!hasRestorableQuoteCompareContext(state) && !resumeRequested && !hasPersistedActiveSession) {
+                    clearPersistedQuoteCompareState();
+                    resetQuoteCompareUploadState(state);
+                }
             }
             bindEvents(elements, state);
-            await refreshSharedScopeSummaryCached(elements, state, { scopePayload: initialScopePayload });
             exposeApi(elements, state);
+
+            if (hasRestorableAnalyzeContext(state)) {
+                initialScopePayload = buildClientAnalysisScopePayload(state);
+                setCachedAnalysisScopeBootstrap("current_upload", initialScopePayload, state.activeSessionId);
+                applySharedScopeSummaryPayload(elements, state, initialScopePayload);
+                scopeBootstrapDeferred = true;
+                bootstrapDependencyReason = "restored_analyze_context";
+            } else {
+                scopeBootstrapDeferred = true;
+                bootstrapDependencyReason = hasPersistedActiveSession
+                    ? "awaiting_quote_compare_bootstrap"
+                    : "deferred_scope_summary";
+                updateCurrentFileSummary(elements, state);
+                updateContinueAnalysisButton(elements, state);
+            }
+
+            console.info("[PERF] quote_compare.init.scope_bootstrap_required", {
+                required: scopeBootstrapRequired,
+                reason: scopeBootstrapDeferred ? "local_restore_scope_payload" : "no_restored_analyze_scope"
+            });
+
+            const canFastRenderRestoredState = !forceStartHome && hasRestorableQuoteCompareContext(state);
+            if (canFastRenderRestoredState) {
+                renderVisibleState();
+                setQuoteCompareReady(elements, true);
+                readyMarked = true;
+            }
+
+            const networkChainStartedAt = performance.now();
             await loadSavedComparisons(state, { includeComparisons: false });
             if (state.currentScreen === "history") {
                 await ensureHistoryComparisonsLoaded(state);
             }
+            console.info("[PERF] quote_compare.init.network_chain_ms", {
+                durationMs: Number((performance.now() - networkChainStartedAt).toFixed(1)),
+                currentScreen: state.currentScreen
+            });
+
+            if (state.currentScreen === "analyze" && hasRestorableAnalyzeContext(state)) {
+                initialScopePayload = buildClientAnalysisScopePayload(state);
+                setCachedAnalysisScopeBootstrap("current_upload", initialScopePayload, state.activeSessionId);
+                applySharedScopeSummaryPayload(elements, state, initialScopePayload);
+                scopeBootstrapDeferred = true;
+                bootstrapDependencyReason = "bootstrap_active_session_contains_step3";
+            }
+            console.info("[PERF] quote_compare.init.bootstrap_dependency_reason", {
+                reason: bootstrapDependencyReason
+            });
             if (forceStartHome) {
                 closeProductSummary(state);
                 closeHistoryDetailModal(state);
@@ -7358,12 +7480,27 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
                 state.currentStep = 1;
                 setStatus(state, "", "");
             }
-            const renderStartedAt = performance.now();
-            renderApp(elements, state);
-            console.info("[compare prices initial render timing]", {
-                currentScreen: state.currentScreen,
-                durationMs: Number((performance.now() - renderStartedAt).toFixed(1))
-            });
+            renderVisibleState();
+
+            if (!forceStartHome && scopeBootstrapDeferred) {
+                const shouldFetchDeferredScopeBootstrap = !(
+                    initialScopePayload
+                    && (state.currentScreen === "analyze" || state.currentScreen === "history")
+                );
+                if (shouldFetchDeferredScopeBootstrap) {
+                    scheduleDeferredSharedScopeSummaryRefresh(elements, state, {
+                        force: false,
+                        reason: bootstrapDependencyReason
+                    });
+                } else {
+                    console.info("[PERF] quote_compare.init.scope_bootstrap_deferred", {
+                        reason: "skipped_after_local_scope_payload",
+                        durationMs: 0,
+                        hasActiveSessionId: Boolean(state.activeSessionId)
+                    });
+                }
+            }
+
             if (state.currentScreen === "analyze" && state.isRestoringAnalyze) {
                 requestAnimationFrame(() => {
                     logQuoteCompareRestore("quote_compare.restore.first_visible_paint", {
@@ -7401,10 +7538,18 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             };
             renderApp(elements, state);
         } finally {
-            setQuoteCompareReady(elements, true);
+            if (!readyMarked) {
+                setQuoteCompareReady(elements, true);
+            }
+            const totalInitMs = Number((performance.now() - initStartedAt).toFixed(1));
             console.info("[compare prices init end]", {
                 currentScreen: state.currentScreen,
-                totalInitMs: Number((performance.now() - initStartedAt).toFixed(1))
+                totalInitMs
+            });
+            console.info("[PERF] quote_compare.init.total_init_ms", {
+                durationMs: totalInitMs,
+                currentScreen: state.currentScreen,
+                scopeBootstrapDeferred
             });
         }
 
@@ -7415,6 +7560,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
         }, { passive: true });
         window.addEventListener("beforeunload", () => {
             window.clearTimeout(state.persistSessionTimer);
+            clearQuoteComparePersistIdleHandle(state);
             persistQuoteCompareSession(state, elements);
         });
 
