@@ -4768,6 +4768,40 @@
         return getAnalysisTableViewModel(card).savingsAmount;
     }
 
+    function buildSpotlightCardFromFullTable(card) {
+        const viewModel = getAnalysisTableViewModel(card);
+        const highestOffer = viewModel.rightOffer || card?.currentOffer || null;
+        const lowestOffer = viewModel.leftOffer || card?.referenceOffer || card?.bestOffer || null;
+        const totalQuantity = Number(viewModel.totalQuantity || card?.totalQuantity || card?.quantity || 0);
+        const currentTotalBasis = Number(viewModel.rightUnitPrice || 0) * totalQuantity;
+        const savingsAmount = Number(viewModel.savingsAmount || 0);
+        const savingsPercent = currentTotalBasis > 0
+            ? (savingsAmount / currentTotalBasis) * 100
+            : 0;
+        return {
+            ...card,
+            __fullTableRecordId: getDecisionCardKey(card),
+            __fullTableSavingsAmount: savingsAmount,
+            currentOffer: highestOffer,
+            currentOfferLabel: viewModel.rightHeader,
+            referenceOffer: lowestOffer,
+            bestOffer: lowestOffer,
+            referenceOfferLabel: viewModel.leftHeader,
+            quantity: totalQuantity,
+            totalQuantity,
+            savingsAmount,
+            savingsPercent,
+            hasValidAlternative: Boolean(viewModel.hasSavings),
+            statusLabel: viewModel.statusLabel,
+            statusTone: viewModel.statusTone,
+            quantityContextNote: viewModel.resultInsight,
+            decisionSentence: viewModel.decisionNote,
+            potentialSavingsAmount: 0,
+            hasPotentialSavings: false,
+            potentialSavingsObservedAtDifferentQuantity: false
+        };
+    }
+
     function getFilteredAnalysisCards(state, cards) {
         const activeFilter = normalizeAnalysisTableFilter(state.analysisTableFilter);
         const searchTerm = String(state.analysisTableSearch || "").trim().toLowerCase();
@@ -4988,8 +5022,9 @@
             excludedReasonCounts.no_full_table_savings += 1;
             return false;
         });
-        const getSavingsSortValue = (card) => Number(getAnalysisTableViewModel(card).savingsAmount || 0);
-        const rankedCandidates = [...candidateCards]
+        const getSavingsSortValue = (card) => Number(card?.__fullTableSavingsAmount || getAnalysisTableViewModel(card).savingsAmount || 0);
+        const spotlightCandidates = candidateCards.map((card) => buildSpotlightCardFromFullTable(card));
+        const rankedCandidates = [...spotlightCandidates]
             .sort((left, right) => {
                 const savingsDelta = getSavingsSortValue(right) - getSavingsSortValue(left);
                 if (savingsDelta !== 0) return savingsDelta;
@@ -5023,12 +5058,31 @@
             value: true
         });
         console.info("[PERF] quote_compare.top_cards.max_candidate_value", {
-            value: candidateCards.length ? Math.max(...candidateCards.map((card) => getSavingsSortValue(card))) : 0
+            value: rankedCandidates.length ? Math.max(...rankedCandidates.map((card) => getSavingsSortValue(card))) : 0
         });
         console.info("[PERF] quote_compare.top_cards.top_5_values", {
             values: rankedCandidates.slice(0, 5).map((card) => getSavingsSortValue(card))
         });
         console.info("[PERF] quote_compare.top_cards.excluded_reason_counts", excludedReasonCounts);
+        const fullTableTopFive = candidateCards
+            .slice()
+            .sort((left, right) => Number(getAnalysisTableViewModel(right).savingsAmount || 0) - Number(getAnalysisTableViewModel(left).savingsAmount || 0))
+            .slice(0, 5);
+        console.info("[PERF] quote_compare.top_cards.full_table_top_5_values", {
+            values: fullTableTopFive.map((card) => Number(getAnalysisTableViewModel(card).savingsAmount || 0))
+        });
+        console.info("[PERF] quote_compare.top_cards.card_top_5_values", {
+            values: rankedCandidates.slice(0, 5).map((card) => getSavingsSortValue(card))
+        });
+        console.info("[PERF] quote_compare.top_cards.same_model_as_full_table", {
+            value: opportunityCards.every((card) => Boolean(card.__fullTableRecordId))
+        });
+        console.info("[PERF] quote_compare.top_cards.same_value_as_full_table", {
+            value: opportunityCards.every((card) => Number(card.__fullTableSavingsAmount || 0) === Number(card.savingsAmount || 0))
+        });
+        console.info("[PERF] quote_compare.top_cards.record_id_match", {
+            value: opportunityCards.every((card, index) => card.__fullTableRecordId === (fullTableTopFive[index] ? getDecisionCardKey(fullTableTopFive[index]) : card.__fullTableRecordId))
+        });
         const renderedSavingsValues = opportunityCards.map((card) => getSavingsSortValue(card));
         console.info("[PERF] quote_compare.top_savings.max_value", {
             value: renderedSavingsValues.length ? Math.max(...renderedSavingsValues) : 0
