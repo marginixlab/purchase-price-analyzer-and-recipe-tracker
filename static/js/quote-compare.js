@@ -386,17 +386,17 @@
         }
     }
 
-    async function activateCurrentUploadScope(elements, state) {
+    async function activateCurrentUploadScope(elements, state, scopePayload = null) {
         state.dataScope = "current_upload";
         setSharedAnalysisAvailability(true);
-        const scopePayload = buildClientAnalysisScopePayload(state);
-        setCachedAnalysisScopeBootstrap("current_upload", scopePayload);
-        await refreshSharedScopeSummaryCached(elements, state, { scopePayload });
+        const resolvedScopePayload = scopePayload || buildClientAnalysisScopePayload(state);
+        setCachedAnalysisScopeBootstrap("current_upload", resolvedScopePayload);
+        await refreshSharedScopeSummaryCached(elements, state, { scopePayload: resolvedScopePayload });
         window.dispatchEvent(new CustomEvent("shared-analysis-context-updated", {
             detail: {
                 scope: "current_upload",
                 uploadId: state.analysisResult?.comparison?.upload_id || state.activeSessionId || state.manualUploadId || "",
-                scopePayload
+                scopePayload: resolvedScopePayload
             }
         }));
     }
@@ -1753,10 +1753,13 @@
             progressPhase: "",
             restorePerf: null,
             deferPersistUntilStablePaint: false,
+            deferPersistUntilPostConfirmPaint: false,
             restoreAnalyzeSettled: true,
             restoreTargetOpportunityRenderCount: OPPORTUNITY_CARD_BATCH_SIZE,
             restoreTargetAnalysisViewport: null,
-            restoreDeferredRenderFrame: 0
+            restoreDeferredRenderFrame: 0,
+            pendingPostConfirmScopePayload: null,
+            confirmResponseReceivedAt: 0
         };
     }
 
@@ -3779,9 +3782,28 @@
         if (started) {
             writeScrollPosition(elements, 0);
             requestAnimationFrame(() => {
+                const postConfirmVisibleAt = performance.now();
+                const extraWorkMs = state.confirmResponseReceivedAt
+                    ? Number((postConfirmVisibleAt - state.confirmResponseReceivedAt).toFixed(1))
+                    : 0;
                 console.info("[compare prices step3 visible after confirm]", {
                     durationMs: Number((performance.now() - triggerStartedAt).toFixed(1)),
                     currentScreen: state.currentScreen
+                });
+                console.info("[PERF] confirm_to_analyze.extra_work_ms", {
+                    durationMs: extraWorkMs
+                });
+                console.info("[PERF] confirm_to_analyze.total_post_confirm_ms", {
+                    durationMs: state.confirmResponseReceivedAt
+                        ? Number((postConfirmVisibleAt - state.confirmResponseReceivedAt).toFixed(1))
+                        : 0
+                });
+                requestAnimationFrame(() => {
+                    const scopePayload = state.pendingPostConfirmScopePayload || buildClientAnalysisScopePayload(state);
+                    state.pendingPostConfirmScopePayload = null;
+                    activateCurrentUploadScope(elements, state, scopePayload).catch(() => null);
+                    state.deferPersistUntilPostConfirmPaint = false;
+                    scheduleQuoteCompareSessionPersist(state, elements);
                 });
             });
         }
@@ -6185,8 +6207,8 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
                 durationMs: 0
             });
         }
-        if (state.deferPersistUntilStablePaint && state.currentScreen === "analyze") {
-            // Defer the first large snapshot rewrite until after stable paint on restore.
+        if ((state.deferPersistUntilStablePaint || state.deferPersistUntilPostConfirmPaint) && state.currentScreen === "analyze") {
+            // Defer the first large snapshot rewrite until after stable paint on restore or post-confirm first paint.
         } else {
             scheduleQuoteCompareSessionPersist(state, elements);
         }
@@ -6271,9 +6293,51 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             setStatus(state, "Complete the required unique mappings before starting analysis.", "error");
             return false;
         }
+        if (state.file) {
+            console.info("[PERF] confirm_to_analyze.bootstrap_skipped", {
+                skipped: true
+            });
+            console.info("[PERF] confirm_to_analyze.bootstrap_reason", {
+                reason: "file_upload_confirm_response_used_directly"
+            });
+        }
         if (!state.file && state.activeSessionId) {
             try {
-                const activeSession = await fetchActiveQuoteCompareSession(state.activeSessionId);
+                const canReuseReviewContext = hasRestorableReviewContext(state)
+                    && isValidSelectedMappingSet(state.selectedMappings, state.headers || []);
+                let activeSession = null;
+                if (canReuseReviewContext) {
+                    console.info("[PERF] confirm_to_analyze.bootstrap_skipped", {
+                        skipped: true
+                    });
+                    console.info("[PERF] confirm_to_analyze.bootstrap_reason", {
+                        reason: "restored_review_context_reused"
+                    });
+                } else {
+                    activeSession = await fetchActiveQuoteCompareSession(state.activeSessionId);
+                    console.info("[PERF] confirm_to_analyze.bootstrap_skipped", {
+                        skipped: false
+                    });
+                    console.info("[PERF] confirm_to_analyze.bootstrap_reason", {
+                        reason: "restored_review_context_missing_or_invalid"
+                    });
+                }
+                if (canReuseReviewContext) {
+                    activeSession = {
+                        session_id: state.uploadReview?.session_id || state.activeSessionId,
+                        filename: state.uploadReview?.filename || "",
+                        required_fields: state.uploadReview?.required_fields || REQUIRED_FIELDS,
+                        optional_fields: state.uploadReview?.optional_fields || OPTIONAL_FIELDS,
+                        message: state.uploadReview?.message || "",
+                        review_message: state.uploadReview?.review_message || "",
+                        mapping: state.uploadReview?.mapping || {},
+                        field_reviews: state.uploadReview?.field_reviews || [],
+                        matched_fields: state.uploadReview?.matched_fields || 0,
+                        missing_fields: state.uploadReview?.missing_fields || [],
+                        optional_columns: state.uploadReview?.optional_columns || [],
+                        headers: state.headers || []
+                    };
+                }
                 if (!activeSession || !isValidRestorableReviewSession(activeSession)) {
                     resetQuoteCompareUploadState(
                         state,
@@ -6345,6 +6409,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
                 state.activeSessionId = "";
                 sessionStorage.removeItem(QUOTE_COMPARE_ACTIVE_SESSION_KEY);
             }
+            state.confirmResponseReceivedAt = performance.now();
             await setProgressPhase(state, "Aggregating");
             state.activeSessionId = data.session_id || state.activeSessionId;
             if (state.activeSessionId) {
@@ -6368,7 +6433,11 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             state.currentScreen = "analyze";
             state.currentStep = 3;
             state.isSubmitting = false;
-            await activateCurrentUploadScope(elements, state);
+            state.pendingPostConfirmScopePayload = buildClientAnalysisScopePayload(state);
+            state.deferPersistUntilPostConfirmPaint = true;
+            console.info("[PERF] confirm_to_analyze.session_persist_deferred", {
+                deferred: true
+            });
             setStatus(state, data.message || "Pricing analysis is ready.", "success");
             return true;
         } catch (error) {
