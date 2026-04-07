@@ -2569,12 +2569,31 @@ def get_numeric_series(frame: pd.DataFrame, column_name: str | None) -> pd.Serie
     return pd.to_numeric(frame[column_name], errors="coerce")
 
 
+def count_unique_products_by_name_unit(
+    frame: pd.DataFrame,
+    *,
+    product_column: str = "Product Name",
+    unit_column: str = "Unit"
+) -> int:
+    if frame.empty or product_column not in frame.columns or unit_column not in frame.columns:
+        return 0
+    unique_products = (
+        frame.loc[:, [product_column, unit_column]]
+        .copy()
+        .fillna("")
+    )
+    unique_products[product_column] = unique_products[product_column].astype(str).str.strip()
+    unique_products[unit_column] = unique_products[unit_column].astype(str).str.strip()
+    unique_products = unique_products[unique_products[product_column].astype(bool)]
+    return int(len(unique_products.drop_duplicates(subset=[product_column, unit_column]).index))
+
+
 def build_guide_analysis_snapshot() -> dict[str, Any] | None:
     frame = load_latest_results_frame()
     if frame is None:
         return None
 
-    product_column = get_first_existing_column(frame, ["Product Display", "Product Name", "Product"])
+    product_column = get_first_existing_column(frame, ["Product Name", "Product"])
     supplier_column = get_first_existing_column(frame, ["Supplier"])
     unit_column = get_first_existing_column(frame, ["Purchase Unit", "Unit"])
     savings_column = get_first_existing_column(frame, ["Savings Opportunity"])
@@ -2582,7 +2601,7 @@ def build_guide_analysis_snapshot() -> dict[str, Any] | None:
     unit_price_column = get_first_existing_column(frame, ["Unit Price", "Average Price"])
 
     total_rows = int(len(frame))
-    product_count = int(frame[product_column].nunique()) if product_column else 0
+    product_count = count_unique_products_by_name_unit(frame, product_column=product_column, unit_column=unit_column) if product_column and unit_column else 0
     supplier_count = int(frame[supplier_column].nunique()) if supplier_column else 0
     savings_series = get_numeric_series(frame, savings_column).fillna(0)
     unit_price_series = get_numeric_series(frame, unit_price_column)
@@ -3372,7 +3391,7 @@ def append_analysis_history_rows(
             "created_at": now,
             "updated_at": now,
             "row_count": int(len(current_upload_df.index)),
-            "product_count": int(current_upload_df["Product Name"].nunique()) if "Product Name" in current_upload_df.columns and not current_upload_df.empty else 0,
+            "product_count": count_unique_products_by_name_unit(current_upload_df),
             "latest_date": latest_date_series.max().isoformat() if not latest_date_series.empty else ""
         }],
         "rows": serialize_dataframe_records(current_upload_df)
@@ -3651,7 +3670,7 @@ def build_analysis_scope_summary(frame: pd.DataFrame, *, scope: str) -> dict[str
         "scope": "current_upload",
         "scope_label": get_analysis_scope_label("current_upload"),
         "row_count": int(len(frame.index)),
-        "product_count": int(frame["Product Name"].nunique()) if "Product Name" in frame.columns and not frame.empty else 0,
+        "product_count": count_unique_products_by_name_unit(frame),
         "supplier_count": int(frame["Supplier"].nunique()) if "Supplier" in frame.columns and not frame.empty else 0,
         "current_upload_id": str((latest_upload or {}).get("upload_id") or "").strip(),
         "current_upload_name": str((latest_upload or {}).get("source_name") or "").strip(),
@@ -3672,7 +3691,7 @@ def build_analysis_scope_summary_with_upload(
         "scope": "current_upload",
         "scope_label": get_analysis_scope_label("current_upload"),
         "row_count": int(len(frame.index)),
-        "product_count": int(frame["Product Name"].nunique()) if "Product Name" in frame.columns and not frame.empty else 0,
+        "product_count": count_unique_products_by_name_unit(frame),
         "supplier_count": int(frame["Supplier"].nunique()) if "Supplier" in frame.columns and not frame.empty else 0,
         "current_upload_id": str((latest_upload or {}).get("upload_id") or "").strip(),
         "current_upload_name": str((latest_upload or {}).get("source_name") or "").strip(),
