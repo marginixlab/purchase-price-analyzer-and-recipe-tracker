@@ -43,6 +43,10 @@ def log_perf(label: str, started_at: float) -> float:
     return elapsed_ms
 
 
+def log_perf_details(label: str, **details: Any) -> None:
+    logger.info("[PERF] %s: %s", label, json.dumps(make_json_safe(details), ensure_ascii=False, separators=(",", ":")))
+
+
 def env_flag(name: str, default: bool) -> bool:
     raw_value = os.getenv(name)
     if raw_value is None:
@@ -928,19 +932,56 @@ def apply_column_mapping(
     })
 
 
-def read_uploaded_dataframe(file: UploadFile) -> pd.DataFrame:
+def get_quote_compare_selected_source_columns(mapping: dict[str, Any] | None) -> list[str]:
+    selected_columns: list[str] = []
+    seen_columns: set[str] = set()
+    for field_name in [*QUOTE_COMPARE_REQUIRED_FIELDS, *QUOTE_COMPARE_OPTIONAL_FIELDS]:
+        column_name = str((mapping or {}).get(field_name) or "").strip()
+        if not column_name or column_name in seen_columns:
+            continue
+        seen_columns.add(column_name)
+        selected_columns.append(column_name)
+    return selected_columns
+
+
+def build_dataframe_usecols_filter(selected_columns: list[str] | None) -> Any:
+    normalized_columns = [str(column).strip() for column in (selected_columns or []) if str(column).strip()]
+    if not normalized_columns:
+        return None
+    selected_column_names = set(normalized_columns)
+    return lambda column_name: str(column_name) in selected_column_names
+
+
+def read_uploaded_dataframe(
+    file: UploadFile,
+    *,
+    selected_columns: list[str] | None = None,
+    perf_label_prefix: str | None = None
+) -> pd.DataFrame:
     filename = file.filename or ""
     extension = Path(filename).suffix.lower()
     read_started_at = perf_counter()
+    read_substeps: dict[str, Any] = {
+        "filename": filename,
+        "extension": extension
+    }
+    usecols_filter = build_dataframe_usecols_filter(selected_columns)
+    normalized_selected_columns = [str(column).strip() for column in (selected_columns or []) if str(column).strip()]
+    read_substeps["selected_columns_count"] = len(normalized_selected_columns)
+    read_substeps["selected_columns"] = normalized_selected_columns
 
     if not filename:
         raise ValueError("No file was uploaded.")
 
     try:
+        size_check_started_at = perf_counter()
         size_bytes = ensure_upload_size_within_limit(file)
+        read_substeps["size_check_ms"] = round((perf_counter() - size_check_started_at) * 1000, 1)
+        probe_started_at = perf_counter()
         file.file.seek(0)
         first_byte = file.file.read(1)
         file.file.seek(0)
+        read_substeps["file_probe_ms"] = round((perf_counter() - probe_started_at) * 1000, 1)
     except Exception as exc:
         if isinstance(exc, ValueError):
             raise
@@ -958,12 +999,18 @@ def read_uploaded_dataframe(file: UploadFile) -> pd.DataFrame:
         )
         if extension == ".csv":
             file.file.seek(0)
-            dataframe = pd.read_csv(file.file, dtype=object)
+            csv_started_at = perf_counter()
+            dataframe = pd.read_csv(file.file, dtype=object, usecols=usecols_filter)
+            read_substeps["engine"] = "csv"
+            read_substeps["parse_ms"] = round((perf_counter() - csv_started_at) * 1000, 1)
             log_perf("read_file.csv", read_started_at)
         elif extension == ".xlsx":
             try:
                 file.file.seek(0)
-                dataframe = pd.read_excel(file.file, engine="calamine", dtype=object)
+                calamine_started_at = perf_counter()
+                dataframe = pd.read_excel(file.file, engine="calamine", dtype=object, usecols=usecols_filter)
+                read_substeps["engine"] = "calamine"
+                read_substeps["parse_ms"] = round((perf_counter() - calamine_started_at) * 1000, 1)
                 logger.info(
                     "[upload debug] parsed .xlsx with engine=calamine: filename=%s",
                     filename
@@ -972,7 +1019,28 @@ def read_uploaded_dataframe(file: UploadFile) -> pd.DataFrame:
             except ImportError:
                 try:
                     file.file.seek(0)
-                    dataframe = pd.read_excel(file.file, engine="openpyxl", dtype=object)
+                    openpyxl_started_at = perf_counter()
+                    dataframe = pd.read_excel(
+                        file.file,
+                        engine="openpyxl",
+                        dtype=object,
+                        usecols=usecols_filter,
+                        engine_kwargs={"read_only": True, "data_only": True}
+                    )
+                    read_substeps["engine"] = "openpyxl"
+                    read_substeps["parse_ms"] = round((perf_counter() - openpyxl_started_at) * 1000, 1)
+                    logger.info(
+                        "[upload debug] parsed .xlsx with fallback engine=openpyxl: filename=%s",
+                        filename
+                    )
+                    log_perf("read_file.xlsx.openpyxl", read_started_at)
+                except TypeError:
+                    file.file.seek(0)
+                    openpyxl_started_at = perf_counter()
+                    dataframe = pd.read_excel(file.file, engine="openpyxl", dtype=object, usecols=usecols_filter)
+                    read_substeps["engine"] = "openpyxl"
+                    read_substeps["parse_ms"] = round((perf_counter() - openpyxl_started_at) * 1000, 1)
+                    read_substeps["engine_kwargs_supported"] = False
                     logger.info(
                         "[upload debug] parsed .xlsx with fallback engine=openpyxl: filename=%s",
                         filename
@@ -989,7 +1057,28 @@ def read_uploaded_dataframe(file: UploadFile) -> pd.DataFrame:
                 )
                 try:
                     file.file.seek(0)
-                    dataframe = pd.read_excel(file.file, engine="openpyxl", dtype=object)
+                    openpyxl_started_at = perf_counter()
+                    dataframe = pd.read_excel(
+                        file.file,
+                        engine="openpyxl",
+                        dtype=object,
+                        usecols=usecols_filter,
+                        engine_kwargs={"read_only": True, "data_only": True}
+                    )
+                    read_substeps["engine"] = "openpyxl"
+                    read_substeps["parse_ms"] = round((perf_counter() - openpyxl_started_at) * 1000, 1)
+                    logger.info(
+                        "[upload debug] parsed .xlsx with fallback engine=openpyxl: filename=%s",
+                        filename
+                    )
+                    log_perf("read_file.xlsx.openpyxl", read_started_at)
+                except TypeError:
+                    file.file.seek(0)
+                    openpyxl_started_at = perf_counter()
+                    dataframe = pd.read_excel(file.file, engine="openpyxl", dtype=object, usecols=usecols_filter)
+                    read_substeps["engine"] = "openpyxl"
+                    read_substeps["parse_ms"] = round((perf_counter() - openpyxl_started_at) * 1000, 1)
+                    read_substeps["engine_kwargs_supported"] = False
                     logger.info(
                         "[upload debug] parsed .xlsx with fallback engine=openpyxl: filename=%s",
                         filename
@@ -1017,7 +1106,10 @@ def read_uploaded_dataframe(file: UploadFile) -> pd.DataFrame:
                     ) from openpyxl_exc
         elif extension == ".xls":
             file.file.seek(0)
-            dataframe = pd.read_excel(file.file, dtype=object)
+            xls_started_at = perf_counter()
+            dataframe = pd.read_excel(file.file, dtype=object, usecols=usecols_filter)
+            read_substeps["engine"] = "xls"
+            read_substeps["parse_ms"] = round((perf_counter() - xls_started_at) * 1000, 1)
             log_perf("read_file.xls", read_started_at)
         else:
             raise ValueError("Unsupported file type. Please upload a CSV or Excel file (.csv, .xlsx, or .xls).")
@@ -1044,8 +1136,14 @@ def read_uploaded_dataframe(file: UploadFile) -> pd.DataFrame:
         except Exception:
             logger.debug("Could not reset uploaded file pointer after parsing: %s", filename)
 
+    validation_started_at = perf_counter()
     if dataframe is None or dataframe.columns.empty:
         raise ValueError("The uploaded file does not contain any readable columns.")
+    read_substeps["validation_ms"] = round((perf_counter() - validation_started_at) * 1000, 1)
+    read_substeps["row_count"] = int(len(dataframe.index))
+    read_substeps["column_count"] = int(len(dataframe.columns))
+    if perf_label_prefix:
+        log_perf_details(f"{perf_label_prefix}.read_excel.substeps", **read_substeps)
 
     return dataframe
 
@@ -1085,7 +1183,9 @@ def cache_quote_compare_upload(file: UploadFile, session_id: str, user_id: int |
 def read_cached_quote_compare_upload(
     cache_path: str | None,
     filename: str = "",
-    user_id: int | str | None = None
+    user_id: int | str | None = None,
+    selected_columns: list[str] | None = None,
+    perf_label_prefix: str | None = None
 ) -> pd.DataFrame:
     normalized_path = str(cache_path or "").strip()
     if not normalized_path:
@@ -1110,7 +1210,11 @@ def read_cached_quote_compare_upload(
 
     cached_upload = CachedUploadFile(source_path, filename or source_path.name)
     try:
-        return read_uploaded_dataframe(cached_upload)
+        return read_uploaded_dataframe(
+            cached_upload,
+            selected_columns=selected_columns,
+            perf_label_prefix=perf_label_prefix
+        )
     finally:
         try:
             cached_upload.file.close()
@@ -1875,11 +1979,16 @@ def build_analysis_dedupe_key_series(frame: pd.DataFrame) -> pd.Series:
     )
 
 
-def deduplicate_analysis_frame(frame: pd.DataFrame, *, keep_dedupe_key: bool = False) -> pd.DataFrame:
+def deduplicate_analysis_frame(
+    frame: pd.DataFrame,
+    *,
+    keep_dedupe_key: bool = False,
+    copy_frame: bool = True
+) -> pd.DataFrame:
     if frame.empty:
         return frame.copy()
 
-    deduped_frame = frame.copy()
+    deduped_frame = frame.copy() if copy_frame else frame
     if "Date" in deduped_frame.columns:
         deduped_frame["Date"] = pd.to_datetime(deduped_frame["Date"], errors="coerce")
     if "Valid Until" in deduped_frame.columns:
@@ -1889,7 +1998,7 @@ def deduplicate_analysis_frame(frame: pd.DataFrame, *, keep_dedupe_key: bool = F
             deduped_frame[column] = pd.to_numeric(deduped_frame[column], errors="coerce")
 
     deduped_frame["_analysis_dedupe_key"] = build_analysis_dedupe_key_series(deduped_frame)
-    deduped_frame = deduped_frame.drop_duplicates(subset=["_analysis_dedupe_key"], keep="last").copy()
+    deduped_frame = deduped_frame.drop_duplicates(subset=["_analysis_dedupe_key"], keep="last")
     if not keep_dedupe_key:
         deduped_frame = deduped_frame.drop(columns=["_analysis_dedupe_key"], errors="ignore")
 
@@ -1901,11 +2010,11 @@ def deduplicate_analysis_frame(frame: pd.DataFrame, *, keep_dedupe_key: bool = F
     return deduped_frame.reset_index(drop=True)
 
 
-def assign_analysis_row_ids(frame: pd.DataFrame, *, upload_id: str) -> pd.DataFrame:
+def assign_analysis_row_ids(frame: pd.DataFrame, *, upload_id: str, copy_frame: bool = True) -> pd.DataFrame:
     if frame.empty:
         return frame.copy()
 
-    identified_frame = frame.copy()
+    identified_frame = frame.copy() if copy_frame else frame
     dedupe_keys = identified_frame["_analysis_dedupe_key"] if "_analysis_dedupe_key" in identified_frame.columns else build_analysis_dedupe_key_series(identified_frame)
     identified_frame["row_id"] = [
         str(uuid.uuid5(uuid.NAMESPACE_URL, f"{str(upload_id).strip()}|{dedupe_key}"))
@@ -1978,34 +2087,60 @@ def compact_quote_compare_active_session_payload(payload: dict[str, Any]) -> dic
 def save_quote_compare_active_session(
     session_id: str,
     payload: dict[str, Any],
-    user_id: int | str | None = None
+    user_id: int | str | None = None,
+    perf_label_prefix: str | None = None
 ) -> None:
     resolved_user_id = get_storage_user_id(user_id)
-    payload_before_normalize_bytes = get_json_payload_size_bytes(payload)
-    normalized_payload = make_json_safe(compact_quote_compare_active_session_payload(payload))
+    persist_started_at = perf_counter()
+    persist_substeps: dict[str, Any] = {
+        "step": str((payload or {}).get("step") or "").strip().lower()
+    }
+
+    compact_started_at = perf_counter()
+    compacted_payload = compact_quote_compare_active_session_payload(payload)
+    persist_substeps["compact_ms"] = round((perf_counter() - compact_started_at) * 1000, 1)
+
+    normalize_started_at = perf_counter()
+    normalized_payload = make_json_safe(compacted_payload)
+    persist_substeps["json_safe_ms"] = round((perf_counter() - normalize_started_at) * 1000, 1)
     normalized_payload["session_id"] = session_id
+
     session_cache_dir = ensure_quote_compare_session_cache_dir(resolved_user_id)
+    cleanup_started_at = perf_counter()
+    removed_session_file_count = 0
     for existing_session_path in session_cache_dir.glob("*.json"):
         try:
             existing_session_path.unlink()
+            removed_session_file_count += 1
         except FileNotFoundError:
             continue
+    persist_substeps["cleanup_ms"] = round((perf_counter() - cleanup_started_at) * 1000, 1)
+    persist_substeps["removed_session_file_count"] = removed_session_file_count
+
     session_path = get_quote_compare_session_path(session_id, user_id=resolved_user_id)
-    session_payload = json.dumps(normalized_payload, ensure_ascii=False, separators=(",", ":"))
-    session_path.write_text(
-        session_payload,
-        encoding="utf-8"
-    )
-    get_user_active_quote_compare_session_path(resolved_user_id).write_text(
-        session_payload,
-        encoding="utf-8"
-    )
+    serialization_started_at = perf_counter()
+    session_payload_text = json.dumps(normalized_payload, ensure_ascii=False, separators=(",", ":"))
+    session_payload_bytes = session_payload_text.encode("utf-8")
+    persist_substeps["serialization_ms"] = round((perf_counter() - serialization_started_at) * 1000, 1)
+    persist_substeps["serialized_bytes"] = len(session_payload_bytes)
+
+    session_write_started_at = perf_counter()
+    session_path.write_bytes(session_payload_bytes)
+    persist_substeps["session_write_ms"] = round((perf_counter() - session_write_started_at) * 1000, 1)
+
+    active_write_started_at = perf_counter()
+    get_user_active_quote_compare_session_path(resolved_user_id).write_bytes(session_payload_bytes)
+    persist_substeps["active_write_ms"] = round((perf_counter() - active_write_started_at) * 1000, 1)
+    persist_substeps["file_write_ms"] = round(persist_substeps["session_write_ms"] + persist_substeps["active_write_ms"], 1)
+    persist_substeps["total_ms"] = round((perf_counter() - persist_started_at) * 1000, 1)
+
+    if perf_label_prefix:
+        log_perf_details(f"{perf_label_prefix}.save_active_session.substeps", **persist_substeps)
+
     logger.info(
-        "[Compare Prices active session persist] session_id=%s payload_before_bytes=%s payload_after_bytes=%s persisted_bytes=%s step=%s",
+        "[Compare Prices active session persist] session_id=%s persisted_bytes=%s step=%s",
         bool(session_id),
-        payload_before_normalize_bytes,
-        get_json_payload_size_bytes(normalized_payload),
-        len(session_payload.encode("utf-8")),
+        len(session_payload_bytes),
         normalized_payload.get("step")
     )
 
@@ -3027,18 +3162,33 @@ def persist_quote_compare_analysis_results(
     comparison: dict[str, Any],
     *,
     source_name: str,
-    upload_id: str | None = None
+    upload_id: str | None = None,
+    comparison_is_normalized: bool = False,
+    perf_label_prefix: str | None = None
 ) -> pd.DataFrame:
     persist_started_at = perf_counter()
+    persist_substeps: dict[str, Any] = {
+        "comparison_already_normalized": comparison_is_normalized,
+        "deduplicate_copy_frame": False,
+        "assign_row_ids_copy_frame": False
+    }
+
+    normalize_started_at = perf_counter()
+    normalized_comparison = comparison if comparison_is_normalized else normalize_quote_comparison_payload(comparison or {})
+    persist_substeps["normalize_comparison_ms"] = round((perf_counter() - normalize_started_at) * 1000, 1)
+
     build_df_started_at = perf_counter()
-    normalized_comparison = normalize_quote_comparison_payload(comparison or {})
     source_df = build_analysis_dataframe_from_quote_comparison(
         normalized_comparison,
         comparison_is_normalized=True
     )
+    persist_substeps["build_analysis_dataframe_ms"] = round((perf_counter() - build_df_started_at) * 1000, 1)
     log_perf("quote_compare.build_analysis_dataframe", build_df_started_at)
     normalized_upload_id = str(upload_id or source_df["upload_id"].iloc[0]).strip()
     source_df["upload_id"] = normalized_upload_id
+    persist_substeps["source_rows"] = int(len(source_df.index))
+    persist_substeps["source_columns"] = int(len(source_df.columns))
+
     analysis_started_at = perf_counter()
     _, analyzed_df = analyze_dataframe(
         source_df,
@@ -3046,22 +3196,38 @@ def persist_quote_compare_analysis_results(
         persist_latest_results=False,
         return_result_df=True
     )
+    persist_substeps["analyze_dataframe_ms"] = round((perf_counter() - analysis_started_at) * 1000, 1)
     log_perf("quote_compare.analyze_dataframe", analysis_started_at)
+
     dedupe_started_at = perf_counter()
-    result_df = deduplicate_analysis_frame(analyzed_df, keep_dedupe_key=True)
+    result_df = deduplicate_analysis_frame(analyzed_df, keep_dedupe_key=True, copy_frame=False)
+    persist_substeps["deduplicate_ms"] = round((perf_counter() - dedupe_started_at) * 1000, 1)
     log_perf("quote_compare.deduplicate_results", dedupe_started_at)
     if "upload_id" in result_df.columns:
+        upload_id_normalize_started_at = perf_counter()
         result_df["upload_id"] = result_df["upload_id"].fillna("").astype(str)
         result_df.loc[:, "upload_id"] = normalized_upload_id
+        persist_substeps["upload_id_normalize_ms"] = round((perf_counter() - upload_id_normalize_started_at) * 1000, 1)
+
     persist_storage_started_at = perf_counter()
     assign_ids_started_at = perf_counter()
-    result_df = assign_analysis_row_ids(result_df, upload_id=normalized_upload_id)
+    result_df = assign_analysis_row_ids(result_df, upload_id=normalized_upload_id, copy_frame=False)
+    persist_substeps["assign_row_ids_ms"] = round((perf_counter() - assign_ids_started_at) * 1000, 1)
     log_perf("quote_compare.assign_row_ids", assign_ids_started_at)
+
     save_frame_started_at = perf_counter()
     save_current_upload_analysis_frame(result_df)
+    persist_substeps["save_latest_results_ms"] = round((perf_counter() - save_frame_started_at) * 1000, 1)
+    latest_results_path = get_current_latest_results_path()
+    persist_substeps["saved_file_bytes"] = latest_results_path.stat().st_size if latest_results_path.exists() else 0
+    persist_substeps["result_rows"] = int(len(result_df.index))
+    persist_substeps["result_columns"] = int(len(result_df.columns))
+    persist_substeps["total_ms"] = round((perf_counter() - persist_started_at) * 1000, 1)
     log_perf("quote_compare.save_latest_results", save_frame_started_at)
     log_perf("quote_compare.persist_active_analysis", persist_storage_started_at)
     log_perf("quote_compare.total_analysis_pipeline", persist_started_at)
+    if perf_label_prefix:
+        log_perf_details(f"{perf_label_prefix}.persist_analysis.substeps", **persist_substeps)
     return result_df
 
 
@@ -4951,8 +5117,13 @@ def create_app() -> FastAPI:
         try:
             load_source_started_at = perf_counter()
             session_payload = validate_quote_compare_active_session(load_quote_compare_active_session(session_id))
+            selected_source_columns = get_quote_compare_selected_source_columns(parsed_mapping)
             if file is not None and (file.filename or ""):
-                df = read_uploaded_dataframe(file)
+                df = read_uploaded_dataframe(
+                    file,
+                    selected_columns=selected_source_columns,
+                    perf_label_prefix="confirm"
+                )
             elif session_payload and session_payload.get("dataframe"):
                 df = hydrate_dataframe_from_session(
                     session_payload["dataframe"].get("columns", []),
@@ -4963,7 +5134,9 @@ def create_app() -> FastAPI:
                 filename = session_payload.get("filename", filename)
                 df = read_cached_quote_compare_upload(
                     session_payload.get("cached_upload_path"),
-                    filename=filename
+                    filename=filename,
+                    selected_columns=selected_source_columns,
+                    perf_label_prefix="confirm"
                 )
             else:
                 raise ValueError("The uploaded supplier file is no longer available. Please upload it again.")
@@ -5012,11 +5185,16 @@ def create_app() -> FastAPI:
             persist_quote_compare_analysis_results(
                 normalized_comparison,
                 source_name=filename or normalized_comparison["name"] or "Compare Prices analysis",
-                upload_id=session_id
+                upload_id=session_id,
+                comparison_is_normalized=True,
+                perf_label_prefix="confirm"
             )
             log_perf("confirm.persist_analysis", persistence_started_at)
             if session_id:
                 session_payload_started_at = perf_counter()
+                compact_evaluation_started_at = perf_counter()
+                compact_evaluation = compact_quote_compare_evaluation_for_session(evaluation) or {}
+                compact_evaluation_ms = (perf_counter() - compact_evaluation_started_at) * 1000
                 lightweight_session_payload = {
                     "session_id": session_id,
                     "file_id": (session_payload or {}).get("file_id") or session_id,
@@ -5037,18 +5215,24 @@ def create_app() -> FastAPI:
                     "review_message": (session_payload or {}).get("review_message", ""),
                     "message": (session_payload or {}).get("message", ""),
                     "comparison": normalized_comparison,
-                    "evaluation": evaluation
+                    "evaluation": compact_evaluation
                 }
                 logger.info(
-                    "[Compare Prices analyze session payload] session_id=%s comparison_bytes=%s evaluation_bytes=%s total_bytes_before_persist=%s",
-                    bool(session_id),
-                    get_json_payload_size_bytes(lightweight_session_payload.get("comparison")),
-                    get_json_payload_size_bytes(lightweight_session_payload.get("evaluation")),
-                    get_json_payload_size_bytes(lightweight_session_payload)
+                    "[PERF] confirm.save_active_session.serialization: %s",
+                    json.dumps(
+                        {
+                            "compact_evaluation_ms": round(compact_evaluation_ms, 1),
+                            "comparison_bytes": get_json_payload_size_bytes(lightweight_session_payload.get("comparison")),
+                            "evaluation_bytes": get_json_payload_size_bytes(lightweight_session_payload.get("evaluation"))
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":")
+                    )
                 )
                 save_quote_compare_active_session(
                     session_id,
-                    lightweight_session_payload
+                    lightweight_session_payload,
+                    perf_label_prefix="confirm"
                 )
                 log_perf("confirm.save_active_session", session_payload_started_at)
         except ValueError as exc:
