@@ -5676,7 +5676,7 @@ def create_app() -> FastAPI:
         mappings: str = Form(...),
         session_id: str | None = Form(None)
     ):
-        filename = file.filename or ""
+        filename = file.filename if file is not None else ""
         request_started_at = perf_counter()
 
         try:
@@ -5696,6 +5696,12 @@ def create_app() -> FastAPI:
             load_source_started_at = perf_counter()
             session_payload = validate_quote_compare_active_session(load_quote_compare_active_session(session_id))
             selected_source_columns = get_quote_compare_selected_source_columns(parsed_mapping)
+            if file is None and not session_payload:
+                logger.warning(
+                    "[Compare Prices upload] confirm called without a file or restorable session | session_id=%s",
+                    session_id
+                )
+                raise ValueError("The uploaded supplier file is missing. Please upload it again.")
             if file is not None and (file.filename or ""):
                 df = read_uploaded_dataframe(
                     file,
