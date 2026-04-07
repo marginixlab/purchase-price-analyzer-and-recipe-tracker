@@ -1447,17 +1447,12 @@
     }
 
     function clearQuoteCompareFrontendCaches() {
-        try {
-            localStorage.removeItem(QUOTE_COMPARE_MAPPING_MEMORY_KEY);
-        } catch (error) {
-            // Ignore storage failures.
-        }
         if (window.__analysisScopeBootstrapCache && typeof window.__analysisScopeBootstrapCache === "object") {
             window.__analysisScopeBootstrapCache = {};
         }
         console.info("[PERF] quote_compare.reset.cache_cleared", {
             clearedAnalysisScopeCache: true,
-            clearedMappingMemory: true
+            preservedMappingMemory: true
         });
     }
 
@@ -2096,20 +2091,54 @@
         applyAutoMappings(state);
         state.mappingReuseNotice = null;
         state.mappingReuseCandidate = null;
-        if (state.file?.name) {
-            const candidate = getSavedMappingCandidate(state.file.name, state.headers);
-            if (candidate?.type === "exact" && applySavedMappingsToState(state, candidate.record)) {
+        if (!state.file?.name) {
+            console.info("[PERF] quote_compare.mapping_reuse_skipped_reason", {
+                reason: "missing_file_name"
+            });
+            return;
+        }
+        const candidate = getSavedMappingCandidate(state.file.name, state.headers);
+        if (!candidate) {
+            console.info("[PERF] quote_compare.mapping_reuse_skipped_reason", {
+                fileName: state.file.name,
+                reason: "no_saved_candidate"
+            });
+            return;
+        }
+        console.info("[PERF] quote_compare.mapping_reuse_found", {
+            fileName: state.file.name,
+            type: candidate.type,
+            headerCount: state.headers.length
+        });
+        if (candidate?.type === "exact") {
+            if (applySavedMappingsToState(state, candidate.record)) {
                 state.mappingReuseNotice = {
                     tone: "warning",
                     message: "Previous column mappings applied. Please verify before continuing."
                 };
-            } else if (candidate?.type === "partial") {
-                state.mappingReuseCandidate = candidate.record;
-                state.mappingReuseNotice = {
-                    tone: "warning",
-                    message: "A previous mapping exists for this file name, but the headers changed. Review the mapping or apply matching fields only."
-                };
+                console.info("[PERF] quote_compare.mapping_reuse_applied", {
+                    fileName: state.file.name,
+                    type: candidate.type,
+                    partial: false
+                });
+                return;
             }
+            console.info("[PERF] quote_compare.mapping_reuse_skipped_reason", {
+                fileName: state.file.name,
+                reason: "exact_candidate_no_applicable_columns"
+            });
+            return;
+        }
+        if (candidate?.type === "partial") {
+            state.mappingReuseCandidate = candidate.record;
+            state.mappingReuseNotice = {
+                tone: "warning",
+                message: "A previous mapping exists for this file name, but the headers changed. Review the mapping or apply matching fields only."
+            };
+            console.info("[PERF] quote_compare.mapping_reuse_skipped_reason", {
+                fileName: state.file.name,
+                reason: "partial_candidate_requires_confirmation"
+            });
         }
     }
 

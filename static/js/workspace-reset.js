@@ -1,4 +1,33 @@
 (function () {
+    const QUOTE_COMPARE_ACTIVE_SESSION_KEY = "quote_compare_active_session_v1";
+    const QUOTE_COMPARE_STATE_KEY = "quote_compare_state_v1";
+    const QUOTE_COMPARE_SCROLL_KEY = "quote_compare_scroll_v1";
+    const QUOTE_COMPARE_LAST_SCREEN_KEY = "quote_compare_last_screen_v1";
+    const RECIPES_BOOTSTRAP_CACHE_KEY = "recipes_bootstrap_cache_v1";
+
+    function getAuthUserStorageSuffix() {
+        const rawUserId = String(document.body?.dataset?.authUserId || "").trim();
+        return rawUserId || "anonymous";
+    }
+
+    function clearFrontendResetState() {
+        try {
+            sessionStorage.removeItem(QUOTE_COMPARE_ACTIVE_SESSION_KEY);
+            sessionStorage.removeItem(QUOTE_COMPARE_STATE_KEY);
+            sessionStorage.removeItem(QUOTE_COMPARE_SCROLL_KEY);
+            sessionStorage.removeItem(QUOTE_COMPARE_LAST_SCREEN_KEY);
+            sessionStorage.removeItem(`${RECIPES_BOOTSTRAP_CACHE_KEY}:${getAuthUserStorageSuffix()}`);
+            if (window.__analysisScopeBootstrapCache && typeof window.__analysisScopeBootstrapCache === "object") {
+                window.__analysisScopeBootstrapCache = {};
+            }
+        } catch (error) {
+            // Ignore storage failures.
+        }
+        console.info("[PERF] reset.frontend_state_cleared", {
+            user: getAuthUserStorageSuffix()
+        });
+    }
+
     async function reloadSavedRecipesUi() {
         if (window.PriceAnalyzerRecipes?.reloadSavedRecipes) {
             await window.PriceAnalyzerRecipes.reloadSavedRecipes();
@@ -19,7 +48,7 @@
     }
 
     function applyResetUiState() {
-        const scopeSummaryText = "Current File • No analyzed file yet";
+        const scopeSummaryText = "No analyzed file yet";
         document.getElementById("mainDashboardView")?.setAttribute("data-has-analysis", "false");
         document.getElementById("recipesWorkspaceState")?.setAttribute("data-has-analysis", "false");
         const quoteSummary = document.getElementById("quoteDataScopeSummary");
@@ -34,6 +63,7 @@
         if (continueAnalysisButton) {
             continueAnalysisButton.hidden = true;
         }
+        clearFrontendResetState();
         window.PriceAnalyzerBootGuard?.resetAllUiState?.();
         window.dispatchEvent(new CustomEvent("shared-analysis-context-updated", {
             detail: {
