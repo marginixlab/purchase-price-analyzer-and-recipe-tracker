@@ -4980,6 +4980,9 @@
         if (card.hasValidAlternative && card.savingsAmount > 0) {
             return Number(card.savingsAmount || 0);
         }
+        if (Number(card.potentialSavingsAmount || 0) > 0) {
+            return Number(card.potentialSavingsAmount || 0);
+        }
         return Math.max(
             Number(card.currentOffer?.unit_price || 0) - Number(card.referenceOffer?.unit_price || 0),
             0
@@ -4992,8 +4995,14 @@
         if (memo && memo.cardsRef === sourceCards && Array.isArray(memo.topOpportunityCards)) {
             return memo.topOpportunityCards;
         }
-        const opportunityCards = [...sourceCards]
-            .filter((card) => Number(card.savingsAmount || 0) >= 10000)
+        const directSavingsCandidates = sourceCards.filter((card) => Number(card.savingsAmount || 0) > 0);
+        const meaningfulCandidates = sourceCards.filter((card) => {
+            if (Number(card.savingsAmount || 0) > 0) return true;
+            if (Number(card.potentialSavingsAmount || 0) > 0) return true;
+            return card.decisionType === "lower-historical-price-with-current-supplier"
+                || card.decisionType === "lower-price-with-another-supplier";
+        });
+        const rankedCandidates = [...meaningfulCandidates]
             .sort((left, right) => {
                 const priorityDelta = getTopPricingOpportunityPriority(left) - getTopPricingOpportunityPriority(right);
                 if (priorityDelta !== 0) return priorityDelta;
@@ -5001,6 +5010,36 @@
                 if (scoreDelta !== 0) return scoreDelta;
                 return String(left.productName || "").localeCompare(String(right.productName || ""));
             });
+        const topDirectSavingsCards = rankedCandidates
+            .filter((card) => Number(card.savingsAmount || 0) > 0)
+            .slice(0, 10);
+        const fallbackUsed = topDirectSavingsCards.length < Math.min(10, rankedCandidates.length);
+        const opportunityCards = topDirectSavingsCards.length
+            ? (topDirectSavingsCards.length >= 10
+                ? topDirectSavingsCards
+                : rankedCandidates.slice(0, 10))
+            : rankedCandidates.slice(0, 10);
+        console.info("[PERF] quote_compare.top_savings.selection_mode", {
+            mode: topDirectSavingsCards.length >= 10
+                ? "top_10_direct_savings"
+                : (topDirectSavingsCards.length > 0 ? "top_10_with_meaningful_fallback" : "meaningful_fallback_only")
+        });
+        console.info("[PERF] quote_compare.top_savings.total_candidates", {
+            directSavingsCandidates: directSavingsCandidates.length,
+            meaningfulCandidates: meaningfulCandidates.length,
+            totalCards: sourceCards.length
+        });
+        console.info("[PERF] quote_compare.top_savings.threshold_applied", {
+            applied: false,
+            threshold: 0
+        });
+        console.info("[PERF] quote_compare.top_savings.fallback_used", {
+            used: fallbackUsed,
+            renderedFromFallbackOnly: topDirectSavingsCards.length === 0 && opportunityCards.length > 0
+        });
+        console.info("[PERF] quote_compare.top_savings.rendered_count", {
+            count: opportunityCards.length
+        });
         if (memo && memo.cardsRef === sourceCards) {
             memo.topOpportunityCards = opportunityCards;
         }
