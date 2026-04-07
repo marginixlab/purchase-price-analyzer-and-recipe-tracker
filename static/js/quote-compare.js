@@ -4496,9 +4496,21 @@
     }
 
     function toggleSpotlightCardInPlace(elements, state, cardKey) {
-        if (!elements.app || !cardKey) return false;
+        if (!elements.app || !cardKey) {
+            console.info("[PERF] quote_compare.card_detail_render_skipped_reason", {
+                cardKey: String(cardKey || ""),
+                reason: !elements.app ? "missing_app" : "missing_card_key"
+            });
+            return false;
+        }
         const targetCard = elements.app.querySelector(`[data-qc-card-key="${cssEscape(cardKey)}"]`);
-        if (!targetCard) return false;
+        if (!targetCard) {
+            console.info("[PERF] quote_compare.card_detail_render_skipped_reason", {
+                cardKey,
+                reason: "missing_target_card"
+            });
+            return false;
+        }
         const panelScroll = targetCard.closest(".qc2-spotlight-panel-scroll");
         const anchorTopBefore = panelScroll
             ? targetCard.getBoundingClientRect().top - panelScroll.getBoundingClientRect().top
@@ -4506,13 +4518,46 @@
         const panelScrollTopBefore = panelScroll ? panelScroll.scrollTop : 0;
         const pageScrollTopBefore = panelScroll ? 0 : readScrollPosition(elements);
         const nextExpanded = !state.collapsedDecisionCards[cardKey];
+        console.info("[PERF] quote_compare.card_detail_toggle", {
+            cardKey,
+            nextExpanded
+        });
+        const renderModel = getAnalyzeRenderModel(state);
+        const targetCardData = (renderModel.opportunityCards || []).find(
+            (card) => getScopedDecisionCardKey("spotlight", getDecisionCardKey(card)) === cardKey
+        );
+        if (!targetCardData) {
+            console.info("[PERF] quote_compare.card_detail_render_skipped_reason", {
+                cardKey,
+                reason: "missing_card_data"
+            });
+            return false;
+        }
         const spotlightCards = Array.from(elements.app.querySelectorAll("[data-qc-card-key]"));
         spotlightCards.forEach((card) => {
             const isTarget = card.dataset.qcCardKey === cardKey;
             const shouldExpand = nextExpanded && isTarget;
             card.classList.toggle("is-expanded", shouldExpand);
+            card.classList.toggle("is-active-card", shouldExpand);
             setDecisionButtonLabel(card.querySelector('[data-qc-action="toggle-decision-card"]'), shouldExpand);
+            if (!shouldExpand) {
+                card.querySelector(".qc2-spotlight-detail")?.remove();
+            }
         });
+        if (nextExpanded) {
+            if (!targetCard.querySelector(".qc2-spotlight-detail")) {
+                targetCard.insertAdjacentHTML("beforeend", renderExpandedSpotlightDetail(targetCardData));
+            }
+            console.info("[PERF] quote_compare.card_detail_rendered", {
+                cardKey,
+                rendered: true
+            });
+        } else {
+            console.info("[PERF] quote_compare.card_detail_rendered", {
+                cardKey,
+                rendered: false
+            });
+        }
         const anchorTopAfter = panelScroll
             ? targetCard.getBoundingClientRect().top - panelScroll.getBoundingClientRect().top
             : targetCard.getBoundingClientRect().top;
