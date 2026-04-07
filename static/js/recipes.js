@@ -103,6 +103,14 @@
         markup_pct: "Markup % estimates the menu price by adding your chosen percentage on top of total recipe cost."
     };
 
+    function logRecipesPerf(label, details = {}) {
+        try {
+            console.info(`[PERF] ${label}`, details);
+        } catch (error) {
+            return;
+        }
+    }
+
     function getElements() {
         return {
             mainDashboardView: document.getElementById("mainDashboardView"),
@@ -489,7 +497,10 @@
             pricingGoalType: DEFAULT_PRICING_GOAL_TYPE,
             pricingGoalValue: "",
             targetFoodCostPct: "",
-            statusTimer: null
+            statusTimer: null,
+            bootstrapPromise: null,
+            bootstrapSequence: 0,
+            firstVisiblePaintLogged: false
         };
     }
 
@@ -1356,6 +1367,7 @@
     }
 
     async function fetchJson(url, options = {}) {
+        const requestStartedAt = performance.now();
         const response = await fetch(url, {
             headers: {
                 Accept: "application/json",
@@ -1363,16 +1375,25 @@
             },
             ...options
         });
-        const data = await response.json();
+        const responseReceivedAt = performance.now();
+        const responseText = await response.text();
+        const data = JSON.parse(responseText);
+        logRecipesPerf("recipes.fetch_json", {
+            url,
+            totalMs: Number((performance.now() - requestStartedAt).toFixed(1)),
+            networkMs: Number((responseReceivedAt - requestStartedAt).toFixed(1)),
+            parseMs: Number((performance.now() - responseReceivedAt).toFixed(1)),
+            payloadBytes: new TextEncoder().encode(responseText).length
+        });
         if (!response.ok || data.success !== true) {
             throw new Error(data.message || "The recipe request could not be completed.");
         }
         return data;
     }
 
-    async function loadBootstrap(elements, state) {
-        if (!hasAnalysis(elements)) {
-            const data = await fetchJson("/recipes/bootstrap");
+    function applyBootstrapData(elements, state, data, { analysisAvailable }) {
+        const applyStartedAt = performance.now();
+        if (!analysisAvailable) {
             state.products = [];
             syncProductMap(state);
             state.packageConversionMap = new Map();
@@ -1396,10 +1417,14 @@
             renderRecipeCollections(elements, state);
             renderEditor(elements, state);
             renderCalculation(elements, null);
+            logRecipesPerf("recipes.bootstrap.apply", {
+                analysisAvailable,
+                productsCount: 0,
+                recipesCount: state.recipes.length,
+                totalMs: Number((performance.now() - applyStartedAt).toFixed(1))
+            });
             return;
         }
-
-        const data = await fetchJson("/recipes/bootstrap");
         state.products = data.products || [];
         state.pricingModes = data.pricing_modes || [];
         state.scopeSummary = data.scope_summary || null;
@@ -1413,11 +1438,38 @@
         renderRecipeCollections(elements, state);
         renderEditor(elements, state);
         applyDraftValidationFeedback(elements, invalidDraftProducts);
+        logRecipesPerf("recipes.bootstrap.apply", {
+            analysisAvailable,
+            productsCount: state.products.length,
+            recipesCount: state.recipes.length,
+            invalidDraftProducts: invalidDraftProducts.length,
+            totalMs: Number((performance.now() - applyStartedAt).toFixed(1))
+        });
+    }
+
+    async function loadBootstrap(elements, state) {
+        const bootstrapStartedAt = performance.now();
+        const data = await fetchJson("/recipes/bootstrap");
+        applyBootstrapData(elements, state, data, {
+            analysisAvailable: hasAnalysis(elements)
+        });
+        logRecipesPerf("recipes.bootstrap.frontend", {
+            analysisAvailable: hasAnalysis(elements),
+            totalMs: Number((performance.now() - bootstrapStartedAt).toFixed(1)),
+            productsCount: Array.isArray(data.products) ? data.products.length : 0,
+            recipesCount: Array.isArray(data.recipes) ? data.recipes.length : 0
+        });
     }
 
     async function calculateRecipe(elements, state, { quiet = false } = {}) {
+        const calculateStartedAt = performance.now();
         if (!hasAnalysis(elements)) {
             renderPricingPanel(elements, state);
+            logRecipesPerf("recipes.calculate.frontend", {
+                skipped: true,
+                reason: "no_analysis",
+                totalMs: Number((performance.now() - calculateStartedAt).toFixed(1))
+            });
             return;
         }
 
@@ -1432,26 +1484,43 @@
                 setStatus(elements, "", "", state);
             }
             renderPricingPanel(elements, state);
+            logRecipesPerf("recipes.calculate.frontend", {
+                skipped: true,
+                reason: "incomplete_payload",
+                totalMs: Number((performance.now() - calculateStartedAt).toFixed(1))
+            });
             return;
         }
 
         try {
+            const requestStartedAt = performance.now();
             const data = await fetchJson("/recipes/calculate", {
                 method: "POST",
                 body: JSON.stringify(payload)
             });
-              state.calculation = data.calculation;
-              renderCalculation(elements, state.calculation);
+            const responseAt = performance.now();
+            state.calculation = data.calculation;
+            renderCalculation(elements, state.calculation);
             if (!quiet) {
                 setStatus(elements, "Recipe costs updated.", "info", state);
             } else if (elements.recipeStatusMessage?.classList.contains("is-error")) {
                 setStatus(elements, "", "", state);
             }
-          } catch (error) {
-              state.calculation = null;
-              renderCalculation(elements, null);
-              setStatus(elements, error.message, "error", state);
-          }
+            logRecipesPerf("recipes.calculate.frontend", {
+                ingredientCount: Array.isArray(payload.ingredients) ? payload.ingredients.length : 0,
+                requestMs: Number((responseAt - requestStartedAt).toFixed(1)),
+                renderMs: Number((performance.now() - responseAt).toFixed(1)),
+                totalMs: Number((performance.now() - calculateStartedAt).toFixed(1))
+            });
+        } catch (error) {
+            state.calculation = null;
+            renderCalculation(elements, null);
+            setStatus(elements, error.message, "error", state);
+            logRecipesPerf("recipes.calculate.frontend", {
+                failed: true,
+                totalMs: Number((performance.now() - calculateStartedAt).toFixed(1))
+            });
+        }
     }
 
     function scheduleCalculation(elements, state) {
@@ -1521,6 +1590,7 @@
     }
 
     async function saveRecipe(elements, state) {
+        const saveStartedAt = performance.now();
         if (!hasAnalysis(elements)) {
             return;
         }
@@ -1543,10 +1613,12 @@
         payload.yield_portions = Number(state.draft.yield_portions || 0);
 
         try {
+            const requestStartedAt = performance.now();
             const data = await fetchJson("/recipes/save", {
                 method: "POST",
                 body: JSON.stringify(payload)
             });
+            const responseAt = performance.now();
             state.recipes = (data.recipes || []).map((recipe) => normalizeRecipeDraft(recipe, state));
             state.activeRecipeId = data.recipe?.recipe_id || null;
             state.deleteConfirmVisible = false;
@@ -1571,8 +1643,18 @@
             renderCalculation(elements, state.calculation);
             scheduleCalculation(elements, state);
             setStatus(elements, data.message || "Recipe saved successfully.", "success", state);
+            logRecipesPerf("recipes.save.frontend", {
+                ingredientCount: Array.isArray(payload.ingredients) ? payload.ingredients.length : 0,
+                requestMs: Number((responseAt - requestStartedAt).toFixed(1)),
+                renderMs: Number((performance.now() - responseAt).toFixed(1)),
+                totalMs: Number((performance.now() - saveStartedAt).toFixed(1))
+            });
         } catch (error) {
             setStatus(elements, error.message, "error", state);
+            logRecipesPerf("recipes.save.frontend", {
+                failed: true,
+                totalMs: Number((performance.now() - saveStartedAt).toFixed(1))
+            });
         }
     }
 
@@ -2113,6 +2195,7 @@
     }
 
     async function initRecipes() {
+        const initStartedAt = performance.now();
         const elements = getElements();
         const stateHost = elements.mainDashboardView || elements.recipesWorkspaceState;
         if (!elements.recipesShell || !stateHost) {
@@ -2125,45 +2208,63 @@
         renderEditor(elements, state);
         renderCalculation(elements, null);
         bindEvents(elements, state);
+        logRecipesPerf("recipes.init.frontend", {
+            phase: "shell_render",
+            totalMs: Number((performance.now() - initStartedAt).toFixed(1))
+        });
 
-        const refreshBootstrap = async () => {
-            if (!hasAnalysis(elements)) {
-                try {
-                    const data = await fetchJson("/recipes/bootstrap");
-                    state.products = [];
-                    syncProductMap(state);
-                    state.packageConversionMap = new Map();
-                    state.pricingModes = data.pricing_modes || [];
-                    state.recipes = (data.recipes || []).map((recipe) => normalizeRecipeDraft(recipe, state));
-                    state.activeRecipeId = null;
-                    state.deleteConfirmVisible = false;
-                    state.deleteTargetRecipeId = null;
-                    state.isDeleting = false;
-                    state.recipeLibraryOpen = false;
-                    state.openProductDropdownIndex = null;
-                    state.draft = createEmptyRecipe();
-                    state.calculation = null;
-                    state.scopeSummary = data.scope_summary || null;
-                    renderScopeSummary(elements, state);
-                    renderRecipeCollections(elements, state);
-                    renderEditor(elements, state);
-                    renderCalculation(elements, null);
-                    setStatus(elements);
-                } catch (error) {
-                    setStatus(elements, error.message, "error");
-                }
+        const logFirstVisiblePaint = () => {
+            if (state.firstVisiblePaintLogged) {
                 return;
             }
-            try {
-                await loadBootstrap(elements, state);
-                await calculateRecipe(elements, state, { quiet: true });
-                setStatus(elements);
-            } catch (error) {
-                setStatus(elements, error.message, "error");
+            state.firstVisiblePaintLogged = true;
+            window.requestAnimationFrame(() => {
+                window.requestAnimationFrame(() => {
+                    logRecipesPerf("recipes.first_visible_paint", {
+                        totalMs: Number((performance.now() - initStartedAt).toFixed(1))
+                    });
+                });
+            });
+        };
+
+        const refreshBootstrap = async () => {
+            if (state.bootstrapPromise) {
+                return state.bootstrapPromise;
             }
+            const bootstrapSequence = ++state.bootstrapSequence;
+            const refreshStartedAt = performance.now();
+            state.bootstrapPromise = (async () => {
+                try {
+                    await loadBootstrap(elements, state);
+                    if (hasAnalysis(elements)) {
+                        await calculateRecipe(elements, state, { quiet: true });
+                    }
+                    setStatus(elements);
+                    logFirstVisiblePaint();
+                    logRecipesPerf("recipes.refresh_bootstrap", {
+                        sequence: bootstrapSequence,
+                        totalMs: Number((performance.now() - refreshStartedAt).toFixed(1)),
+                        analysisAvailable: hasAnalysis(elements)
+                    });
+                } catch (error) {
+                    setStatus(elements, error.message, "error");
+                    logRecipesPerf("recipes.refresh_bootstrap", {
+                        sequence: bootstrapSequence,
+                        failed: true,
+                        totalMs: Number((performance.now() - refreshStartedAt).toFixed(1))
+                    });
+                } finally {
+                    state.bootstrapPromise = null;
+                }
+            })();
+            return state.bootstrapPromise;
         };
 
         await refreshBootstrap();
+        logRecipesPerf("recipes.init.frontend", {
+            phase: "complete",
+            totalMs: Number((performance.now() - initStartedAt).toFixed(1))
+        });
         window.PriceAnalyzerRecipes = {
             reloadSavedRecipes: refreshBootstrap
         };

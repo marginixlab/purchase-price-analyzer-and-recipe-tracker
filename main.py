@@ -23,7 +23,7 @@ from urllib.request import Request as UrlRequest, urlopen
 
 import pandas as pd
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jinja2 import TemplateError, TemplateNotFound
@@ -93,6 +93,16 @@ QUOTE_COMPARE_STORE_CACHE: dict[str, Any] = {
 ANALYSIS_HISTORY_CACHE: dict[str, Any] = {
     "signature": None,
     "store": None
+}
+RECIPES_STORE_CACHE: dict[str, Any] = {
+    "signature": None,
+    "store": None
+}
+RECIPE_ANALYSIS_CACHE: dict[str, Any] = {
+    "signature": None,
+    "frame": None,
+    "product_catalog": None,
+    "pricing_lookup": None
 }
 CURRENT_STORAGE_USER_ID: contextvars.ContextVar[int | None] = contextvars.ContextVar(
     "current_storage_user_id",
@@ -1726,6 +1736,13 @@ def load_recipes_store(user_id: int | str | None = None) -> dict[str, Any]:
     resolved_user_id = get_storage_user_id(user_id)
     recipes_path = get_user_recipes_path(resolved_user_id)
     ensure_recipes_file(resolved_user_id)
+    cache_signature = (
+        str(recipes_path),
+        recipes_path.stat().st_mtime_ns,
+        recipes_path.stat().st_size
+    )
+    if RECIPES_STORE_CACHE["signature"] == cache_signature and isinstance(RECIPES_STORE_CACHE["store"], dict):
+        return RECIPES_STORE_CACHE["store"]
     try:
         store = json.loads(recipes_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -1735,12 +1752,21 @@ def load_recipes_store(user_id: int | str | None = None) -> dict[str, Any]:
     if not isinstance(recipes, list):
         store["recipes"] = []
         save_recipes_store(store, resolved_user_id)
+        return RECIPES_STORE_CACHE["store"]
+    RECIPES_STORE_CACHE["signature"] = cache_signature
+    RECIPES_STORE_CACHE["store"] = store
     return store
 
 
 def save_recipes_store(store: dict[str, Any], user_id: int | str | None = None) -> None:
     recipes_path = get_user_recipes_path(get_storage_user_id(user_id))
     recipes_path.write_text(json.dumps(store, indent=2), encoding="utf-8")
+    RECIPES_STORE_CACHE["signature"] = (
+        str(recipes_path),
+        recipes_path.stat().st_mtime_ns,
+        recipes_path.stat().st_size
+    )
+    RECIPES_STORE_CACHE["store"] = store
 
 
 def ensure_quote_comparisons_file(user_id: int | str | None = None) -> None:
@@ -1954,29 +1980,28 @@ def build_analysis_dedupe_key_series(frame: pd.DataFrame) -> pd.Series:
 
     key_parts: list[pd.Series] = []
     date_series = pd.to_datetime(frame.get("Date"), errors="coerce")
-    key_parts.append(date_series.dt.strftime("%Y-%m-%d").fillna(""))
+    key_parts.append(date_series.dt.strftime("%Y-%m-%d").fillna("").astype("string"))
 
     for column in ANALYSIS_DEDUPE_TEXT_COLUMNS:
         if column in frame.columns:
-            key_parts.append(frame[column].fillna("").astype(str).str.strip().str.lower())
+            key_parts.append(frame[column].fillna("").astype("string").str.strip().str.lower())
         else:
             key_parts.append(pd.Series([""] * len(frame.index), index=frame.index, dtype="string"))
 
     for column, decimals in ANALYSIS_DEDUPE_NUMBER_COLUMNS.items():
         if column in frame.columns:
             numeric_series = pd.to_numeric(frame[column], errors="coerce").round(decimals)
-            key_parts.append(numeric_series.map(lambda value: "" if pd.isna(value) else f"{float(value):.{decimals}f}"))
+            formatted_numeric_series = numeric_series.map(
+                lambda value: "" if pd.isna(value) else f"{float(value):.{decimals}f}"
+            ).astype("string")
+            key_parts.append(formatted_numeric_series)
         else:
             key_parts.append(pd.Series([""] * len(frame.index), index=frame.index, dtype="string"))
 
-    return pd.Series(
-        [
-            "|".join(str(part.iloc[index]) for part in key_parts)
-            for index in range(len(frame.index))
-        ],
-        index=frame.index,
-        dtype="string"
-    )
+    combined_keys = key_parts[0]
+    for part in key_parts[1:]:
+        combined_keys = combined_keys.str.cat(part, sep="|")
+    return combined_keys.astype("string")
 
 
 def deduplicate_analysis_frame(
@@ -1988,7 +2013,15 @@ def deduplicate_analysis_frame(
     if frame.empty:
         return frame.copy()
 
+    dedupe_started_at = perf_counter()
+    dedupe_substeps: dict[str, Any] = {
+        "input_rows": int(len(frame.index)),
+        "input_columns": int(len(frame.columns)),
+        "copy_frame": copy_frame,
+        "keep_dedupe_key": keep_dedupe_key
+    }
     deduped_frame = frame.copy() if copy_frame else frame
+    normalize_started_at = perf_counter()
     if "Date" in deduped_frame.columns:
         deduped_frame["Date"] = pd.to_datetime(deduped_frame["Date"], errors="coerce")
     if "Valid Until" in deduped_frame.columns:
@@ -1996,18 +2029,35 @@ def deduplicate_analysis_frame(
     for column in ["Quantity", "Unit Price", "Total Amount", "Average Price", "Overpay", "Savings Opportunity", "Overpay Pct"]:
         if column in deduped_frame.columns:
             deduped_frame[column] = pd.to_numeric(deduped_frame[column], errors="coerce")
+    dedupe_substeps["normalize_columns_ms"] = round((perf_counter() - normalize_started_at) * 1000, 1)
 
+    key_started_at = perf_counter()
     deduped_frame["_analysis_dedupe_key"] = build_analysis_dedupe_key_series(deduped_frame)
+    dedupe_substeps["build_key_ms"] = round((perf_counter() - key_started_at) * 1000, 1)
+
+    drop_duplicates_started_at = perf_counter()
     deduped_frame = deduped_frame.drop_duplicates(subset=["_analysis_dedupe_key"], keep="last")
+    dedupe_substeps["drop_duplicates_ms"] = round((perf_counter() - drop_duplicates_started_at) * 1000, 1)
     if not keep_dedupe_key:
+        drop_key_started_at = perf_counter()
         deduped_frame = deduped_frame.drop(columns=["_analysis_dedupe_key"], errors="ignore")
+        dedupe_substeps["drop_key_ms"] = round((perf_counter() - drop_key_started_at) * 1000, 1)
 
     sort_columns = [column for column in ["Date", "Product Name", "Supplier"] if column in deduped_frame.columns]
     if sort_columns:
+        sort_started_at = perf_counter()
         ascending = [False if column == "Date" else True for column in sort_columns]
         deduped_frame = deduped_frame.sort_values(sort_columns, ascending=ascending, na_position="last")
+        dedupe_substeps["sort_ms"] = round((perf_counter() - sort_started_at) * 1000, 1)
 
-    return deduped_frame.reset_index(drop=True)
+    reset_index_started_at = perf_counter()
+    deduped_frame = deduped_frame.reset_index(drop=True)
+    dedupe_substeps["reset_index_ms"] = round((perf_counter() - reset_index_started_at) * 1000, 1)
+    dedupe_substeps["output_rows"] = int(len(deduped_frame.index))
+    dedupe_substeps["removed_rows"] = int(len(frame.index) - len(deduped_frame.index))
+    dedupe_substeps["total_ms"] = round((perf_counter() - dedupe_started_at) * 1000, 1)
+    log_perf_details("quote_compare.deduplicate_results.substeps", **dedupe_substeps)
+    return deduped_frame
 
 
 def assign_analysis_row_ids(frame: pd.DataFrame, *, upload_id: str, copy_frame: bool = True) -> pd.DataFrame:
@@ -2038,6 +2088,10 @@ def save_current_upload_analysis_frame(frame: pd.DataFrame) -> None:
     frame.to_csv(latest_results_path, index=False)
     LATEST_ANALYSIS_CACHE["signature"] = None
     LATEST_ANALYSIS_CACHE["context"] = None
+    RECIPE_ANALYSIS_CACHE["signature"] = None
+    RECIPE_ANALYSIS_CACHE["frame"] = None
+    RECIPE_ANALYSIS_CACHE["product_catalog"] = None
+    RECIPE_ANALYSIS_CACHE["pricing_lookup"] = None
 
 
 def get_scope_reference_date(frame: pd.DataFrame) -> pd.Timestamp | None:
@@ -2761,49 +2815,62 @@ def validate_quote_comparison_payload(comparison: dict[str, Any], *, require_nam
 
 
 def build_quote_bid_import_result(dataframe: pd.DataFrame, *, text_already_normalized: bool = False) -> dict[str, Any]:
+    import_started_at = perf_counter()
+    import_substeps: dict[str, Any] = {
+        "text_already_normalized": text_already_normalized,
+        "source_rows": int(len(dataframe.index)),
+        "source_columns": int(len(dataframe.columns))
+    }
     bids: list[dict[str, Any]] = []
     skipped_row_count = 0
     numeric_preview: list[dict[str, float]] = []
     positive_total_count = 0
     has_total_price = "Total Price" in dataframe.columns
-    import_frame = dataframe.reindex(columns=[
-        "Supplier",
-        "Supplier Name",
-        "Product Name",
-        "Unit",
-        "Quantity",
-        "Unit Price",
-        "Total Price",
-        "Date",
-        "Currency",
-        "Delivery Time",
-        "Payment Terms",
-        "Valid Until",
-        "Notes"
-    ], fill_value="")
+    column_prepare_started_at = perf_counter()
+    row_count = len(dataframe.index)
+
+    def get_column_values(column_name: str) -> list[Any]:
+        if column_name in dataframe.columns:
+            return dataframe[column_name].tolist()
+        return [""] * row_count
+
+    supplier_values = get_column_values("Supplier")
+    supplier_name_values = get_column_values("Supplier Name")
+    product_name_values = get_column_values("Product Name")
+    unit_values = get_column_values("Unit")
+    quantity_values = get_column_values("Quantity")
+    unit_price_values = get_column_values("Unit Price")
+    total_price_values = get_column_values("Total Price") if has_total_price else None
+    quote_date_values = get_column_values("Date")
+    currency_values = get_column_values("Currency")
+    delivery_time_values = get_column_values("Delivery Time")
+    payment_terms_values = get_column_values("Payment Terms")
+    valid_until_values = get_column_values("Valid Until")
+    notes_values = get_column_values("Notes")
+    import_substeps["prepare_columns_ms"] = round((perf_counter() - column_prepare_started_at) * 1000, 1)
 
     def normalize_import_text(value: Any) -> str:
         if text_already_normalized and isinstance(value, str):
             return value
         return normalize_text_value(value)
 
-    for index, row_values in enumerate(import_frame.itertuples(index=False, name=None), start=1):
-        row_context = f"uploaded dataframe row {index}"
-        (
-            supplier_value,
-            supplier_name_value,
-            product_name_value,
-            unit_value,
-            quantity_value,
-            unit_price_value,
-            total_price_value,
-            quote_date_value,
-            currency_value,
-            delivery_time_value,
-            payment_terms_value,
-            valid_until_value,
-            notes_value
-        ) = row_values
+    row_loop_started_at = perf_counter()
+    for index in range(row_count):
+        row_number = index + 1
+        supplier_value = supplier_values[index]
+        supplier_name_value = supplier_name_values[index]
+        product_name_value = product_name_values[index]
+        unit_value = unit_values[index]
+        quantity_value = quantity_values[index]
+        unit_price_value = unit_price_values[index]
+        total_price_value = total_price_values[index] if total_price_values is not None else 0.0
+        quote_date_value = quote_date_values[index]
+        currency_value = currency_values[index]
+        delivery_time_value = delivery_time_values[index]
+        payment_terms_value = payment_terms_values[index]
+        valid_until_value = valid_until_values[index]
+        notes_value = notes_values[index]
+        row_context = f"uploaded dataframe row {row_number}"
         supplier_name = normalize_import_text(supplier_value or supplier_name_value)
         product_name = normalize_import_text(product_name_value)
         unit = normalize_import_text(unit_value)
@@ -2834,7 +2901,7 @@ def build_quote_bid_import_result(dataframe: pd.DataFrame, *, text_already_norma
         if not supplier_name:
             logger.warning(
                 "[Compare Prices upload] skipping row with empty resolved supplier | row_index=%s | supplier_value=%r | product_name=%r | quantity=%r | unit_price=%r",
-                index,
+                row_number,
                 supplier_value or supplier_name_value,
                 product_name,
                 quantity,
@@ -2845,7 +2912,7 @@ def build_quote_bid_import_result(dataframe: pd.DataFrame, *, text_already_norma
         if quantity <= 0:
             logger.warning(
                 "[Compare Prices upload] skipping row with invalid resolved quantity | row_index=%s | supplier_name=%r | quantity=%r | unit_price=%r | total_price=%r",
-                index,
+                row_number,
                 supplier_name,
                 quantity,
                 unit_price,
@@ -2858,7 +2925,7 @@ def build_quote_bid_import_result(dataframe: pd.DataFrame, *, text_already_norma
         if unit_price <= 0 and resolved_total <= 0:
             logger.warning(
                 "[Compare Prices upload] skipping row with invalid resolved pricing | row_index=%s | supplier_name=%r | quantity=%r | unit_price=%r | total_price=%r | resolved_total=%r",
-                index,
+                row_number,
                 supplier_name,
                 quantity,
                 unit_price,
@@ -2890,7 +2957,9 @@ def build_quote_bid_import_result(dataframe: pd.DataFrame, *, text_already_norma
             "valid_until": normalize_import_text(valid_until_value),
             "notes": normalize_import_text(notes_value)
         })
+    import_substeps["row_loop_ms"] = round((perf_counter() - row_loop_started_at) * 1000, 1)
 
+    logging_started_at = perf_counter()
     logger.info(
         "[Compare Prices upload] numeric debug | first_10_numeric_values=%s | rows_with_resolved_total_gt_zero=%s | skipped_row_count=%s | valid_row_count=%s",
         numeric_preview,
@@ -2898,6 +2967,12 @@ def build_quote_bid_import_result(dataframe: pd.DataFrame, *, text_already_norma
         skipped_row_count,
         len(bids)
     )
+    import_substeps["logging_ms"] = round((perf_counter() - logging_started_at) * 1000, 1)
+    import_substeps["valid_row_count"] = len(bids)
+    import_substeps["skipped_row_count"] = skipped_row_count
+    import_substeps["positive_total_count"] = positive_total_count
+    import_substeps["total_ms"] = round((perf_counter() - import_started_at) * 1000, 1)
+    log_perf_details("confirm.import_rows.substeps", **import_substeps)
 
     return {
         "bids": bids,
@@ -3333,6 +3408,7 @@ def normalize_recipe_analysis_frame(frame: pd.DataFrame) -> pd.DataFrame:
     frame = frame.copy()
     frame["Product Name"] = frame["Product Name"].fillna("").astype(str).str.strip()
     frame["Unit"] = frame["Unit"].fillna("").astype(str).str.strip()
+    frame["Normalized Unit"] = frame["Unit"].map(normalize_recipe_unit_name)
     frame["Supplier"] = frame["Supplier"].fillna("").astype(str).str.strip()
     frame["Unit Price"] = pd.to_numeric(frame["Unit Price"], errors="coerce")
     frame["Average Price"] = pd.to_numeric(frame.get("Average Price"), errors="coerce")
@@ -3345,10 +3421,66 @@ def normalize_recipe_analysis_frame(frame: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
+def get_recipe_analysis_cache_signature() -> tuple[str, int, int] | None:
+    latest_results_path = get_current_latest_results_path()
+    if not latest_results_path.exists():
+        return None
+    return (
+        str(latest_results_path),
+        latest_results_path.stat().st_mtime_ns,
+        latest_results_path.stat().st_size
+    )
+
+
+def build_recipe_pricing_lookup(frame: pd.DataFrame) -> dict[tuple[str, str], dict[str, Any]]:
+    pricing_lookup: dict[tuple[str, str], dict[str, Any]] = {}
+    if frame.empty:
+        return pricing_lookup
+
+    group_unit_column = "Normalized Unit" if "Normalized Unit" in frame.columns else "Unit"
+    grouped = frame.groupby(["Product Name", group_unit_column], sort=False, dropna=False)
+    for (product_name, unit), group in grouped:
+        sorted_group = group.sort_values("Date", ascending=False, na_position="last")
+        latest_row = sorted_group.iloc[0]
+        average_series = group["Average Price"].dropna()
+        pricing_lookup[(str(product_name), str(unit))] = {
+            "latest_price": float(latest_row["Unit Price"]),
+            "latest_supplier": str(latest_row["Supplier"] or "").strip() or "N/A",
+            "average_price": float(average_series.mean()) if not average_series.empty else float(group["Unit Price"].mean())
+        }
+    return pricing_lookup
+
+
+def load_recipe_analysis_bundle(*, scope: str = "current_upload") -> dict[str, Any]:
+    cache_signature = get_recipe_analysis_cache_signature()
+    if cache_signature is None:
+        raise ValueError("No analyzed dataset is available yet. Please upload and analyze a file first.")
+
+    if RECIPE_ANALYSIS_CACHE["signature"] == cache_signature and isinstance(RECIPE_ANALYSIS_CACHE["frame"], pd.DataFrame):
+        return {
+            "frame": RECIPE_ANALYSIS_CACHE["frame"],
+            "product_catalog": RECIPE_ANALYSIS_CACHE["product_catalog"] or [],
+            "pricing_lookup": RECIPE_ANALYSIS_CACHE["pricing_lookup"] or {}
+        }
+
+    frame = normalize_recipe_analysis_frame(load_current_upload_analysis_frame())
+    product_catalog = build_recipe_product_catalog(frame)
+    pricing_lookup = build_recipe_pricing_lookup(frame)
+    RECIPE_ANALYSIS_CACHE["signature"] = cache_signature
+    RECIPE_ANALYSIS_CACHE["frame"] = frame
+    RECIPE_ANALYSIS_CACHE["product_catalog"] = product_catalog
+    RECIPE_ANALYSIS_CACHE["pricing_lookup"] = pricing_lookup
+    return {
+        "frame": frame,
+        "product_catalog": product_catalog,
+        "pricing_lookup": pricing_lookup
+    }
+
+
 def load_recipe_analysis_dataframe(*, scope: str = "current_upload") -> pd.DataFrame:
     if get_current_latest_results_path().exists():
         try:
-            return normalize_recipe_analysis_frame(load_current_upload_analysis_frame())
+            return load_recipe_analysis_bundle(scope=scope)["frame"]
         except ValueError:
             pass
         except Exception:
@@ -3361,9 +3493,9 @@ def build_recipe_product_catalog(frame: pd.DataFrame) -> list[dict[str, Any]]:
     catalog: list[dict[str, Any]] = []
     for product_name, group in frame.groupby("Product Name", sort=True):
         units = sorted({
-            normalize_recipe_unit_name(unit)
-            for unit in group["Unit"].fillna("").tolist()
-            if normalize_recipe_unit_name(unit)
+            str(unit)
+            for unit in group.get("Normalized Unit", group["Unit"]).fillna("").tolist()
+            if str(unit)
         })
         catalog.append({
             "product_name": str(product_name),
@@ -3703,41 +3835,70 @@ def resolve_recipe_price(filtered_rows: pd.DataFrame, pricing_mode: str) -> tupl
     raise ValueError("Unsupported pricing mode selected.")
 
 
-def calculate_recipe_cost(recipe: dict[str, Any], frame: pd.DataFrame) -> dict[str, Any]:
+def calculate_recipe_cost(
+    recipe: dict[str, Any],
+    frame: pd.DataFrame,
+    *,
+    pricing_lookup: dict[tuple[str, str], dict[str, Any]] | None = None
+) -> dict[str, Any]:
     validate_recipe_payload(recipe)
     breakdown: list[dict[str, Any]] = []
 
     for ingredient in recipe["ingredients"]:
-        product_rows = frame[frame["Product Name"] == ingredient["product_name"]].copy()
+        product_name = ingredient["product_name"]
+        purchase_unit = ingredient["purchase_unit"]
+        product_rows = frame[frame["Product Name"] == product_name]
         if product_rows.empty:
-            raise ValueError(f"'{ingredient['product_name']}' was not found in the analyzed purchase dataset.")
+            raise ValueError(f"'{product_name}' was not found in the analyzed purchase dataset.")
 
-        product_rows["Unit"] = product_rows["Unit"].apply(normalize_recipe_unit_name)
-        unit_rows = product_rows[product_rows["Unit"] == ingredient["purchase_unit"]].copy()
-        if unit_rows.empty:
+        pricing_meta = (pricing_lookup or {}).get((product_name, purchase_unit))
+        if pricing_meta is None:
+            if "Normalized Unit" in product_rows.columns:
+                unit_rows = product_rows[product_rows["Normalized Unit"] == purchase_unit]
+            else:
+                normalized_units = product_rows["Unit"].map(normalize_recipe_unit_name)
+                unit_rows = product_rows[normalized_units == purchase_unit]
+            if unit_rows.empty:
+                raise ValueError(
+                    f"No analyzed pricing was found for {product_name} with purchase unit '{purchase_unit}'."
+                )
+            average_series = unit_rows["Average Price"].dropna()
+            sorted_rows = unit_rows.sort_values("Date", ascending=False, na_position="last")
+            latest_row = sorted_rows.iloc[0]
+            pricing_meta = {
+                "latest_price": float(latest_row["Unit Price"]),
+                "latest_supplier": str(latest_row["Supplier"] or "").strip() or "N/A",
+                "average_price": float(average_series.mean()) if not average_series.empty else float(unit_rows["Unit Price"].mean())
+            }
+
+        if pricing_meta is None:
             raise ValueError(
-                f"No analyzed pricing was found for {ingredient['product_name']} with purchase unit '{ingredient['purchase_unit']}'."
+                f"No analyzed pricing was found for {product_name} with purchase unit '{purchase_unit}'."
             )
 
-        price_used, pricing_label = resolve_recipe_price(unit_rows, recipe["pricing_mode"])
+        if recipe["pricing_mode"] == "latest_price":
+            price_used = float(pricing_meta["latest_price"])
+            pricing_label = "Latest Price"
+        elif recipe["pricing_mode"] == "average_price":
+            price_used = float(pricing_meta["average_price"])
+            pricing_label = "Average Price"
+        else:
+            raise ValueError("Unsupported pricing mode selected.")
         purchase_ratio, usage_quantity_in_base_unit, purchase_base_unit = resolve_recipe_usage_ratio(
             float(ingredient["quantity"]),
             ingredient["unit"],
-            ingredient["purchase_unit"],
+            purchase_unit,
             float(ingredient["purchase_size"] or 1),
             ingredient.get("purchase_base_unit")
         )
         ingredient_cost = round(price_used * purchase_ratio, 4)
-        latest_supplier = (
-            unit_rows.sort_values("Date", ascending=False, na_position="last").iloc[0]["Supplier"]
-            if not unit_rows.empty else ""
-        )
+        latest_supplier = pricing_meta.get("latest_supplier", "N/A")
 
         breakdown.append({
-            "product_name": ingredient["product_name"],
+            "product_name": product_name,
             "quantity": round(float(ingredient["quantity"]), 4),
             "unit": ingredient["unit"],
-            "purchase_unit": ingredient["purchase_unit"],
+            "purchase_unit": purchase_unit,
             "purchase_base_unit": purchase_base_unit,
             "purchase_size": round(float(ingredient["purchase_size"] or 1), 4),
             "purchase_ratio": round(float(purchase_ratio), 6),
@@ -3808,13 +3969,18 @@ def calculate_recipe_pricing_metrics(
     }
 
 
-def enrich_saved_recipes_with_costs(recipes: list[dict[str, Any]], frame: pd.DataFrame) -> list[dict[str, Any]]:
+def enrich_saved_recipes_with_costs(
+    recipes: list[dict[str, Any]],
+    frame: pd.DataFrame,
+    *,
+    pricing_lookup: dict[tuple[str, str], dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
     enriched_recipes: list[dict[str, Any]] = []
     for recipe in recipes or []:
         enriched_recipe = {**recipe}
         try:
             normalized_recipe = normalize_recipe_payload(recipe)
-            calculation = calculate_recipe_cost(normalized_recipe, frame)
+            calculation = calculate_recipe_cost(normalized_recipe, frame, pricing_lookup=pricing_lookup)
             if "total_recipe_cost" not in enriched_recipe:
                 enriched_recipe["total_recipe_cost"] = calculation["total_recipe_cost"]
             if "cost_per_portion" not in enriched_recipe:
@@ -4764,20 +4930,42 @@ def create_app() -> FastAPI:
 
     @app.get("/recipes/bootstrap")
     def recipes_bootstrap(scope: str = "current_upload"):
+        bootstrap_started_at = perf_counter()
+        bootstrap_substeps: dict[str, Any] = {
+            "scope": scope
+        }
         try:
-            frame = load_recipe_analysis_dataframe()
+            analysis_load_started_at = perf_counter()
+            analysis_bundle = load_recipe_analysis_bundle(scope=scope)
+            frame = analysis_bundle["frame"]
+            bootstrap_substeps["analysis_load_ms"] = round((perf_counter() - analysis_load_started_at) * 1000, 1)
         except ValueError:
             frame = pd.DataFrame()
+            analysis_bundle = {"product_catalog": [], "pricing_lookup": {}}
+            bootstrap_substeps["analysis_load_ms"] = round((perf_counter() - bootstrap_started_at) * 1000, 1)
 
+        recipes_load_started_at = perf_counter()
         recipes = load_recipes_store().get("recipes", [])
+        bootstrap_substeps["load_recipes_store_ms"] = round((perf_counter() - recipes_load_started_at) * 1000, 1)
         if frame.empty:
             products = []
             enriched_recipes = recipes
+            bootstrap_substeps["product_catalog_ms"] = 0.0
+            bootstrap_substeps["enrich_recipes_ms"] = 0.0
         else:
-            products = build_recipe_product_catalog(frame)
-            enriched_recipes = enrich_saved_recipes_with_costs(recipes, frame)
+            product_catalog_started_at = perf_counter()
+            products = analysis_bundle["product_catalog"]
+            bootstrap_substeps["product_catalog_ms"] = round((perf_counter() - product_catalog_started_at) * 1000, 1)
+            enrich_started_at = perf_counter()
+            enriched_recipes = enrich_saved_recipes_with_costs(
+                recipes,
+                frame,
+                pricing_lookup=analysis_bundle.get("pricing_lookup")
+            )
+            bootstrap_substeps["enrich_recipes_ms"] = round((perf_counter() - enrich_started_at) * 1000, 1)
 
-        return JSONResponse({
+        payload_started_at = perf_counter()
+        response_payload = {
             "success": True,
             "scope_options": build_analysis_scope_options(),
             "scope_summary": build_analysis_scope_summary(frame, scope="current_upload"),
@@ -4787,7 +4975,18 @@ def create_app() -> FastAPI:
             ],
             "products": products,
             "recipes": enriched_recipes
-        })
+        }
+        bootstrap_substeps["build_payload_ms"] = round((perf_counter() - payload_started_at) * 1000, 1)
+        serialize_started_at = perf_counter()
+        response_json = json.dumps(response_payload, ensure_ascii=False, separators=(",", ":"))
+        bootstrap_substeps["serialize_ms"] = round((perf_counter() - serialize_started_at) * 1000, 1)
+        bootstrap_substeps["payload_bytes"] = len(response_json.encode("utf-8"))
+        bootstrap_substeps["products_count"] = len(products)
+        bootstrap_substeps["recipes_count"] = len(enriched_recipes)
+        bootstrap_substeps["frame_rows"] = int(len(frame.index))
+        bootstrap_substeps["total_ms"] = round((perf_counter() - bootstrap_started_at) * 1000, 1)
+        log_perf_details("recipes.bootstrap.backend", **bootstrap_substeps)
+        return Response(content=response_json, media_type="application/json")
 
     @app.get("/analysis/scope-bootstrap")
     def analysis_scope_bootstrap(scope: str = "current_upload"):
@@ -4822,10 +5021,28 @@ def create_app() -> FastAPI:
 
     @app.post("/recipes/calculate")
     def calculate_recipe(payload: RecipePayload):
+        calculate_started_at = perf_counter()
         try:
-            frame = load_recipe_analysis_dataframe()
+            analysis_load_started_at = perf_counter()
+            analysis_bundle = load_recipe_analysis_bundle()
+            frame = analysis_bundle["frame"]
+            normalized_started_at = perf_counter()
             normalized_recipe = normalize_recipe_payload(payload.model_dump())
-            calculation = calculate_recipe_cost(normalized_recipe, frame)
+            normalize_ms = round((perf_counter() - normalized_started_at) * 1000, 1)
+            calculation_started_at = perf_counter()
+            calculation = calculate_recipe_cost(
+                normalized_recipe,
+                frame,
+                pricing_lookup=analysis_bundle.get("pricing_lookup")
+            )
+            log_perf_details(
+                "recipes.calculate.backend",
+                analysis_load_ms=round((normalized_started_at - analysis_load_started_at) * 1000, 1),
+                normalize_recipe_ms=normalize_ms,
+                calculation_ms=round((perf_counter() - calculation_started_at) * 1000, 1),
+                ingredient_count=len(normalized_recipe.get("ingredients", [])),
+                total_ms=round((perf_counter() - calculate_started_at) * 1000, 1)
+            )
         except ValueError as exc:
             status_code = 413 if str(exc) == get_upload_size_limit_message() else 400
             return JSONResponse({"success": False, "message": str(exc)}, status_code=status_code)
@@ -4838,11 +5055,22 @@ def create_app() -> FastAPI:
 
     @app.post("/recipes/save")
     def save_recipe(payload: RecipePayload):
+        save_started_at = perf_counter()
         try:
-            frame = load_recipe_analysis_dataframe()
+            analysis_load_started_at = perf_counter()
+            analysis_bundle = load_recipe_analysis_bundle()
+            frame = analysis_bundle["frame"]
+            normalize_started_at = perf_counter()
             normalized_recipe = normalize_recipe_payload(payload.model_dump())
-            calculation = calculate_recipe_cost(normalized_recipe, frame)
+            normalize_ms = round((perf_counter() - normalize_started_at) * 1000, 1)
+            calculation_started_at = perf_counter()
+            calculation = calculate_recipe_cost(
+                normalized_recipe,
+                frame,
+                pricing_lookup=analysis_bundle.get("pricing_lookup")
+            )
             pricing_metrics = calculate_recipe_pricing_metrics(normalized_recipe, calculation)
+            calculate_ms = round((perf_counter() - calculation_started_at) * 1000, 1)
         except ValueError as exc:
             status_code = 413 if str(exc) == get_upload_size_limit_message() else 400
             return JSONResponse({"success": False, "message": str(exc)}, status_code=status_code)
@@ -4870,13 +5098,34 @@ def create_app() -> FastAPI:
             recipes.append(saved_recipe)
 
         store["recipes"] = recipes
+        persist_started_at = perf_counter()
         save_recipes_store(store)
+        persist_ms = round((perf_counter() - persist_started_at) * 1000, 1)
+
+        enrich_started_at = perf_counter()
+        response_recipes = enrich_saved_recipes_with_costs(
+            recipes,
+            frame,
+            pricing_lookup=analysis_bundle.get("pricing_lookup")
+        )
+        enrich_ms = round((perf_counter() - enrich_started_at) * 1000, 1)
+        log_perf_details(
+            "recipes.save.backend",
+            analysis_load_ms=round((normalize_started_at - analysis_load_started_at) * 1000, 1),
+            normalize_recipe_ms=normalize_ms,
+            calculation_ms=calculate_ms,
+            persist_ms=persist_ms,
+            enrich_recipes_ms=enrich_ms,
+            recipe_count=len(response_recipes),
+            ingredient_count=len(normalized_recipe.get("ingredients", [])),
+            total_ms=round((perf_counter() - save_started_at) * 1000, 1)
+        )
 
         return JSONResponse({
             "success": True,
             "recipe": saved_recipe,
             "calculation": calculation,
-            "recipes": enrich_saved_recipes_with_costs(recipes, frame),
+            "recipes": response_recipes,
             "message": f"Recipe saved: {saved_recipe['name']}"
         })
 
@@ -5248,7 +5497,8 @@ def create_app() -> FastAPI:
             )
 
         response_started_at = perf_counter()
-        response = JSONResponse({
+        response_payload_started_at = perf_counter()
+        response_payload = {
             "success": True,
             "session_id": session_id,
             "comparison": normalized_comparison,
@@ -5258,7 +5508,21 @@ def create_app() -> FastAPI:
                 f"Imported supplier offers from {filename}. "
                 f"{import_result['skipped_row_count']} rows skipped due to invalid or missing data."
             )
-        })
+        }
+        response_substeps = {
+            "build_payload_ms": round((perf_counter() - response_payload_started_at) * 1000, 1),
+            "comparison_bytes": get_json_payload_size_bytes(normalized_comparison),
+            "evaluation_bytes": get_json_payload_size_bytes(evaluation)
+        }
+        serialization_started_at = perf_counter()
+        response_json = json.dumps(response_payload, ensure_ascii=False, separators=(",", ":"))
+        response_substeps["serialize_ms"] = round((perf_counter() - serialization_started_at) * 1000, 1)
+        response_substeps["payload_bytes"] = len(response_json.encode("utf-8"))
+        response_object_started_at = perf_counter()
+        response = Response(content=response_json, media_type="application/json")
+        response_substeps["response_object_ms"] = round((perf_counter() - response_object_started_at) * 1000, 1)
+        response_substeps["total_ms"] = round((perf_counter() - response_started_at) * 1000, 1)
+        log_perf_details("confirm.response_build.substeps", **response_substeps)
         log_perf("confirm.response_build", response_started_at)
         log_perf("confirm.total", request_started_at)
         return response
