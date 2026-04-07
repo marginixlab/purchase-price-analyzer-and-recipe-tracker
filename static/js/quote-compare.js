@@ -25,6 +25,8 @@
     const OPPORTUNITY_CARD_BATCH_SIZE = 24;
     const RESTORE_INITIAL_OPPORTUNITY_CARD_BATCH_SIZE = 8;
     const RESTORE_INITIAL_ANALYSIS_VIEWPORT_END = 24;
+    const RESTORE_OPPORTUNITY_CARD_BATCH_SIZE = 12;
+    const RESTORE_ANALYSIS_TABLE_BATCH_SIZE = 32;
     const ANALYSIS_ROW_HEIGHT = 132;
     const ANALYSIS_ROW_EXPANDED_HEIGHT = 324;
     const ANALYSIS_VIRTUAL_OVERSCAN = 6;
@@ -1753,7 +1755,8 @@
             deferPersistUntilStablePaint: false,
             restoreAnalyzeSettled: true,
             restoreTargetOpportunityRenderCount: OPPORTUNITY_CARD_BATCH_SIZE,
-            restoreTargetAnalysisViewport: null
+            restoreTargetAnalysisViewport: null,
+            restoreDeferredRenderFrame: 0
         };
     }
 
@@ -2613,6 +2616,154 @@
             durationMs: Number((performance.now() - hydrateStartedAt).toFixed(1)),
             decisionCards: Array.isArray(summary?.decisionCards) ? summary.decisionCards.length : 0
         });
+    }
+
+    function cancelRestoreAnalyzeDeferredRender(state) {
+        if (state.restoreDeferredRenderFrame) {
+            cancelAnimationFrame(state.restoreDeferredRenderFrame);
+            state.restoreDeferredRenderFrame = 0;
+        }
+    }
+
+    function getAnalyzeRenderModel(state) {
+        const result = state.analysisResult || { comparison: { bids: [] }, evaluation: null, summary: { rowCount: 0, supplierCount: 0, productCount: 0, productsWithSavings: 0, totalVisibleSavings: 0, currentSpend: 0, optimizedSpend: 0, optimizedSavings: 0, optimizedSavingsPercent: 0, optimizedRows: [], decisionCards: [] } };
+        const summary = getAnalysisSummary(result);
+        const decisionCards = summary.decisionCards || [];
+        const opportunityCards = getTopPricingOpportunityCards(decisionCards, state);
+        const comparisonCurrency = result.comparison?.bids?.[0]?.currency || "USD";
+        const isOpportunitySectionVisible = state.showOpportunitySection !== false;
+        const activeAnalyzeTab = state.activeAnalyzeTab || "savings";
+        const visibleSummary = activeAnalyzeTab === "savings"
+            ? getVisibleTopSavingsSummary(state, opportunityCards, { sectionVisible: isOpportunitySectionVisible })
+            : getVisibleAnalysisSummary(state, decisionCards);
+        const shouldRenderFullComparison = state.showFullComparison && activeAnalyzeTab === "full-table";
+        return {
+            result,
+            summary,
+            decisionCards,
+            opportunityCards,
+            comparisonCurrency,
+            isOpportunitySectionVisible,
+            activeAnalyzeTab,
+            visibleSummary,
+            shouldRenderFullComparison
+        };
+    }
+
+    function renderAnalyzeSummaryGridMarkup(visibleSummary, activeAnalyzeTab, comparisonCurrency) {
+        return `
+            <article class="summary-card qc2-summary-card-compact"><div class="summary-card-title">Products analyzed</div><div class="summary-card-value compact">${visibleSummary.productCount}</div><div class="summary-card-insight">${activeAnalyzeTab === "savings" ? "Visible Top Savings products in the current section." : "Visible product groups in the active filter."}</div></article>
+            <article class="summary-card qc2-summary-card-compact"><div class="summary-card-title">Suppliers compared</div><div class="summary-card-value compact">${visibleSummary.supplierCount}</div><div class="summary-card-insight">${activeAnalyzeTab === "savings" ? "Unique suppliers across the visible Top Savings cards." : "Unique suppliers in the visible table view."}</div></article>
+            <article class="summary-card qc2-summary-card-compact"><div class="summary-card-title">Pricing opportunities</div><div class="summary-card-value compact">${visibleSummary.pricingOpportunityCount}</div><div class="summary-card-insight">${activeAnalyzeTab === "savings" ? "Visible Top Savings cards with savings above zero." : "Visible rows with savings above zero in the active filter."}</div></article>
+            <article class="summary-card qc2-summary-card-compact is-savings"><div class="summary-card-title">Total potential savings</div><div class="summary-card-value compact">${escapeHtml(formatCurrency(visibleSummary.totalPotentialSavings, comparisonCurrency))}</div><div class="summary-card-insight">${activeAnalyzeTab === "savings" ? "Sum of visible Top Savings card values." : "Sum of visible row savings in the active filter."}</div></article>
+        `;
+    }
+
+    function updateAnalyzeRestoreSlots(elements, state) {
+        if (!elements.app || state.currentScreen !== "analyze") {
+            return;
+        }
+        const renderModel = getAnalyzeRenderModel(state);
+        const summaryGrid = elements.app.querySelector("[data-qc-analyze-summary-grid]");
+        if (summaryGrid) {
+            summaryGrid.innerHTML = renderAnalyzeSummaryGridMarkup(
+                renderModel.visibleSummary,
+                renderModel.activeAnalyzeTab,
+                renderModel.comparisonCurrency
+            );
+        }
+        const opportunitySlot = elements.app.querySelector("[data-qc-opportunity-cards]");
+        if (opportunitySlot && renderModel.isOpportunitySectionVisible) {
+            opportunitySlot.innerHTML = renderDecisionSpotlightCards(renderModel.opportunityCards, state);
+        }
+        const tableContent = elements.app.querySelector("[data-qc-analysis-table-content]");
+        if (tableContent && renderModel.shouldRenderFullComparison) {
+            tableContent.innerHTML = renderAnalyzeRows(renderModel.summary.decisionCards || [], state);
+        }
+    }
+
+    function scheduleRestoreAnalyzeDeferredRender(elements, state, initStartedAt) {
+        cancelRestoreAnalyzeDeferredRender(state);
+        let cardBatchCount = 0;
+        let tableBatchCount = 0;
+        const deferredStartedAt = performance.now();
+        const runBatch = () => {
+            state.restoreDeferredRenderFrame = 0;
+            if (!state.isRestoringAnalyze || state.currentScreen !== "analyze" || !elements.app) {
+                return;
+            }
+            const renderModel = getAnalyzeRenderModel(state);
+            let renderedBatch = false;
+
+            if (renderModel.activeAnalyzeTab === "savings" && renderModel.isOpportunitySectionVisible) {
+                const targetOpportunityCount = Math.max(
+                    Number(state.restoreTargetOpportunityRenderCount || OPPORTUNITY_CARD_BATCH_SIZE),
+                    OPPORTUNITY_CARD_BATCH_SIZE
+                );
+                const currentOpportunityCount = Math.max(
+                    Number(state.opportunityRenderCount || OPPORTUNITY_CARD_BATCH_SIZE),
+                    Math.min(targetOpportunityCount, RESTORE_INITIAL_OPPORTUNITY_CARD_BATCH_SIZE)
+                );
+                if (currentOpportunityCount < targetOpportunityCount) {
+                    state.opportunityRenderCount = Math.min(
+                        targetOpportunityCount,
+                        currentOpportunityCount + RESTORE_OPPORTUNITY_CARD_BATCH_SIZE
+                    );
+                    updateAnalyzeRestoreSlots(elements, state);
+                    cardBatchCount += 1;
+                    renderedBatch = true;
+                }
+            }
+
+            if (!renderedBatch && renderModel.shouldRenderFullComparison) {
+                const targetViewport = state.restoreTargetAnalysisViewport || state.analysisViewport || { start: 0, end: 80, scrollTop: 0 };
+                const currentViewport = state.analysisViewport || { start: 0, end: 80, scrollTop: 0 };
+                const currentEnd = Number(currentViewport.end || 0);
+                const targetEnd = Math.max(Number(targetViewport.end || currentEnd), currentEnd);
+                if (currentEnd < targetEnd) {
+                    state.analysisViewport = {
+                        ...currentViewport,
+                        end: Math.min(targetEnd, currentEnd + RESTORE_ANALYSIS_TABLE_BATCH_SIZE)
+                    };
+                    updateAnalyzeRestoreSlots(elements, state);
+                    tableBatchCount += 1;
+                    renderedBatch = true;
+                }
+            }
+
+            if (renderedBatch) {
+                state.restoreDeferredRenderFrame = requestAnimationFrame(runBatch);
+                return;
+            }
+
+            state.restoreAnalyzeSettled = true;
+            logQuoteCompareRestore("quote_compare.restore.card_batch_count", {
+                count: cardBatchCount
+            });
+            logQuoteCompareRestore("quote_compare.restore.table_batch_count", {
+                count: tableBatchCount
+            });
+            logQuoteCompareRestore("quote_compare.restore.chart_deferred_ms", {
+                durationMs: 0
+            });
+            logQuoteCompareRestore("quote_compare.restore.stable_paint", {
+                totalInitMs: Number((performance.now() - initStartedAt).toFixed(1)),
+                renderPassCount: state.renderPassCount,
+                restoreRenderPassCount: Number(state.restoreRenderPassCount || 0)
+            });
+            logQuoteCompareRestore("quote_compare.restore.total_render_time", {
+                totalMs: Number((performance.now() - initStartedAt).toFixed(1)),
+                deferredRenderMs: Number((performance.now() - deferredStartedAt).toFixed(1)),
+                renderPassCount: state.renderPassCount,
+                restoreRenderPassCount: Number(state.restoreRenderPassCount || 0)
+            });
+            if (state.deferPersistUntilStablePaint) {
+                state.deferPersistUntilStablePaint = false;
+                scheduleQuoteCompareSessionPersist(state, elements);
+            }
+            state.isRestoringAnalyze = false;
+        };
+        state.restoreDeferredRenderFrame = requestAnimationFrame(runBatch);
     }
 
     function getHistoryComparisons(state) {
@@ -5373,17 +5524,17 @@
     function renderQcAnalyze(state) {
         const step3RenderStartedAt = performance.now();
         const tableDataStartedAt = performance.now();
-        const result = state.analysisResult || { comparison: { bids: [] }, evaluation: null, summary: { rowCount: 0, supplierCount: 0, productCount: 0, productsWithSavings: 0, totalVisibleSavings: 0, currentSpend: 0, optimizedSpend: 0, optimizedSavings: 0, optimizedSavingsPercent: 0, optimizedRows: [], decisionCards: [] } };
-        const summary = getAnalysisSummary(result);
-        const decisionCards = summary.decisionCards || [];
-        const opportunityCards = getTopPricingOpportunityCards(decisionCards, state);
-        const comparisonCurrency = result.comparison?.bids?.[0]?.currency || "USD";
-        const isOpportunitySectionVisible = state.showOpportunitySection !== false;
-        const activeAnalyzeTab = state.activeAnalyzeTab || "savings";
-        const visibleSummary = activeAnalyzeTab === "savings"
-            ? getVisibleTopSavingsSummary(state, opportunityCards, { sectionVisible: isOpportunitySectionVisible })
-            : getVisibleAnalysisSummary(state, decisionCards);
-        const shouldRenderFullComparison = state.showFullComparison && activeAnalyzeTab === "full-table";
+        const {
+            result,
+            summary,
+            decisionCards,
+            opportunityCards,
+            comparisonCurrency,
+            isOpportunitySectionVisible,
+            activeAnalyzeTab,
+            visibleSummary,
+            shouldRenderFullComparison
+        } = getAnalyzeRenderModel(state);
         const tableDataBuiltAt = performance.now();
         if (state.isRestoringAnalyze) {
             logQuoteCompareRestore("quote_compare.restore.table_data_ms", {
@@ -5413,11 +5564,8 @@
                             Full Table
                         </button>
                     </div>
-                    <div class="qc2-summary-grid qc2-summary-grid-compact qc2-summary-grid-hero">
-                        <article class="summary-card qc2-summary-card-compact"><div class="summary-card-title">Products analyzed</div><div class="summary-card-value compact">${visibleSummary.productCount}</div><div class="summary-card-insight">${activeAnalyzeTab === "savings" ? "Visible Top Savings products in the current section." : "Visible product groups in the active filter."}</div></article>
-                        <article class="summary-card qc2-summary-card-compact"><div class="summary-card-title">Suppliers compared</div><div class="summary-card-value compact">${visibleSummary.supplierCount}</div><div class="summary-card-insight">${activeAnalyzeTab === "savings" ? "Unique suppliers across the visible Top Savings cards." : "Unique suppliers in the visible table view."}</div></article>
-                        <article class="summary-card qc2-summary-card-compact"><div class="summary-card-title">Pricing opportunities</div><div class="summary-card-value compact">${visibleSummary.pricingOpportunityCount}</div><div class="summary-card-insight">${activeAnalyzeTab === "savings" ? "Visible Top Savings cards with savings above zero." : "Visible rows with savings above zero in the active filter."}</div></article>
-                        <article class="summary-card qc2-summary-card-compact is-savings"><div class="summary-card-title">Total potential savings</div><div class="summary-card-value compact">${escapeHtml(formatCurrency(visibleSummary.totalPotentialSavings, comparisonCurrency))}</div><div class="summary-card-insight">${activeAnalyzeTab === "savings" ? "Sum of visible Top Savings card values." : "Sum of visible row savings in the active filter."}</div></article>
+                    <div class="qc2-summary-grid qc2-summary-grid-compact qc2-summary-grid-hero" data-qc-analyze-summary-grid>
+                        ${renderAnalyzeSummaryGridMarkup(visibleSummary, activeAnalyzeTab, comparisonCurrency)}
                     </div>
                     <div class="qc2-analyze-tab-panels">
                         <div id="qcTabSavings" class="qc2-analyze-tab-panel ${activeAnalyzeTab === "savings" ? "active-tab" : ""}" role="tabpanel" aria-hidden="${activeAnalyzeTab === "savings" ? "false" : "true"}">
@@ -5433,7 +5581,7 @@
                                             <button type="button" class="secondary-btn qc2-section-action-btn" data-qc-action="hide-opportunity-section">Hide section</button>
                                         </div>
                                     </div>
-                                    ${renderDecisionSpotlightCards(opportunityCards, state)}
+                                    <div data-qc-opportunity-cards>${renderDecisionSpotlightCards(opportunityCards, state)}</div>
                                 ` : `
                                     <button type="button" class="qc2-collapsible-summary qc2-section-summary-btn" data-qc-action="toggle-opportunity-section" aria-expanded="false">
                                         <span>
@@ -5991,6 +6139,9 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
     function renderApp(elements, state, options = {}) {
         const renderStartedAt = performance.now();
         state.renderPassCount = Number(state.renderPassCount || 0) + 1;
+        if (!(state.currentScreen === "analyze" && state.isRestoringAnalyze)) {
+            cancelRestoreAnalyzeDeferredRender(state);
+        }
         if (state.isRestoringAnalyze) {
             state.restoreRenderPassCount = Number(state.restoreRenderPassCount || 0) + 1;
             logQuoteCompareRestore("quote_compare.restore.render_pass_count", {
@@ -7156,32 +7307,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
                         restoreRenderPassCount: Number(state.restoreRenderPassCount || 0)
                     });
                     requestAnimationFrame(() => {
-                        if (!state.restoreAnalyzeSettled) {
-                            state.restoreAnalyzeSettled = true;
-                            state.opportunityRenderCount = Math.max(
-                                Number(state.restoreTargetOpportunityRenderCount || OPPORTUNITY_CARD_BATCH_SIZE),
-                                OPPORTUNITY_CARD_BATCH_SIZE
-                            );
-                            state.analysisViewport = {
-                                ...(state.restoreTargetAnalysisViewport || state.analysisViewport || {})
-                            };
-                            renderApp(elements, state, { preserveScroll: true });
-                        }
-                        logQuoteCompareRestore("quote_compare.restore.stable_paint", {
-                            totalInitMs: Number((performance.now() - initStartedAt).toFixed(1)),
-                            renderPassCount: state.renderPassCount,
-                            restoreRenderPassCount: Number(state.restoreRenderPassCount || 0)
-                        });
-                        logQuoteCompareRestore("quote_compare.restore.total_render_time", {
-                            totalMs: Number((performance.now() - initStartedAt).toFixed(1)),
-                            renderPassCount: state.renderPassCount,
-                            restoreRenderPassCount: Number(state.restoreRenderPassCount || 0)
-                        });
-                        if (state.deferPersistUntilStablePaint) {
-                            state.deferPersistUntilStablePaint = false;
-                            scheduleQuoteCompareSessionPersist(state, elements);
-                        }
-                        state.isRestoringAnalyze = false;
+                        scheduleRestoreAnalyzeDeferredRender(elements, state, initStartedAt);
                     });
                 });
             }

@@ -1253,17 +1253,20 @@
             analysisAvailable
         });
 
+        let productBatchCount = 0;
+        let libraryBatchCount = 0;
         state.deferredBootstrapRenderFrame = window.requestAnimationFrame(() => {
             state.deferredBootstrapRenderFrame = 0;
             if (state.deferredBootstrapRenderToken !== renderToken) {
                 return;
             }
-            const deferredStartedAt = performance.now();
-            renderRecipeCollections(elements, state);
-            const deferredCollectionsMs = Number((performance.now() - deferredStartedAt).toFixed(1));
+            productBatchCount += 1;
+            const productBatchStartedAt = performance.now();
+            renderRecipeList(elements, state);
+            const productBatchMs = Number((performance.now() - productBatchStartedAt).toFixed(1));
             logRecipesPerf("recipes.render_block_time", {
-                phase: "bootstrap_deferred_collections",
-                renderBlockTimeMs: deferredCollectionsMs,
+                phase: "bootstrap_recipe_list",
+                renderBlockTimeMs: productBatchMs,
                 analysisAvailable
             });
             window.requestAnimationFrame(() => {
@@ -1274,11 +1277,33 @@
                     totalMs: Number((performance.now() - renderStartedAt).toFixed(1)),
                     analysisAvailable
                 });
-                logRecipesPerf("recipes.total_render_time", {
-                    totalMs: Number((performance.now() - renderStartedAt).toFixed(1)),
-                    initialRenderBlockTimeMs: renderBlockTime,
-                    deferredCollectionsMs,
-                    analysisAvailable
+                state.deferredBootstrapRenderFrame = window.requestAnimationFrame(() => {
+                    state.deferredBootstrapRenderFrame = 0;
+                    if (state.deferredBootstrapRenderToken !== renderToken) {
+                        return;
+                    }
+                    libraryBatchCount += 1;
+                    const libraryBatchStartedAt = performance.now();
+                    renderRecipeLibrary(elements, state);
+                    const libraryBatchMs = Number((performance.now() - libraryBatchStartedAt).toFixed(1));
+                    logRecipesPerf("recipes.render_block_time", {
+                        phase: "bootstrap_recipe_library",
+                        renderBlockTimeMs: libraryBatchMs,
+                        analysisAvailable
+                    });
+                    logRecipesPerf("recipes.product_batch_count", {
+                        count: productBatchCount
+                    });
+                    logRecipesPerf("recipes.library_batch_count", {
+                        count: libraryBatchCount
+                    });
+                    logRecipesPerf("recipes.total_render_time", {
+                        totalMs: Number((performance.now() - renderStartedAt).toFixed(1)),
+                        initialRenderBlockTimeMs: renderBlockTime,
+                        productBatchMs,
+                        libraryBatchMs,
+                        analysisAvailable
+                    });
                 });
             });
         });
