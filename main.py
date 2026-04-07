@@ -108,6 +108,10 @@ RECIPE_ANALYSIS_CACHE: dict[str, Any] = {
     "product_catalog": None,
     "pricing_lookup": None
 }
+LATEST_ANALYSIS_UPLOAD_META_CACHE: dict[str, Any] = {
+    "signature": None,
+    "meta": None
+}
 RECIPES_BOOTSTRAP_RESPONSE_CACHE: dict[str, Any] = {
     "signature": None,
     "response_json": None
@@ -1868,6 +1872,8 @@ def save_quote_comparisons_store(store: dict[str, Any], user_id: int | str | Non
         comparisons_path.stat().st_size
     )
     QUOTE_COMPARE_STORE_CACHE["store"] = safe_store
+    LATEST_ANALYSIS_UPLOAD_META_CACHE["signature"] = None
+    LATEST_ANALYSIS_UPLOAD_META_CACHE["meta"] = None
 
 
 def load_analysis_history_store(user_id: int | str | None = None) -> dict[str, Any]:
@@ -1919,6 +1925,8 @@ def save_analysis_history_store(store: dict[str, Any], user_id: int | str | None
         analysis_history_path.stat().st_size
     )
     ANALYSIS_HISTORY_CACHE["store"] = safe_store
+    LATEST_ANALYSIS_UPLOAD_META_CACHE["signature"] = None
+    LATEST_ANALYSIS_UPLOAD_META_CACHE["meta"] = None
 
 
 def seed_analysis_history_from_latest_results() -> None:
@@ -2126,6 +2134,8 @@ def save_current_upload_analysis_frame(frame: pd.DataFrame) -> None:
     RECIPE_ANALYSIS_CACHE["frame"] = None
     RECIPE_ANALYSIS_CACHE["product_catalog"] = None
     RECIPE_ANALYSIS_CACHE["pricing_lookup"] = None
+    LATEST_ANALYSIS_UPLOAD_META_CACHE["signature"] = None
+    LATEST_ANALYSIS_UPLOAD_META_CACHE["meta"] = None
     RECIPES_BOOTSTRAP_RESPONSE_CACHE["signature"] = None
     RECIPES_BOOTSTRAP_RESPONSE_CACHE["response_json"] = None
 
@@ -2223,6 +2233,8 @@ def save_quote_compare_active_session(
     persist_substeps["active_write_ms"] = round((perf_counter() - active_write_started_at) * 1000, 1)
     persist_substeps["file_write_ms"] = round(persist_substeps["session_write_ms"] + persist_substeps["active_write_ms"], 1)
     persist_substeps["total_ms"] = round((perf_counter() - persist_started_at) * 1000, 1)
+    LATEST_ANALYSIS_UPLOAD_META_CACHE["signature"] = None
+    LATEST_ANALYSIS_UPLOAD_META_CACHE["meta"] = None
 
     if perf_label_prefix:
         log_perf_details(f"{perf_label_prefix}.save_active_session.substeps", **persist_substeps)
@@ -3396,7 +3408,14 @@ def has_recipe_analysis_source() -> bool:
     return False
 
 
-def get_latest_analysis_upload_meta() -> dict[str, Any] | None:
+def get_path_cache_signature(path: Path) -> tuple[str, int, int] | None:
+    if not path.exists():
+        return None
+    stat_result = path.stat()
+    return (str(path), stat_result.st_mtime_ns, stat_result.st_size)
+
+
+def get_latest_analysis_upload_meta_from_history() -> dict[str, Any] | None:
     seed_analysis_history_from_latest_results()
     store = load_analysis_history_store()
     uploads = [item for item in store.get("uploads", []) if isinstance(item, dict) and item.get("upload_id")]
@@ -3407,6 +3426,106 @@ def get_latest_analysis_upload_meta() -> dict[str, Any] | None:
         return (str(item.get("updated_at") or ""), str(item.get("upload_id") or ""))
 
     return sorted(uploads, key=sort_key, reverse=True)[0]
+
+
+def get_latest_analysis_upload_meta(
+    *,
+    prepared_frame: pd.DataFrame | None = None,
+    user_id: int | str | None = None,
+    perf_label: str | None = None
+) -> dict[str, Any] | None:
+    started_at = perf_counter()
+    substeps: dict[str, Any] = {
+        "cache_hit": False,
+        "cache_reason": "miss"
+    }
+    resolved_user_id = get_storage_user_id(user_id)
+    current_upload_id = ""
+    prepared_frame_to_use = prepared_frame if isinstance(prepared_frame, pd.DataFrame) else None
+    if prepared_frame_to_use is not None and not prepared_frame_to_use.empty and "upload_id" in prepared_frame_to_use.columns:
+        upload_id_started_at = perf_counter()
+        upload_id_series = prepared_frame_to_use["upload_id"].dropna()
+        if not upload_id_series.empty:
+            current_upload_id = str(upload_id_series.iloc[0]).strip()
+        substeps["prepared_frame_upload_id_ms"] = round((perf_counter() - upload_id_started_at) * 1000, 1)
+
+    active_session_path = get_user_active_quote_compare_session_path(resolved_user_id)
+    ensure_quote_comparisons_file(resolved_user_id)
+    comparisons_path = get_user_quote_comparisons_path(resolved_user_id)
+    ensure_analysis_history_file(resolved_user_id)
+    analysis_history_path = get_user_analysis_history_path(resolved_user_id)
+    cache_signature = (
+        get_recipe_analysis_cache_signature(),
+        current_upload_id,
+        get_path_cache_signature(active_session_path),
+        get_path_cache_signature(comparisons_path),
+        get_path_cache_signature(analysis_history_path)
+    )
+    if LATEST_ANALYSIS_UPLOAD_META_CACHE["signature"] == cache_signature:
+        substeps["cache_hit"] = True
+        substeps["cache_reason"] = "signature_match"
+        substeps["current_upload_id"] = current_upload_id
+        substeps["total_ms"] = round((perf_counter() - started_at) * 1000, 1)
+        if perf_label:
+            log_perf_details(perf_label, **substeps)
+        return LATEST_ANALYSIS_UPLOAD_META_CACHE["meta"]
+
+    substeps["current_upload_id"] = current_upload_id
+    active_session_started_at = perf_counter()
+    latest_session = get_latest_quote_compare_analysis_session(user_id=resolved_user_id)
+    substeps["active_session_lookup_ms"] = round((perf_counter() - active_session_started_at) * 1000, 1)
+    if latest_session and isinstance(latest_session.get("comparison"), dict):
+        comparison = latest_session["comparison"]
+        session_upload_id = str(comparison.get("upload_id") or "").strip()
+        if current_upload_id and session_upload_id == current_upload_id:
+            source_name = (
+                str(latest_session.get("filename") or "").strip()
+                or str(comparison.get("name") or "").strip()
+                or "Compare Prices analysis"
+            )
+            meta = {
+                "upload_id": current_upload_id,
+                "source_name": source_name
+            }
+            substeps["cache_reason"] = "active_session_match"
+            substeps["resolved_via"] = "active_session"
+            substeps["total_ms"] = round((perf_counter() - started_at) * 1000, 1)
+            LATEST_ANALYSIS_UPLOAD_META_CACHE["signature"] = cache_signature
+            LATEST_ANALYSIS_UPLOAD_META_CACHE["meta"] = meta
+            if perf_label:
+                log_perf_details(perf_label, **substeps)
+            return meta
+
+    saved_comparison_started_at = perf_counter()
+    latest_comparison = get_latest_saved_quote_compare_analysis()
+    substeps["saved_comparison_lookup_ms"] = round((perf_counter() - saved_comparison_started_at) * 1000, 1)
+    if latest_comparison:
+        comparison_upload_id = str(latest_comparison.get("upload_id") or "").strip()
+        if current_upload_id and comparison_upload_id == current_upload_id:
+            meta = {
+                "upload_id": current_upload_id,
+                "source_name": str(latest_comparison.get("name") or "").strip() or "Compare Prices analysis"
+            }
+            substeps["cache_reason"] = "saved_comparison_match"
+            substeps["resolved_via"] = "saved_comparison"
+            substeps["total_ms"] = round((perf_counter() - started_at) * 1000, 1)
+            LATEST_ANALYSIS_UPLOAD_META_CACHE["signature"] = cache_signature
+            LATEST_ANALYSIS_UPLOAD_META_CACHE["meta"] = meta
+            if perf_label:
+                log_perf_details(perf_label, **substeps)
+            return meta
+
+    history_started_at = perf_counter()
+    meta = get_latest_analysis_upload_meta_from_history()
+    substeps["history_lookup_ms"] = round((perf_counter() - history_started_at) * 1000, 1)
+    substeps["cache_reason"] = "history_fallback"
+    substeps["resolved_via"] = "analysis_history"
+    substeps["total_ms"] = round((perf_counter() - started_at) * 1000, 1)
+    LATEST_ANALYSIS_UPLOAD_META_CACHE["signature"] = cache_signature
+    LATEST_ANALYSIS_UPLOAD_META_CACHE["meta"] = meta
+    if perf_label:
+        log_perf_details(perf_label, **substeps)
+    return meta
 
 
 def load_analysis_history_frame() -> pd.DataFrame:
@@ -3501,21 +3620,72 @@ def get_recipes_store_cache_signature(user_id: int | str | None = None) -> tuple
 
 
 def build_recipe_pricing_lookup(frame: pd.DataFrame) -> dict[tuple[str, str], dict[str, Any]]:
+    pricing_lookup_started_at = perf_counter()
+    pricing_lookup_substeps: dict[str, Any] = {
+        "cache_hit": False,
+        "cache_reason": "build_required",
+        "frame_rows": int(len(frame.index))
+    }
     pricing_lookup: dict[tuple[str, str], dict[str, Any]] = {}
     if frame.empty:
+        pricing_lookup_substeps["total_ms"] = round((perf_counter() - pricing_lookup_started_at) * 1000, 1)
+        log_perf_details("recipes.bootstrap.pricing_lookup.substeps", **pricing_lookup_substeps)
         return pricing_lookup
 
     group_unit_column = "Normalized Unit" if "Normalized Unit" in frame.columns else "Unit"
-    grouped = frame.groupby(["Product Name", group_unit_column], sort=False, dropna=False)
-    for (product_name, unit), group in grouped:
-        sorted_group = group.sort_values("Date", ascending=False, na_position="last")
-        latest_row = sorted_group.iloc[0]
-        average_series = group["Average Price"].dropna()
+    group_columns = ["Product Name", group_unit_column]
+    subset_started_at = perf_counter()
+    latest_row_frame = frame.loc[:, group_columns + ["Date", "Unit Price", "Supplier"]]
+    aggregate_frame = frame.loc[:, group_columns + ["Average Price", "Unit Price"]]
+    pricing_lookup_substeps["select_columns_ms"] = round((perf_counter() - subset_started_at) * 1000, 1)
+
+    sort_started_at = perf_counter()
+    sorted_frame = latest_row_frame.sort_values(group_columns + ["Date"], ascending=[True, True, False], na_position="last")
+    pricing_lookup_substeps["sort_once_ms"] = round((perf_counter() - sort_started_at) * 1000, 1)
+
+    latest_rows_started_at = perf_counter()
+    latest_rows = sorted_frame.drop_duplicates(subset=group_columns, keep="first")
+    pricing_lookup_substeps["latest_rows_ms"] = round((perf_counter() - latest_rows_started_at) * 1000, 1)
+
+    aggregate_started_at = perf_counter()
+    grouped_means = aggregate_frame.groupby(group_columns, sort=False, dropna=False, as_index=False).agg(
+        average_price_from_average=("Average Price", "mean"),
+        average_price_from_unit=("Unit Price", "mean")
+    )
+    grouped_means["average_price"] = grouped_means["average_price_from_average"].fillna(grouped_means["average_price_from_unit"])
+    pricing_lookup_substeps["aggregate_ms"] = round((perf_counter() - aggregate_started_at) * 1000, 1)
+
+    join_started_at = perf_counter()
+    pricing_source = latest_rows.loc[:, group_columns + ["Unit Price", "Supplier"]].merge(
+        grouped_means.loc[:, group_columns + ["average_price"]],
+        on=group_columns,
+        how="left",
+        sort=False
+    )
+    pricing_lookup_substeps["join_ms"] = round((perf_counter() - join_started_at) * 1000, 1)
+
+    build_dict_started_at = perf_counter()
+    product_values = pricing_source["Product Name"].tolist()
+    unit_values = pricing_source[group_unit_column].tolist()
+    latest_price_values = pricing_source["Unit Price"].tolist()
+    supplier_values = pricing_source["Supplier"].tolist()
+    average_price_values = pricing_source["average_price"].tolist()
+    for product_name, unit, latest_price, supplier, average_price in zip(
+        product_values,
+        unit_values,
+        latest_price_values,
+        supplier_values,
+        average_price_values
+    ):
         pricing_lookup[(str(product_name), str(unit))] = {
-            "latest_price": float(latest_row["Unit Price"]),
-            "latest_supplier": str(latest_row["Supplier"] or "").strip() or "N/A",
-            "average_price": float(average_series.mean()) if not average_series.empty else float(group["Unit Price"].mean())
+            "latest_price": float(latest_price),
+            "latest_supplier": str(supplier or "").strip() or "N/A",
+            "average_price": float(average_price)
         }
+    pricing_lookup_substeps["build_dict_ms"] = round((perf_counter() - build_dict_started_at) * 1000, 1)
+    pricing_lookup_substeps["group_count"] = len(pricing_lookup)
+    pricing_lookup_substeps["total_ms"] = round((perf_counter() - pricing_lookup_started_at) * 1000, 1)
+    log_perf_details("recipes.bootstrap.pricing_lookup.substeps", **pricing_lookup_substeps)
     return pricing_lookup
 
 
@@ -3532,6 +3702,14 @@ def load_recipe_analysis_bundle(*, scope: str = "current_upload") -> dict[str, A
     if RECIPE_ANALYSIS_CACHE["signature"] == cache_signature and isinstance(RECIPE_ANALYSIS_CACHE["frame"], pd.DataFrame):
         analysis_load_metrics["cache_hit"] = True
         analysis_load_metrics["cache_reason"] = "signature_match"
+        log_perf_details(
+            "recipes.bootstrap.pricing_lookup.substeps",
+            cache_hit=True,
+            cache_reason="analysis_bundle_cache_hit",
+            frame_rows=int(len(RECIPE_ANALYSIS_CACHE["frame"].index)),
+            group_count=len(RECIPE_ANALYSIS_CACHE["pricing_lookup"] or {}),
+            total_ms=0.0
+        )
         log_perf_details("recipes.bootstrap.analysis_load.substeps", **analysis_load_metrics)
         return {
             "frame": RECIPE_ANALYSIS_CACHE["frame"],
@@ -5094,7 +5272,10 @@ def create_app() -> FastAPI:
             scope_options = build_analysis_scope_options()
             build_payload_substeps["scope_options_ms"] = round((perf_counter() - scope_options_started_at) * 1000, 1)
             latest_upload_started_at = perf_counter()
-            latest_upload = get_latest_analysis_upload_meta()
+            latest_upload = get_latest_analysis_upload_meta(
+                prepared_frame=frame,
+                perf_label="recipes.bootstrap.latest_upload_meta.substeps"
+            )
             build_payload_substeps["latest_upload_meta_ms"] = round((perf_counter() - latest_upload_started_at) * 1000, 1)
             scope_summary_started_at = perf_counter()
             scope_summary = build_analysis_scope_summary_with_upload(frame, latest_upload=latest_upload)
