@@ -5833,11 +5833,13 @@ def create_app() -> FastAPI:
 
         response_started_at = perf_counter()
         response_payload_started_at = perf_counter()
+        compact_response_evaluation_started_at = perf_counter()
+        compact_response_evaluation = compact_quote_compare_evaluation_for_session(evaluation) or {}
         response_payload = {
             "success": True,
             "session_id": session_id,
             "comparison": normalized_comparison,
-            "evaluation": evaluation,
+            "evaluation": compact_response_evaluation,
             "skipped_rows": import_result["skipped_row_count"],
             "message": (
                 f"Imported supplier offers from {filename}. "
@@ -5845,9 +5847,12 @@ def create_app() -> FastAPI:
             )
         }
         response_substeps = {
+            "compact_evaluation_ms": round((perf_counter() - compact_response_evaluation_started_at) * 1000, 1),
             "build_payload_ms": round((perf_counter() - response_payload_started_at) * 1000, 1),
             "comparison_bytes": get_json_payload_size_bytes(normalized_comparison),
-            "evaluation_bytes": get_json_payload_size_bytes(evaluation)
+            "evaluation_bytes": get_json_payload_size_bytes(compact_response_evaluation),
+            "evaluation_compacted_bytes_before": get_json_payload_size_bytes(evaluation),
+            "evaluation_compacted_bytes_after": get_json_payload_size_bytes(compact_response_evaluation)
         }
         serialization_started_at = perf_counter()
         response_json = json.dumps(response_payload, ensure_ascii=False, separators=(",", ":"))
