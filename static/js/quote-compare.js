@@ -108,6 +108,10 @@
         }
     ];
 
+    function logQuoteCompareRestore(label, details = {}) {
+        console.info(`[PERF] ${label}`, details);
+    }
+
     function getElements() {
         return {
             workspace: document.getElementById("quoteCompareWorkspaceView"),
@@ -1742,7 +1746,9 @@
             historyMemo: null,
             analysisMemo: null,
             historyViewport: { start: 0, end: 120, scrollTop: 0 },
-            progressPhase: ""
+            progressPhase: "",
+            restorePerf: null,
+            deferPersistUntilStablePaint: false
         };
     }
 
@@ -2493,6 +2499,21 @@
             optimizedRows: [],
             decisionCards
         };
+        if (result?.__restorePerfTarget) {
+            const decisionCardsMs = Number((decisionCardsBuiltAt - decisionCardsStartedAt).toFixed(1));
+            const stateBuildMs = Number((performance.now() - summaryStartedAt).toFixed(1));
+            result.__restorePerfTarget.decisionCardsMs = decisionCardsMs;
+            result.__restorePerfTarget.stateBuildMs = stateBuildMs;
+            logQuoteCompareRestore("quote_compare.restore.decision_cards_ms", {
+                bidCount: bids.length,
+                decisionCards: decisionCards.length,
+                durationMs: decisionCardsMs
+            });
+            logQuoteCompareRestore("quote_compare.restore.state_build_ms", {
+                bidCount: bids.length,
+                durationMs: stateBuildMs
+            });
+        }
         console.info("[compare prices comparison.bids transform]", {
             bidCount: bids.length,
             decisionCards: decisionCards.length,
@@ -2516,11 +2537,26 @@
 
     function hydrateAnalyzeState(state, comparison, evaluation, { screen = "analyze", step = 3, markRestore = false } = {}) {
         const hydrateStartedAt = performance.now();
+        if (markRestore) {
+            state.restorePerf = {
+                ...(state.restorePerf || {}),
+                hydrateStartedAt
+            };
+            state.deferPersistUntilStablePaint = true;
+            logQuoteCompareRestore("quote_compare.restore.hydrate_start", {
+                screen,
+                bidCount: Array.isArray(comparison?.bids) ? comparison.bids.length : 0
+            });
+        }
         console.info("[compare prices step3 hydrate start]", {
             screen,
             bidCount: Array.isArray(comparison?.bids) ? comparison.bids.length : 0
         });
-        const summary = buildAnalyzeSummary({ comparison });
+        const restorePerfTarget = markRestore ? (state.restorePerf || {}) : null;
+        const summary = buildAnalyzeSummary({
+            comparison,
+            __restorePerfTarget: restorePerfTarget
+        });
         state.analysisResult = {
             comparison,
             evaluation,
@@ -2532,6 +2568,18 @@
         if (markRestore) {
             state.isRestoringAnalyze = true;
             state.restoreRenderPassCount = 0;
+            state.restorePerf = {
+                ...(state.restorePerf || {}),
+                hydrateEndedAt: performance.now(),
+                decisionCardsMs: restorePerfTarget?.decisionCardsMs || 0,
+                stateBuildMs: restorePerfTarget?.stateBuildMs || 0
+            };
+            logQuoteCompareRestore("quote_compare.restore.hydrate_end", {
+                screen,
+                bidCount: Array.isArray(comparison?.bids) ? comparison.bids.length : 0,
+                durationMs: Number((performance.now() - hydrateStartedAt).toFixed(1)),
+                decisionCards: Array.isArray(summary?.decisionCards) ? summary.decisionCards.length : 0
+            });
         }
         console.info("[compare prices step3 hydrate end]", {
             screen,
@@ -2642,7 +2690,11 @@
                 visibleSummary: null,
                 topSavingsSummaryKey: "",
                 topSavingsSummary: null,
-                topOpportunityCards: null
+                topOpportunityCards: null,
+                spotlightMarkupKey: "",
+                spotlightMarkup: "",
+                tableMarkupKey: "",
+                tableMarkup: ""
             };
         }
         return state.analysisMemo;
@@ -2900,11 +2952,17 @@
             }
             const query = params.toString() ? `?${params.toString()}` : "";
             const data = await fetchJson(`/quote-compare/bootstrap${query}`);
+            const bootstrapReceivedAt = performance.now();
             console.info("[compare prices bootstrap response received]", {
                 includeComparisons,
                 hasActiveSession: Boolean(data?.active_session),
+                comparisons: Array.isArray(data?.comparisons) ? data.comparisons.length : 0
+            });
+            logQuoteCompareRestore("quote_compare.restore.bootstrap_received", {
+                includeComparisons,
+                hasActiveSession: Boolean(data?.active_session),
                 comparisons: Array.isArray(data?.comparisons) ? data.comparisons.length : 0,
-                responseApproxBytes: JSON.stringify(data || {}).length
+                elapsedMs: Number((bootstrapReceivedAt - loadStartedAt).toFixed(1))
             });
             if (includeComparisons) {
                 hydrateComparisons(state, data.comparisons || []);
@@ -2974,6 +3032,10 @@
 
             if (canRestoreAnalyze) {
                 if (preferredLastScreen?.currentScreen === "history") {
+                    state.restorePerf = {
+                        ...(state.restorePerf || {}),
+                        bootstrapReceivedAt
+                    };
                     hydrateAnalyzeState(state, activeSession.comparison, activeSession.evaluation, {
                         screen: "history",
                         step: 4,
@@ -2982,6 +3044,10 @@
                     return;
                 }
                 if (preferredLastScreen?.currentScreen === "analyze") {
+                    state.restorePerf = {
+                        ...(state.restorePerf || {}),
+                        bootstrapReceivedAt
+                    };
                     hydrateAnalyzeState(state, activeSession.comparison, activeSession.evaluation, {
                         screen: "analyze",
                         step: 3,
@@ -2996,6 +3062,10 @@
                     state.currentStep = 2;
                     return;
                 }
+                state.restorePerf = {
+                    ...(state.restorePerf || {}),
+                    bootstrapReceivedAt
+                };
                 hydrateAnalyzeState(state, activeSession.comparison, activeSession.evaluation, {
                     screen: persistedCurrentScreen === "history" ? "history" : "analyze",
                     step: persistedCurrentScreen === "history" ? 4 : 3,
@@ -4238,6 +4308,9 @@
     }
 
     function getPriceSpreadMetrics(card) {
+        if (card?.__priceSpreadMetrics) {
+            return card.__priceSpreadMetrics;
+        }
         const lowestOffer = getFullTableLowestOffer(card);
         const highestOffer = getFullTableHighestOffer(card);
         const normalizedLowestPrice = normalizeUnitPriceForComparison(lowestOffer?.unit_price || 0);
@@ -4245,7 +4318,7 @@
         const totalQuantity = Number(card?.totalQuantity || card?.quantity || 0);
         const savingsAmount = Math.max(normalizedHighestPrice - normalizedLowestPrice, 0) * totalQuantity;
         const hasSavings = normalizedHighestPrice > normalizedLowestPrice;
-        return {
+        const metrics = {
             leftOffer: lowestOffer,
             rightOffer: highestOffer,
             leftUnitPrice: normalizedLowestPrice,
@@ -4254,11 +4327,18 @@
             savingsAmount,
             hasSavings
         };
+        if (card && typeof card === "object") {
+            card.__priceSpreadMetrics = metrics;
+        }
+        return metrics;
     }
 
     function getAnalysisTableViewModel(card) {
+        if (card?.__analysisTableViewModel) {
+            return card.__analysisTableViewModel;
+        }
         const priceSpread = getPriceSpreadMetrics(card);
-        return {
+        const viewModel = {
             leftHeader: "Lowest Supplier",
             leftPriceHeader: "Lowest Price",
             rightHeader: "Highest Supplier",
@@ -4288,6 +4368,10 @@
                 ? `Price spread opportunity: highest ${formatCurrency(priceSpread.rightUnitPrice)} vs lowest ${formatCurrency(priceSpread.leftUnitPrice)} across qty ${formatQuantity(priceSpread.totalQuantity)}.`
                 : "No immediate action after 2-decimal price comparison."
         };
+        if (card && typeof card === "object") {
+            card.__analysisTableViewModel = viewModel;
+        }
+        return viewModel;
     }
 
     function getFullTableSavingsAmount(card) {
@@ -4810,6 +4894,19 @@
         }
         const visibleCards = cards.slice(0, Math.max(state.opportunityRenderCount || OPPORTUNITY_CARD_BATCH_SIZE, OPPORTUNITY_CARD_BATCH_SIZE));
         const hasMoreCards = visibleCards.length < cards.length;
+        const memo = getAnalysisMemo(state);
+        const spotlightMarkupKey = [
+            visibleCards.length,
+            cards.length,
+            state.opportunityRenderCount || OPPORTUNITY_CARD_BATCH_SIZE,
+            visibleCards.map((card) => {
+                const cardKey = getScopedDecisionCardKey("spotlight", getDecisionCardKey(card));
+                return `${getDecisionCardKey(card)}:${state.collapsedDecisionCards[cardKey] ? 1 : 0}`;
+            }).join("|")
+        ].join("::");
+        if (memo.cardsRef === cards && memo.spotlightMarkupKey === spotlightMarkupKey && memo.spotlightMarkup) {
+            return memo.spotlightMarkup;
+        }
         const markup = `
             <div class="qc2-spotlight-panel">
                 <div class="qc2-spotlight-panel-scroll">
@@ -4897,6 +4994,10 @@
             totalCards: cards.length,
             durationMs: Number((performance.now() - renderStartedAt).toFixed(1))
         });
+        if (memo.cardsRef === cards) {
+            memo.spotlightMarkupKey = spotlightMarkupKey;
+            memo.spotlightMarkup = markup;
+        }
         return markup;
     }
 
@@ -5007,6 +5108,24 @@
             return '<div class="decision-list-empty">No supplier rows were available for comparison.</div>';
         }
         const { visibleCards, topSpacer, bottomSpacer } = getAnalysisVirtualSlice(filteredCards, state);
+        const memo = getAnalysisMemo(state);
+        const tableMarkupKey = [
+            normalizeAnalysisTableFilter(state.analysisTableFilter),
+            String(state.analysisTableSearch || "").trim().toLowerCase(),
+            state.analysisTableSort?.key || "",
+            state.analysisTableSort?.direction || "",
+            state.selectedAnalysisRowKey || "",
+            state.analysisViewport?.start || 0,
+            state.analysisViewport?.end || visibleCards.length,
+            filteredCards.length,
+            visibleCards.map((card) => {
+                const cardKey = getScopedDecisionCardKey("analysis", getDecisionCardKey(card));
+                return `${getDecisionCardKey(card)}:${state.collapsedDecisionCards[cardKey] ? 1 : 0}`;
+            }).join("|")
+        ].join("::");
+        if (memo.cardsRef === cards && memo.tableMarkupKey === tableMarkupKey && memo.tableMarkup) {
+            return memo.tableMarkup;
+        }
         const savingsSortDirection = state.analysisTableSort?.key === "savings" ? state.analysisTableSort.direction : "";
         const headerModel = getAnalysisTableViewModel(visibleCards[0] || filteredCards[0] || {});
         const savingsSortIndicator = savingsSortDirection === "asc" ? "↑" : savingsSortDirection === "desc" ? "↓" : "↕";
@@ -5147,6 +5266,10 @@
             visibleRows: visibleCards.length,
             durationMs: Number((performance.now() - renderStartedAt).toFixed(1))
         });
+        if (memo.cardsRef === cards) {
+            memo.tableMarkupKey = tableMarkupKey;
+            memo.tableMarkup = markup;
+        }
         return markup;
     }
 
@@ -5227,7 +5350,6 @@
         const summary = getAnalysisSummary(result);
         const decisionCards = summary.decisionCards || [];
         const opportunityCards = getTopPricingOpportunityCards(decisionCards, state);
-        const expandedOpportunityCards = opportunityCards.filter((card) => Boolean(state.collapsedDecisionCards[getScopedDecisionCardKey("spotlight", getDecisionCardKey(card))]));
         const comparisonCurrency = result.comparison?.bids?.[0]?.currency || "USD";
         const isOpportunitySectionVisible = state.showOpportunitySection !== false;
         const activeAnalyzeTab = state.activeAnalyzeTab || "savings";
@@ -5236,6 +5358,14 @@
             : getVisibleAnalysisSummary(state, decisionCards);
         const shouldRenderFullComparison = state.showFullComparison && activeAnalyzeTab === "full-table";
         const tableDataBuiltAt = performance.now();
+        if (state.isRestoringAnalyze) {
+            logQuoteCompareRestore("quote_compare.restore.table_data_ms", {
+                activeTab: activeAnalyzeTab,
+                decisionCards: decisionCards.length,
+                opportunityCards: opportunityCards.length,
+                durationMs: Number((tableDataBuiltAt - tableDataStartedAt).toFixed(1))
+            });
+        }
         const markup = `
             <section class="qc2-screen qc2-screen-analyze" id="qc2AnalysisTop">
                 <div class="qc2-card qc2-analyze-card">
@@ -5836,6 +5966,10 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
         state.renderPassCount = Number(state.renderPassCount || 0) + 1;
         if (state.isRestoringAnalyze) {
             state.restoreRenderPassCount = Number(state.restoreRenderPassCount || 0) + 1;
+            logQuoteCompareRestore("quote_compare.restore.render_pass_count", {
+                renderPassCount: state.renderPassCount,
+                restoreRenderPassCount: Number(state.restoreRenderPassCount || 0)
+            });
         }
         const preserveScrollTop = options.preserveScroll ? readScrollPosition(elements) : null;
         const anchorSelector = options.anchorSelector || "";
@@ -5844,7 +5978,9 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
         sanitizeQuoteCompareStepState(state);
         updateLastQuoteCompareScreen(state);
         updateContinueAnalysisButton(elements, state);
+        const tableDomStartedAt = performance.now();
         elements.app.innerHTML = renderCurrentScreen(state);
+        const tableDomEndedAt = performance.now();
         bindCriticalQuoteCompareButtons(elements, state);
         if (preserveScrollTop != null) {
             writeScrollPosition(elements, preserveScrollTop);
@@ -5854,7 +5990,22 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             scheduleHistoryDetailChartRender(elements, state);
         }
         updateCurrentFileSummary(elements, state);
-        scheduleQuoteCompareSessionPersist(state, elements);
+        if (state.isRestoringAnalyze) {
+            logQuoteCompareRestore("quote_compare.restore.table_dom_ms", {
+                durationMs: Number((tableDomEndedAt - tableDomStartedAt).toFixed(1))
+            });
+            logQuoteCompareRestore("quote_compare.restore.chart_data_ms", {
+                durationMs: 0
+            });
+            logQuoteCompareRestore("quote_compare.restore.chart_render_ms", {
+                durationMs: 0
+            });
+        }
+        if (state.deferPersistUntilStablePaint && state.currentScreen === "analyze") {
+            // Defer the first large snapshot rewrite until after stable paint on restore.
+        } else {
+            scheduleQuoteCompareSessionPersist(state, elements);
+        }
         console.info("[compare prices render timing]", {
             screen: state.currentScreen,
             renderPassCount: state.renderPassCount,
@@ -6960,13 +7111,29 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
                 currentScreen: state.currentScreen,
                 durationMs: Number((performance.now() - renderStartedAt).toFixed(1))
             });
-            if (state.currentScreen === "analyze") {
+            if (state.currentScreen === "analyze" && state.isRestoringAnalyze) {
                 requestAnimationFrame(() => {
+                    logQuoteCompareRestore("quote_compare.restore.first_visible_paint", {
+                        totalInitMs: Number((performance.now() - initStartedAt).toFixed(1)),
+                        renderPassCount: state.renderPassCount,
+                        restoreRenderPassCount: Number(state.restoreRenderPassCount || 0)
+                    });
                     console.info("[compare prices step3 visible]", {
                         totalInitMs: Number((performance.now() - initStartedAt).toFixed(1)),
                         restoreRenderPassCount: Number(state.restoreRenderPassCount || 0)
                     });
-                    state.isRestoringAnalyze = false;
+                    requestAnimationFrame(() => {
+                        logQuoteCompareRestore("quote_compare.restore.stable_paint", {
+                            totalInitMs: Number((performance.now() - initStartedAt).toFixed(1)),
+                            renderPassCount: state.renderPassCount,
+                            restoreRenderPassCount: Number(state.restoreRenderPassCount || 0)
+                        });
+                        if (state.deferPersistUntilStablePaint) {
+                            state.deferPersistUntilStablePaint = false;
+                            scheduleQuoteCompareSessionPersist(state, elements);
+                        }
+                        state.isRestoringAnalyze = false;
+                    });
                 });
             }
             if (forceStartHome) {
