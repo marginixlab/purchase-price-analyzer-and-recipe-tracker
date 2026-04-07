@@ -1741,6 +1741,17 @@ def normalize_text_value(value: Any) -> str:
     return str(normalized_value).strip()
 
 
+def normalize_comparison_product_name(value: Any) -> str:
+    normalized_value = normalize_text_value(value)
+    if not normalized_value:
+        return ""
+    return re.sub(r"\s+", " ", normalized_value).strip().lower()
+
+
+def normalize_comparison_unit(value: Any) -> str:
+    return normalize_text_value(value).lower()
+
+
 def ensure_recipes_file(user_id: int | str | None = None) -> None:
     recipes_path = get_user_recipes_path(get_storage_user_id(user_id))
     if recipes_path.exists():
@@ -3245,7 +3256,11 @@ def calculate_quote_comparison(comparison: dict[str, Any]) -> dict[str, Any]:
         }
         bid_breakdown.append(enriched_bid)
         currency_set.add(enriched_bid.get("currency") or "USD")
-        product_groups.setdefault((enriched_bid["product_name"], enriched_bid["unit"]), []).append(enriched_bid)
+        comparison_key = (
+            normalize_comparison_product_name(enriched_bid.get("product_name")),
+            normalize_comparison_unit(enriched_bid.get("unit"))
+        )
+        product_groups.setdefault(comparison_key, []).append(enriched_bid)
         lowest_key = (float(enriched_bid["total_price"]), str(enriched_bid["supplier_name"]).lower())
         if lowest_price_key is None or lowest_key < lowest_price_key:
             lowest_price_key = lowest_key
@@ -3267,10 +3282,11 @@ def calculate_quote_comparison(comparison: dict[str, Any]) -> dict[str, Any]:
     group_products_started_at = perf_counter()
     grouped_products: list[dict[str, Any]] = []
     supplier_wins: dict[str, dict[str, Any]] = {}
-    for (product_name, unit), offers in sorted(
+    for comparison_key, offers in sorted(
         product_groups.items(),
-        key=lambda item: (item[0][0].lower(), item[0][1].lower())
+        key=lambda item: item[0]
     ):
+        product_name, unit = comparison_key
         sorted_offers = sorted(
             offers,
             key=lambda item: (
@@ -3301,8 +3317,8 @@ def calculate_quote_comparison(comparison: dict[str, Any]) -> dict[str, Any]:
         supplier_entry["wins"] += 1
         supplier_entry["total_best_value"] += best_offer["total_price"]
         grouped_products.append({
-            "product_name": product_name,
-            "unit": unit,
+            "product_name": best_offer["product_name"],
+            "unit": best_offer["unit"],
             "offer_count": len(sorted_offers),
             "best_offer_supplier": best_offer["supplier_name"],
             "best_offer_value": best_offer["total_price"],
@@ -3753,7 +3769,10 @@ def build_analysis_scope_summary_from_comparison(
         unit = str(bid.get("unit") or "").strip()
         supplier_name = str(bid.get("supplier_name") or "").strip()
         if product_name:
-            product_keys.add((product_name, unit))
+            product_keys.add((
+                normalize_comparison_product_name(product_name),
+                normalize_comparison_unit(unit)
+            ))
         if supplier_name:
             suppliers.add(supplier_name)
         raw_bid_date = str(bid.get("date") or "").strip()
@@ -4986,10 +5005,12 @@ def analyze_dataframe(
         working_df["upload_id"] = working_df["upload_id"].fillna("").astype(str).str.strip()
     if "row_id" in working_df.columns:
         working_df["row_id"] = working_df["row_id"].fillna("").astype(str).str.strip()
+    working_df["__comparison_product_name"] = working_df["Product Name"].map(normalize_comparison_product_name)
+    working_df["__comparison_unit"] = working_df["Unit"].map(normalize_comparison_unit)
     log_perf("analyze.clean_types", cleaning_started_at)
 
     grouping_started_at = perf_counter()
-    grouping_columns = ["Product Name", "Unit"]
+    grouping_columns = ["__comparison_product_name", "__comparison_unit"]
     working_df["Average Price"] = working_df.groupby(grouping_columns)["Unit Price"].transform("mean")
     log_perf("analyze.groupby_average", grouping_started_at)
 
@@ -4999,7 +5020,7 @@ def analyze_dataframe(
     working_df["Overpay"] = (working_df["Unit Price"] - working_df["Average Price"]).clip(lower=0)
     working_df["Savings Opportunity"] = working_df["Overpay"] * working_df["Quantity"]
     working_df["Total Amount"] = working_df["Unit Price"] * working_df["Quantity"]
-    working_df["Product Key"] = working_df["Product Name"] + " | " + working_df["Unit"]
+    working_df["Product Key"] = working_df["__comparison_product_name"] + " | " + working_df["__comparison_unit"]
     working_df["Product Display"] = working_df["Product Name"] + " (" + working_df["Unit"] + ")"
     working_df["Status"] = "Normal"
     overpay_pct = working_df["Overpay Pct"]

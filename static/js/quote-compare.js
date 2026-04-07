@@ -736,7 +736,7 @@
     }
 
     function getHistorySeriesKey(productName, unit) {
-        return `${String(productName || "").trim()}__${String(unit || "").trim()}`;
+        return `${normalizeHistoryComparisonProductName(productName)}__${normalizeHistoryComparisonUnit(unit)}`;
     }
 
     function getHistorySeriesRows(rows, seriesKey) {
@@ -2946,6 +2946,14 @@
 
     function normalizeHistoryText(value) {
         return String(value == null ? "" : value).trim();
+    }
+
+    function normalizeHistoryComparisonProductName(value) {
+        return normalizeHistoryText(value).replace(/\s+/g, " ").toLowerCase();
+    }
+
+    function normalizeHistoryComparisonUnit(value) {
+        return normalizeHistoryText(value).toLowerCase();
     }
 
     function isValidHistoryDimension(value) {
