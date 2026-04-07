@@ -522,6 +522,7 @@
             deleteTargetRecipeId: null,
             isDeleting: false,
             openProductDropdownIndex: null,
+            activeProductDropdownIndex: -1,
             packageConversionMap: new Map(),
             recipeLibraryOpen: false,
             recipeLibrarySearch: "",
@@ -779,6 +780,62 @@
         state.draft.ingredients[index].purchase_size = 1;
         state.draft.ingredients[index].purchase_base_unit = "";
         state.openProductDropdownIndex = null;
+        state.activeProductDropdownIndex = -1;
+    }
+
+    function resetActiveProductDropdownIndex(state) {
+        state.activeProductDropdownIndex = -1;
+    }
+
+    function applyProductSelection(state, index, productName) {
+        if (Number.isNaN(index) || !state.draft.ingredients[index]) {
+            return false;
+        }
+        state.draft.ingredients[index].product_name = productName;
+        state.draft.ingredients[index].purchase_unit = getSourcePurchaseUnitForProduct(state, productName)
+            || normalizeUnit(state.draft.ingredients[index].purchase_unit || "");
+        const rememberedConversion = getRememberedPackageConversion(
+            state,
+            productName,
+            state.draft.ingredients[index].purchase_unit
+        );
+        state.draft.ingredients[index].purchase_base_unit = resolvePurchaseBaseUnit(
+            state.draft.ingredients[index].purchase_unit,
+            state.draft.ingredients[index].unit,
+            rememberedConversion?.purchase_base_unit || state.draft.ingredients[index].purchase_base_unit
+        );
+        const nextUsageUnit = normalizeUnit(state.draft.ingredients[index].unit);
+        const compatibleUsageType = getUnitType(nextUsageUnit) === getUnitType(state.draft.ingredients[index].purchase_base_unit);
+        state.draft.ingredients[index].unit = nextUsageUnit && compatibleUsageType
+            ? nextUsageUnit
+            : normalizeUnit(state.draft.ingredients[index].purchase_base_unit || state.draft.ingredients[index].purchase_unit || "");
+        state.draft.ingredients[index].purchase_size = inferPurchaseSize(
+            state.draft.ingredients[index].purchase_unit,
+            state.draft.ingredients[index].purchase_base_unit || state.draft.ingredients[index].unit
+        );
+        if (rememberedConversion?.purchase_size > 0) {
+            state.draft.ingredients[index].purchase_size = rememberedConversion.purchase_size;
+        }
+        rememberPackageConversion(
+            state,
+            state.draft.ingredients[index].product_name,
+            state.draft.ingredients[index].purchase_unit,
+            state.draft.ingredients[index].purchase_size,
+            state.draft.ingredients[index].purchase_base_unit
+        );
+        state.openProductDropdownIndex = null;
+        resetActiveProductDropdownIndex(state);
+        return true;
+    }
+
+    function scrollActiveProductOptionIntoView(elements, state) {
+        if (!elements?.recipeIngredientsList || state.openProductDropdownIndex === null || state.activeProductDropdownIndex < 0) {
+            return;
+        }
+        const activeOption = elements.recipeIngredientsList.querySelector(
+            `.recipe-product-dropdown[data-product-dropdown="${state.openProductDropdownIndex}"] .recipe-product-option[data-option-index="${state.activeProductDropdownIndex}"]`
+        );
+        activeOption?.scrollIntoView({ block: "nearest" });
     }
 
     function clearInvalidIngredientBindings(state) {
@@ -922,14 +979,18 @@
             const productResults = productDropdownOpen
                 ? getFilteredProducts(state, normalizedIngredient.product_name)
                 : [];
+            if (productDropdownOpen && state.activeProductDropdownIndex >= productResults.length) {
+                resetActiveProductDropdownIndex(state);
+            }
             const productOptions = productDropdownOpen
                 ? productResults
-                    .map((product) => `
+                    .map((product, productIndex) => `
                         <button
                             type="button"
-                            class="recipe-product-option"
+                            class="recipe-product-option${state.activeProductDropdownIndex === productIndex ? " active" : ""}"
                             data-select-product="${escapeHtml(product.product_name)}"
                             data-index="${index}"
+                            data-option-index="${productIndex}"
                         >${escapeHtml(product.product_name)}</button>
                     `)
                     .join("")
@@ -1047,6 +1108,8 @@
                 </div>
             `;
         }).join("");
+
+        scrollActiveProductOptionIntoView(elements, state);
     }
 
     function renderRecipeList(elements, state) {
@@ -1369,6 +1432,7 @@
         state.deleteConfirmVisible = false;
         state.deleteTargetRecipeId = null;
         state.openProductDropdownIndex = null;
+        resetActiveProductDropdownIndex(state);
         state.recipeLibraryOpen = false;
         state.draft = createEmptyRecipe();
         state.calculation = null;
@@ -1532,6 +1596,7 @@
             state.isDeleting = false;
             state.recipeLibraryOpen = false;
             state.openProductDropdownIndex = null;
+            resetActiveProductDropdownIndex(state);
             state.draft = createEmptyRecipe();
             state.calculation = null;
             state.sellingPrice = "";
@@ -1685,6 +1750,7 @@
         state.deleteConfirmVisible = false;
         state.deleteTargetRecipeId = null;
         state.openProductDropdownIndex = null;
+        resetActiveProductDropdownIndex(state);
         state.recipeLibraryOpen = false;
         state.draft = normalizeRecipeDraft(recipe, state);
         state.calculation = {
@@ -1711,6 +1777,7 @@
         state.deleteConfirmVisible = false;
         state.deleteTargetRecipeId = null;
         state.openProductDropdownIndex = null;
+        resetActiveProductDropdownIndex(state);
         state.draft = createEmptyRecipe();
         state.calculation = null;
         state.sellingPrice = "";
@@ -1757,6 +1824,7 @@
             state.deleteConfirmVisible = false;
             state.deleteTargetRecipeId = null;
             state.openProductDropdownIndex = null;
+            resetActiveProductDropdownIndex(state);
             state.recipeLibraryOpen = false;
             state.draft = normalizeRecipeDraft(data.recipe || payload, state);
             state.calculation = {
@@ -1901,6 +1969,7 @@
             elements.addRecipeIngredientButton.addEventListener("click", () => {
                 state.draft.ingredients.push(createEmptyIngredient());
                 state.openProductDropdownIndex = state.draft.ingredients.length - 1;
+                resetActiveProductDropdownIndex(state);
                 renderIngredients(elements, state);
             });
         }
@@ -1924,42 +1993,9 @@
                 if (productOptionButton) {
                     const index = Number(productOptionButton.dataset.index);
                     const productName = productOptionButton.dataset.selectProduct || "";
-                    if (Number.isNaN(index) || !state.draft.ingredients[index]) {
+                    if (!applyProductSelection(state, index, productName)) {
                         return;
                     }
-                    state.draft.ingredients[index].product_name = productName;
-                    state.draft.ingredients[index].purchase_unit = getSourcePurchaseUnitForProduct(state, productName)
-                        || normalizeUnit(state.draft.ingredients[index].purchase_unit || "");
-                    const rememberedConversion = getRememberedPackageConversion(
-                        state,
-                        productName,
-                        state.draft.ingredients[index].purchase_unit
-                    );
-                    state.draft.ingredients[index].purchase_base_unit = resolvePurchaseBaseUnit(
-                        state.draft.ingredients[index].purchase_unit,
-                        state.draft.ingredients[index].unit,
-                        rememberedConversion?.purchase_base_unit || state.draft.ingredients[index].purchase_base_unit
-                    );
-                    const nextUsageUnit = normalizeUnit(state.draft.ingredients[index].unit);
-                    const compatibleUsageType = getUnitType(nextUsageUnit) === getUnitType(state.draft.ingredients[index].purchase_base_unit);
-                    state.draft.ingredients[index].unit = nextUsageUnit && compatibleUsageType
-                        ? nextUsageUnit
-                        : normalizeUnit(state.draft.ingredients[index].purchase_base_unit || state.draft.ingredients[index].purchase_unit || "");
-                    state.draft.ingredients[index].purchase_size = inferPurchaseSize(
-                        state.draft.ingredients[index].purchase_unit,
-                        state.draft.ingredients[index].purchase_base_unit || state.draft.ingredients[index].unit
-                    );
-                    if (rememberedConversion?.purchase_size > 0) {
-                        state.draft.ingredients[index].purchase_size = rememberedConversion.purchase_size;
-                    }
-                    rememberPackageConversion(
-                        state,
-                        state.draft.ingredients[index].product_name,
-                        state.draft.ingredients[index].purchase_unit,
-                        state.draft.ingredients[index].purchase_size,
-                        state.draft.ingredients[index].purchase_base_unit
-                    );
-                    state.openProductDropdownIndex = null;
                     renderIngredients(elements, state);
                     scheduleCalculation(elements, state);
                     return;
@@ -1975,6 +2011,7 @@
                     state.draft.ingredients.push(createEmptyIngredient());
                 }
                 state.openProductDropdownIndex = null;
+                resetActiveProductDropdownIndex(state);
                 renderIngredients(elements, state);
                 scheduleCalculation(elements, state);
             });
@@ -1990,6 +2027,7 @@
                     : event.target.value;
                 if (field === "product_name") {
                     state.openProductDropdownIndex = index;
+                    resetActiveProductDropdownIndex(state);
                     renderIngredients(elements, state);
                     const activeInput = elements.recipeIngredientsList.querySelector(`.recipe-product-search-input[data-index="${index}"]`);
                     if (activeInput) {
@@ -2024,12 +2062,63 @@
                     return;
                 }
                 state.openProductDropdownIndex = index;
+                resetActiveProductDropdownIndex(state);
                 renderIngredients(elements, state);
                 const activeInput = elements.recipeIngredientsList.querySelector(`.recipe-product-search-input[data-index="${index}"]`);
                 if (activeInput) {
                     const cursorAt = String(state.draft.ingredients[index]?.product_name || "").length;
                     activeInput.focus();
                     activeInput.setSelectionRange(cursorAt, cursorAt);
+                }
+            });
+
+            elements.recipeIngredientsList.addEventListener("keydown", (event) => {
+                const productInput = event.target.closest('.recipe-product-search-input[data-field="product_name"]');
+                if (!productInput) {
+                    return;
+                }
+                const index = Number(productInput.dataset.index);
+                if (Number.isNaN(index) || !state.draft.ingredients[index]) {
+                    return;
+                }
+                const productResults = getFilteredProducts(state, state.draft.ingredients[index].product_name);
+                if (event.key === "ArrowDown") {
+                    event.preventDefault();
+                    state.openProductDropdownIndex = index;
+                    if (productResults.length) {
+                        state.activeProductDropdownIndex = Math.min(state.activeProductDropdownIndex + 1, productResults.length - 1);
+                    } else {
+                        resetActiveProductDropdownIndex(state);
+                    }
+                    renderIngredients(elements, state);
+                    elements.recipeIngredientsList.querySelector(`.recipe-product-search-input[data-index="${index}"]`)?.focus();
+                    return;
+                }
+                if (event.key === "ArrowUp") {
+                    event.preventDefault();
+                    state.openProductDropdownIndex = index;
+                    if (productResults.length) {
+                        state.activeProductDropdownIndex = state.activeProductDropdownIndex <= 0
+                            ? 0
+                            : state.activeProductDropdownIndex - 1;
+                    } else {
+                        resetActiveProductDropdownIndex(state);
+                    }
+                    renderIngredients(elements, state);
+                    elements.recipeIngredientsList.querySelector(`.recipe-product-search-input[data-index="${index}"]`)?.focus();
+                    return;
+                }
+                if (event.key === "Enter" && state.openProductDropdownIndex === index && state.activeProductDropdownIndex >= 0) {
+                    const activeProduct = productResults[state.activeProductDropdownIndex];
+                    if (!activeProduct) {
+                        return;
+                    }
+                    event.preventDefault();
+                    if (!applyProductSelection(state, index, activeProduct.product_name)) {
+                        return;
+                    }
+                    renderIngredients(elements, state);
+                    scheduleCalculation(elements, state);
                 }
             });
 
@@ -2050,6 +2139,7 @@
                         state.draft.ingredients[index].purchase_size = 1;
                         state.draft.ingredients[index].purchase_base_unit = "";
                         state.openProductDropdownIndex = index;
+                        resetActiveProductDropdownIndex(state);
                         renderIngredients(elements, state);
                         return;
                     }
@@ -2092,6 +2182,7 @@
                         state.draft.ingredients[index].purchase_base_unit
                     );
                     state.openProductDropdownIndex = null;
+                    resetActiveProductDropdownIndex(state);
                     renderIngredients(elements, state);
                 }
                 if (field === "unit" || field === "purchase_base_unit") {
@@ -2322,6 +2413,7 @@
                     return;
                 }
                 state.openProductDropdownIndex = null;
+                resetActiveProductDropdownIndex(state);
                 renderIngredients(elements, state);
             });
         }
