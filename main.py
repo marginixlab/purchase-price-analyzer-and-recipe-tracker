@@ -2030,22 +2030,49 @@ def deduplicate_analysis_frame(
     frame: pd.DataFrame,
     *,
     keep_dedupe_key: bool = False,
-    copy_frame: bool = True
+    copy_frame: bool = True,
+    is_deduplicated: bool = False
 ) -> pd.DataFrame:
     if frame.empty:
         return frame.copy()
-
-    recipe_bootstrap_metrics = RECIPE_BOOTSTRAP_METRICS_CONTEXT.get()
-    if isinstance(recipe_bootstrap_metrics, dict):
-        recipe_bootstrap_metrics["deduplicate_call_count"] = int(recipe_bootstrap_metrics.get("deduplicate_call_count") or 0) + 1
 
     dedupe_started_at = perf_counter()
     dedupe_substeps: dict[str, Any] = {
         "input_rows": int(len(frame.index)),
         "input_columns": int(len(frame.columns)),
         "copy_frame": copy_frame,
-        "keep_dedupe_key": keep_dedupe_key
+        "keep_dedupe_key": keep_dedupe_key,
+        "is_deduplicated": is_deduplicated
     }
+    skip_reason = ""
+    if is_deduplicated:
+        skip_reason = "caller_marked_deduplicated"
+    elif "_analysis_dedupe_key" in frame.columns:
+        dedupe_key_series = frame["_analysis_dedupe_key"].fillna("").astype("string")
+        if dedupe_key_series.astype(bool).all() and dedupe_key_series.nunique(dropna=False) == len(frame.index):
+            skip_reason = "existing_unique_dedupe_key"
+
+    if skip_reason:
+        deduped_frame = frame.copy() if copy_frame else frame
+        if keep_dedupe_key and "_analysis_dedupe_key" not in deduped_frame.columns:
+            build_key_started_at = perf_counter()
+            deduped_frame["_analysis_dedupe_key"] = build_analysis_dedupe_key_series(deduped_frame)
+            dedupe_substeps["build_key_ms"] = round((perf_counter() - build_key_started_at) * 1000, 1)
+        elif not keep_dedupe_key and "_analysis_dedupe_key" in deduped_frame.columns:
+            drop_key_started_at = perf_counter()
+            deduped_frame = deduped_frame.drop(columns=["_analysis_dedupe_key"], errors="ignore")
+            dedupe_substeps["drop_key_ms"] = round((perf_counter() - drop_key_started_at) * 1000, 1)
+        dedupe_substeps["deduplicate_skipped_reason"] = skip_reason
+        dedupe_substeps["output_rows"] = int(len(deduped_frame.index))
+        dedupe_substeps["removed_rows"] = 0
+        dedupe_substeps["total_ms"] = round((perf_counter() - dedupe_started_at) * 1000, 1)
+        log_perf_details("quote_compare.deduplicate_results.substeps", **dedupe_substeps)
+        return deduped_frame
+
+    recipe_bootstrap_metrics = RECIPE_BOOTSTRAP_METRICS_CONTEXT.get()
+    if isinstance(recipe_bootstrap_metrics, dict):
+        recipe_bootstrap_metrics["deduplicate_call_count"] = int(recipe_bootstrap_metrics.get("deduplicate_call_count") or 0) + 1
+
     deduped_frame = frame.copy() if copy_frame else frame
     normalize_started_at = perf_counter()
     if "Date" in deduped_frame.columns:
@@ -2117,7 +2144,7 @@ def load_current_upload_analysis_frame() -> pd.DataFrame:
         return CURRENT_UPLOAD_ANALYSIS_FRAME_CACHE["frame"].copy()
 
     frame = pd.read_csv(latest_results_path)
-    deduplicated_frame = deduplicate_analysis_frame(frame)
+    deduplicated_frame = deduplicate_analysis_frame(frame, is_deduplicated=True)
     CURRENT_UPLOAD_ANALYSIS_FRAME_CACHE["signature"] = cache_signature
     CURRENT_UPLOAD_ANALYSIS_FRAME_CACHE["frame"] = deduplicated_frame
     return deduplicated_frame.copy()
