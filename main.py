@@ -1810,6 +1810,15 @@ def ensure_analysis_history_file(user_id: int | str | None = None) -> None:
 def reset_workspace_data_store(user_id: int | str | None = None) -> None:
     resolved_user_id = get_storage_user_id(user_id)
     user_storage_root = get_user_storage_root(resolved_user_id)
+    active_session_path = get_user_active_quote_compare_session_path(resolved_user_id)
+    latest_results_path = get_current_latest_results_path(resolved_user_id)
+    analysis_history_path = get_user_analysis_history_path(resolved_user_id)
+    reset_details = {
+        "user_id": resolved_user_id,
+        "cleared_active_session": active_session_path.exists(),
+        "cleared_analysis_file": latest_results_path.exists(),
+        "cleared_analysis_history": analysis_history_path.exists()
+    }
 
     if user_storage_root.exists():
         shutil.rmtree(user_storage_root, ignore_errors=True)
@@ -1821,6 +1830,20 @@ def reset_workspace_data_store(user_id: int | str | None = None) -> None:
     ANALYSIS_HISTORY_CACHE["store"] = None
     LATEST_ANALYSIS_CACHE["signature"] = None
     LATEST_ANALYSIS_CACHE["context"] = None
+    CURRENT_UPLOAD_ANALYSIS_FRAME_CACHE["signature"] = None
+    CURRENT_UPLOAD_ANALYSIS_FRAME_CACHE["frame"] = None
+    RECIPES_STORE_CACHE["signature"] = None
+    RECIPES_STORE_CACHE["store"] = None
+    RECIPE_ANALYSIS_CACHE["signature"] = None
+    RECIPE_ANALYSIS_CACHE["frame"] = None
+    RECIPE_ANALYSIS_CACHE["product_catalog"] = None
+    RECIPE_ANALYSIS_CACHE["pricing_lookup"] = None
+    LATEST_ANALYSIS_UPLOAD_META_CACHE["signature"] = None
+    LATEST_ANALYSIS_UPLOAD_META_CACHE["meta"] = None
+    RECIPES_BOOTSTRAP_RESPONSE_CACHE["signature"] = None
+    RECIPES_BOOTSTRAP_RESPONSE_CACHE["response_json"] = None
+    log_perf_details("reset.cleared_active_session", cleared=reset_details["cleared_active_session"], user_id=resolved_user_id)
+    log_perf_details("reset.cleared_analysis_file", cleared=reset_details["cleared_analysis_file"], user_id=resolved_user_id)
 
 
 def load_quote_comparisons_store(user_id: int | str | None = None) -> dict[str, Any]:
@@ -5508,6 +5531,8 @@ def create_app() -> FastAPI:
         response_json = json.dumps(response_payload, ensure_ascii=False, separators=(",", ":"))
         fast_path_details["response_bytes"] = len(response_json.encode("utf-8"))
         fast_path_details["total_ms"] = round((perf_counter() - request_started_at) * 1000, 1)
+        if frame.empty:
+            log_perf_details("bootstrap.empty_state_detected", endpoint="analysis.scope_bootstrap", reason="no_analysis_frame")
         log_perf_details("analysis.scope_bootstrap.fast_path", **fast_path_details)
         log_perf_details("bootstrap_overlap_reason", endpoint="analysis.scope_bootstrap", reason=overlap_reason)
         log_perf_details("step3_restore_endpoint_selection", endpoint="analysis.scope_bootstrap", selection=endpoint_selection)
@@ -5728,6 +5753,8 @@ def create_app() -> FastAPI:
             endpoint="quote_compare.bootstrap",
             selection=endpoint_selection
         )
+        if not active_session and not comparisons:
+            log_perf_details("bootstrap.empty_state_detected", endpoint="quote_compare.bootstrap", reason="no_active_session_or_comparisons")
         logger.info(
             "[Compare Prices bootstrap timing] session_id=%s include_comparisons=%s total_ms=%.1f store_load_ms=%.1f comparisons_ms=%.1f active_session_ms=%.1f response_serialize_ms=%.1f response_bytes=%s active_session_bytes=%s comparisons_bytes=%s active_session_comparison_bytes=%s active_session_evaluation_bytes=%s active_session_headers_bytes=%s active_session_field_reviews_bytes=%s comparisons=%s",
             bool(session_id),
