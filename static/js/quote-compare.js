@@ -4974,37 +4974,34 @@
         if (memo && memo.cardsRef === sourceCards && Array.isArray(memo.topOpportunityCards)) {
             return memo.topOpportunityCards;
         }
-        const directSavingsCandidates = sourceCards.filter((card) => Number(card.savingsAmount || 0) > 0);
-        const meaningfulCandidates = sourceCards.filter((card) => {
-            if (Number(card.savingsAmount || 0) > 0) return true;
-            if (Number(card.potentialSavingsAmount || 0) > 0) return true;
-            return card.decisionType === "lower-historical-price-with-current-supplier"
-                || card.decisionType === "lower-price-with-another-supplier";
+        const fullTableSourceCards = state
+            ? getFilteredAnalysisCards(state, sourceCards)
+            : sourceCards;
+        const excludedReasonCounts = {
+            no_full_table_savings: 0
+        };
+        const candidateCards = fullTableSourceCards.filter((card) => {
+            const viewModel = getAnalysisTableViewModel(card);
+            if (viewModel.hasSavings && Number(viewModel.savingsAmount || 0) > 0) {
+                return true;
+            }
+            excludedReasonCounts.no_full_table_savings += 1;
+            return false;
         });
-        const getSavingsSortValue = (card) => Number(card?.savingsAmount || 0);
-        const rankedCandidates = [...meaningfulCandidates]
+        const getSavingsSortValue = (card) => Number(getAnalysisTableViewModel(card).savingsAmount || 0);
+        const rankedCandidates = [...candidateCards]
             .sort((left, right) => {
                 const savingsDelta = getSavingsSortValue(right) - getSavingsSortValue(left);
                 if (savingsDelta !== 0) return savingsDelta;
                 return String(left.productName || "").localeCompare(String(right.productName || ""));
             });
-        const topDirectSavingsCards = rankedCandidates
-            .filter((card) => Number(card.savingsAmount || 0) > 0)
-            .slice(0, 10);
-        const fallbackUsed = topDirectSavingsCards.length < Math.min(10, rankedCandidates.length);
-        const opportunityCards = topDirectSavingsCards.length
-            ? (topDirectSavingsCards.length >= 10
-                ? topDirectSavingsCards
-                : rankedCandidates.slice(0, 10))
-            : rankedCandidates.slice(0, 10);
+        const opportunityCards = rankedCandidates.slice(0, 10);
         console.info("[PERF] quote_compare.top_savings.selection_mode", {
-            mode: topDirectSavingsCards.length >= 10
-                ? "top_10_direct_savings"
-                : (topDirectSavingsCards.length > 0 ? "top_10_with_meaningful_fallback" : "meaningful_fallback_only")
+            mode: "full_table_candidate_pool_top_10_savings_desc"
         });
         console.info("[PERF] quote_compare.top_savings.total_candidates", {
-            directSavingsCandidates: directSavingsCandidates.length,
-            meaningfulCandidates: meaningfulCandidates.length,
+            directSavingsCandidates: candidateCards.length,
+            meaningfulCandidates: candidateCards.length,
             totalCards: sourceCards.length
         });
         console.info("[PERF] quote_compare.top_savings.threshold_applied", {
@@ -5012,12 +5009,26 @@
             threshold: 0
         });
         console.info("[PERF] quote_compare.top_savings.fallback_used", {
-            used: fallbackUsed,
-            renderedFromFallbackOnly: topDirectSavingsCards.length === 0 && opportunityCards.length > 0
+            used: false,
+            renderedFromFallbackOnly: false
         });
         console.info("[PERF] quote_compare.top_savings.rendered_count", {
             count: opportunityCards.length
         });
+        console.info("[PERF] quote_compare.top_cards.source_count", {
+            sourceCount: fullTableSourceCards.length,
+            candidateCount: candidateCards.length
+        });
+        console.info("[PERF] quote_compare.top_cards.source_matches_full_table", {
+            value: true
+        });
+        console.info("[PERF] quote_compare.top_cards.max_candidate_value", {
+            value: candidateCards.length ? Math.max(...candidateCards.map((card) => getSavingsSortValue(card))) : 0
+        });
+        console.info("[PERF] quote_compare.top_cards.top_5_values", {
+            values: rankedCandidates.slice(0, 5).map((card) => getSavingsSortValue(card))
+        });
+        console.info("[PERF] quote_compare.top_cards.excluded_reason_counts", excludedReasonCounts);
         const renderedSavingsValues = opportunityCards.map((card) => getSavingsSortValue(card));
         console.info("[PERF] quote_compare.top_savings.max_value", {
             value: renderedSavingsValues.length ? Math.max(...renderedSavingsValues) : 0
