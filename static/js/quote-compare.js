@@ -1267,6 +1267,7 @@
             historyDetailModalSeries: state.historyDetailModalSeries,
             savedComparisons: [],
             collapsedDecisionCards: state.collapsedDecisionCards,
+            spotlightTableFilterKey: state.spotlightTableFilterKey,
             selectedAnalysisRowKey: state.selectedAnalysisRowKey,
             analysisTableFilter: state.analysisTableFilter,
             analysisTableSearch: state.analysisTableSearch,
@@ -1436,6 +1437,7 @@
         state.parseError = "";
         state.isParsing = false;
         state.isSubmitting = false;
+        state.spotlightTableFilterKey = "";
         state.selectedAnalysisRowKey = "";
         state.currentScreen = "start";
         state.currentStep = 1;
@@ -1525,6 +1527,7 @@
         state.historyDetailModalSeries = snapshot.historyDetailModalSeries || state.historyDetailModalSeries;
         state.savedComparisons = Array.isArray(snapshot.savedComparisons) ? snapshot.savedComparisons : state.savedComparisons;
         state.collapsedDecisionCards = snapshot.collapsedDecisionCards || state.collapsedDecisionCards;
+        state.spotlightTableFilterKey = snapshot.spotlightTableFilterKey || state.spotlightTableFilterKey;
         state.selectedAnalysisRowKey = snapshot.currentScreen === "analyze"
             ? ""
             : (snapshot.selectedAnalysisRowKey || state.selectedAnalysisRowKey);
@@ -1855,6 +1858,16 @@
                 dateFrom: "",
                 dateTo: ""
             },
+            historyFilterUi: {
+                queries: {
+                    product: "",
+                    supplier: ""
+                },
+                selectedDisplayValues: {
+                    product: "",
+                    supplier: ""
+                }
+            },
             persistSessionTimer: null,
             persistSessionIdleHandle: 0,
             analysisFilterTimer: null,
@@ -1862,6 +1875,7 @@
             historyMemo: null,
             analysisMemo: null,
             historyViewport: { start: 0, end: 120, scrollTop: 0 },
+            spotlightTableFilterKey: "",
             progressPhase: "",
             restorePerf: null,
             deferPersistUntilStablePaint: false,
@@ -2299,6 +2313,10 @@
         return `${String(productName || "").trim()}__${String(unit || "").trim()}`;
     }
 
+    function getNormalizedProductUnitKey(productName, unit) {
+        return `${normalizeHistoryComparisonProductName(productName)}__${normalizeHistoryComparisonUnit(unit)}`;
+    }
+
     function isSameOffer(left, right) {
         if (!left || !right) return false;
         return Number(left._sourceIndex || -1) === Number(right._sourceIndex || -2);
@@ -2399,7 +2417,7 @@
                 unit_price: Number(bid.unit_price || 0),
                 total_price: Number(bid.total_price || 0) || Number(bid.quantity || 0) * Number(bid.unit_price || 0)
             };
-            const key = getProductUnitKey(product, unit);
+            const key = getNormalizedProductUnitKey(product, unit);
             if (!grouped.has(key)) grouped.set(key, []);
             grouped.get(key).push(normalizedBid);
         });
@@ -2641,7 +2659,9 @@
 
         bids.forEach((bid) => {
             if (bid.supplier_name) suppliers.add(String(bid.supplier_name).trim());
-            if (bid.product_name) products.add(String(bid.product_name).trim());
+            if (bid.product_name) {
+                products.add(getNormalizedProductUnitKey(bid.product_name, bid.unit));
+            }
         });
         console.info("[DEBUG] quote_compare.products_analyzed_count_check", {
             uniqueProductNameCount: new Set(
@@ -2956,6 +2976,27 @@
         return normalizeHistoryText(value).toLowerCase();
     }
 
+    function normalizeUiSelectionMatch(value) {
+        return normalizeHistoryText(value).replace(/\s+/g, " ").toLowerCase();
+    }
+
+    function resolveUiSelectionDisplayValue(options, selectedValue, preferredDisplayValue = "") {
+        const optionList = Array.isArray(options) ? options : [];
+        const preferred = normalizeHistoryText(preferredDisplayValue);
+        if (preferred && optionList.includes(preferred)) {
+            return preferred;
+        }
+        const exactValue = normalizeHistoryText(selectedValue);
+        if (exactValue && optionList.includes(exactValue)) {
+            return exactValue;
+        }
+        const normalizedValue = normalizeUiSelectionMatch(selectedValue);
+        if (!normalizedValue) {
+            return "";
+        }
+        return optionList.find((option) => normalizeUiSelectionMatch(option) === normalizedValue) || "";
+    }
+
     function isValidHistoryDimension(value) {
         const normalized = normalizeHistoryText(value);
         return normalized !== "" && normalized !== "-";
@@ -3104,11 +3145,15 @@
             const productOptions = getHistoryFilterOptions(state, "product");
             if (state.historyFilters.product && !productOptions.includes(state.historyFilters.product)) {
                 state.historyFilters.product = "";
+                state.historyFilterUi.selectedDisplayValues.product = "";
+                state.historyFilterUi.queries.product = "";
                 didChange = true;
             }
             const supplierOptions = getHistoryFilterOptions(state, "supplier");
             if (state.historyFilters.supplier && !supplierOptions.includes(state.historyFilters.supplier)) {
                 state.historyFilters.supplier = "";
+                state.historyFilterUi.selectedDisplayValues.supplier = "";
+                state.historyFilterUi.queries.supplier = "";
                 didChange = true;
             }
             guard += 1;
@@ -3245,6 +3290,10 @@
         state.historyFilters.supplier = "";
         state.historyFilters.dateFrom = "";
         state.historyFilters.dateTo = "";
+        state.historyFilterUi.queries.product = "";
+        state.historyFilterUi.queries.supplier = "";
+        state.historyFilterUi.selectedDisplayValues.product = "";
+        state.historyFilterUi.selectedDisplayValues.supplier = "";
         clearHistorySelectedSeries(state);
         closeHistoryDetailModal(state);
         syncHistoryFilterDefaults(state);
@@ -3255,7 +3304,11 @@
         const normalizedUnit = normalizeHistoryText(unit);
         state.historyFocusedSeriesKey = getHistorySeriesKey(normalizedProduct, normalizedUnit);
         state.historyFilters.product = normalizedProduct;
+        state.historyFilterUi.selectedDisplayValues.product = normalizedProduct;
+        state.historyFilterUi.queries.product = normalizedProduct;
         state.historyFilters.supplier = "";
+        state.historyFilterUi.selectedDisplayValues.supplier = "";
+        state.historyFilterUi.queries.supplier = "";
         state.historyFilters.dateFrom = "";
         state.historyFilters.dateTo = "";
         clearHistorySelectedSeries(state);
@@ -4761,7 +4814,7 @@
             hasSavings: priceSpread.hasSavings,
             leftMeta: priceSpread.leftOffer?.quote_date ? formatDate(priceSpread.leftOffer.quote_date) : "Best observed context",
             leftPriceMeta: "Lowest unit price",
-            rightMeta: "Highest unit price",
+            rightMeta: priceSpread.rightOffer?.quote_date ? formatDate(priceSpread.rightOffer.quote_date) : "Highest observed context",
             rightPriceMeta: "Highest unit price",
             leftDetailLabel: "Lowest Price",
             rightDetailLabel: "Highest Price",
@@ -4823,11 +4876,13 @@
     function getFilteredAnalysisCards(state, cards) {
         const activeFilter = normalizeAnalysisTableFilter(state.analysisTableFilter);
         const searchTerm = String(state.analysisTableSearch || "").trim().toLowerCase();
+        const spotlightTableFilterKey = String(state.spotlightTableFilterKey || "").trim();
         const sourceCards = Array.isArray(cards) ? cards : [];
         const memo = getAnalysisMemo(state);
         const filteredKey = [
             activeFilter,
             searchTerm,
+            spotlightTableFilterKey,
             state.analysisTableSort?.key || "",
             state.analysisTableSort?.direction || "",
             sourceCards.length
@@ -4836,6 +4891,9 @@
             return memo.filteredCards;
         }
         let filteredCards = [...sourceCards].filter((card) => {
+            if (spotlightTableFilterKey && getNormalizedProductUnitKey(card.productName, card.unit) !== spotlightTableFilterKey) {
+                return false;
+            }
             const matchesFilter = activeFilter === "all" || getAnalysisFilterResultValue(card) === activeFilter;
             if (!matchesFilter) return false;
             if (!searchTerm) return true;
@@ -5026,22 +5084,72 @@
         if (memo && memo.cardsRef === sourceCards && Array.isArray(memo.topOpportunityCards)) {
             return memo.topOpportunityCards;
         }
-        const fullTableSourceCards = state
-            ? getFilteredAnalysisCards(state, sourceCards)
-            : sourceCards;
-        const excludedReasonCounts = {
-            no_full_table_savings: 0
-        };
-        const candidateCards = fullTableSourceCards.filter((card) => {
-            const viewModel = getAnalysisTableViewModel(card);
-            if (viewModel.hasSavings && Number(viewModel.savingsAmount || 0) > 0) {
-                return true;
+        const groupedCards = new Map();
+        sourceCards.forEach((card) => {
+            const normalizedGroupKey = getNormalizedProductUnitKey(card.productName, card.unit);
+            if (!normalizedGroupKey) {
+                return;
             }
-            excludedReasonCounts.no_full_table_savings += 1;
-            return false;
+            if (!groupedCards.has(normalizedGroupKey)) {
+                groupedCards.set(normalizedGroupKey, []);
+            }
+            groupedCards.get(normalizedGroupKey).push(card);
         });
-        const getSavingsSortValue = (card) => Number(card?.__fullTableSavingsAmount || getAnalysisTableViewModel(card).savingsAmount || 0);
-        const spotlightCandidates = candidateCards.map((card) => buildSpotlightCardFromFullTable(card));
+
+        const spotlightCandidates = Array.from(groupedCards.values()).map((groupCards) => {
+            const allOffers = groupCards.flatMap((card) => (
+                Array.isArray(card?.productSummary?.offers) && card.productSummary.offers.length
+                    ? card.productSummary.offers
+                    : []
+            ));
+            const offersByRecency = [...allOffers].sort(compareOffersByRecency);
+            const latestOffer = offersByRecency[0] || groupCards.slice().sort((left, right) => compareOffersByRecency(left.currentOffer || {}, right.currentOffer || {}))[0]?.currentOffer || null;
+            const lowestOffer = [...allOffers].sort(compareOffersByUnitPrice)[0] || null;
+            const displayProductName = latestOffer?.product_name || groupCards[0]?.productName || "";
+            const displayUnit = latestOffer?.unit || groupCards[0]?.unit || "";
+            const totalQuantity = allOffers.reduce((sum, offer) => sum + Number(offer?.quantity || 0), 0);
+            const latestUnitPrice = Number(latestOffer?.unit_price || 0);
+            const lowestUnitPrice = Number(lowestOffer?.unit_price || 0);
+            const savingsAmount = (latestUnitPrice - lowestUnitPrice) * totalQuantity;
+            const currentTotalBasis = latestUnitPrice * totalQuantity;
+            const savingsPercent = currentTotalBasis > 0 ? (savingsAmount / currentTotalBasis) * 100 : 0;
+            const productSummary = buildProductSummaryStats(allOffers, displayProductName, displayUnit, offersByRecency);
+            const representativeCard = groupCards.slice().sort((left, right) => compareOffersByRecency(left.currentOffer || {}, right.currentOffer || {}))[0] || groupCards[0] || {};
+            const hasValidAlternative = savingsAmount > 0;
+
+            return {
+                ...representativeCard,
+                productName: displayProductName,
+                unit: displayUnit,
+                quantity: totalQuantity,
+                totalQuantity,
+                quoteDate: latestOffer?.quote_date || representativeCard?.quoteDate || "",
+                currency: latestOffer?.currency || lowestOffer?.currency || representativeCard?.currency || "USD",
+                currentOffer: latestOffer,
+                currentOfferLabel: "Latest price",
+                referenceOffer: lowestOffer,
+                bestOffer: lowestOffer,
+                referenceOfferLabel: "Lowest observed price",
+                productSummary,
+                offers: offersByRecency,
+                lowestObservedOffer: lowestOffer,
+                highestObservedOffer: productSummary.highestObservedOffer || null,
+                savingsAmount,
+                savingsPercent,
+                hasValidAlternative,
+                statusLabel: hasValidAlternative ? "Pricing opportunity" : "No immediate action",
+                statusTone: hasValidAlternative ? "opportunity" : "neutral",
+                quantityContextNote: `Latest ${formatCurrency(latestUnitPrice, latestOffer?.currency || representativeCard?.currency || "USD")} vs lowest ${formatCurrency(lowestUnitPrice, lowestOffer?.currency || representativeCard?.currency || "USD")} across qty ${formatQuantity(totalQuantity)}.`,
+                decisionSentence: hasValidAlternative
+                    ? `Latest unit price is ${formatCurrency(latestUnitPrice, latestOffer?.currency || representativeCard?.currency || "USD")} and the lowest observed unit price is ${formatCurrency(lowestUnitPrice, lowestOffer?.currency || representativeCard?.currency || "USD")}. Applying that gap across the full observed quantity of ${formatQuantity(totalQuantity)} yields ${formatCurrency(savingsAmount, latestOffer?.currency || representativeCard?.currency || "USD")} in product-level savings potential.`
+                    : `Latest unit price already matches the lowest observed unit price for this product history, so there is no product-level savings gap at the observed quantity.`,
+                potentialSavingsAmount: 0,
+                hasPotentialSavings: false,
+                potentialSavingsObservedAtDifferentQuantity: false
+            };
+        });
+
+        const getSavingsSortValue = (card) => Number(card?.savingsAmount || 0);
         const rankedCandidates = [...spotlightCandidates]
             .sort((left, right) => {
                 const savingsDelta = getSavingsSortValue(right) - getSavingsSortValue(left);
@@ -5050,11 +5158,11 @@
             });
         const opportunityCards = rankedCandidates.slice(0, 10);
         console.info("[PERF] quote_compare.top_savings.selection_mode", {
-            mode: "full_table_candidate_pool_top_10_savings_desc"
+            mode: "product_level_group_top_10_savings_desc"
         });
         console.info("[PERF] quote_compare.top_savings.total_candidates", {
-            directSavingsCandidates: candidateCards.length,
-            meaningfulCandidates: candidateCards.length,
+            directSavingsCandidates: spotlightCandidates.filter((card) => Number(card.savingsAmount || 0) > 0).length,
+            meaningfulCandidates: spotlightCandidates.length,
             totalCards: sourceCards.length
         });
         console.info("[PERF] quote_compare.top_savings.threshold_applied", {
@@ -5069,11 +5177,11 @@
             count: opportunityCards.length
         });
         console.info("[PERF] quote_compare.top_cards.source_count", {
-            sourceCount: fullTableSourceCards.length,
-            candidateCount: candidateCards.length
+            sourceCount: sourceCards.length,
+            candidateCount: spotlightCandidates.length
         });
         console.info("[PERF] quote_compare.top_cards.source_matches_full_table", {
-            value: true
+            value: false
         });
         console.info("[PERF] quote_compare.top_cards.max_candidate_value", {
             value: rankedCandidates.length ? Math.max(...rankedCandidates.map((card) => getSavingsSortValue(card))) : 0
@@ -5081,25 +5189,17 @@
         console.info("[PERF] quote_compare.top_cards.top_5_values", {
             values: rankedCandidates.slice(0, 5).map((card) => getSavingsSortValue(card))
         });
-        console.info("[PERF] quote_compare.top_cards.excluded_reason_counts", excludedReasonCounts);
-        const fullTableTopFive = candidateCards
-            .slice()
-            .sort((left, right) => Number(getAnalysisTableViewModel(right).savingsAmount || 0) - Number(getAnalysisTableViewModel(left).savingsAmount || 0))
-            .slice(0, 5);
-        console.info("[PERF] quote_compare.top_cards.full_table_top_5_values", {
-            values: fullTableTopFive.map((card) => Number(getAnalysisTableViewModel(card).savingsAmount || 0))
-        });
         console.info("[PERF] quote_compare.top_cards.card_top_5_values", {
             values: rankedCandidates.slice(0, 5).map((card) => getSavingsSortValue(card))
         });
         console.info("[PERF] quote_compare.top_cards.same_model_as_full_table", {
-            value: opportunityCards.every((card) => Boolean(card.__fullTableRecordId))
+            value: false
         });
         console.info("[PERF] quote_compare.top_cards.same_value_as_full_table", {
-            value: opportunityCards.every((card) => Number(card.__fullTableSavingsAmount || 0) === Number(card.savingsAmount || 0))
+            value: false
         });
         console.info("[PERF] quote_compare.top_cards.record_id_match", {
-            value: opportunityCards.every((card, index) => card.__fullTableRecordId === (fullTableTopFive[index] ? getDecisionCardKey(fullTableTopFive[index]) : card.__fullTableRecordId))
+            value: false
         });
         const renderedSavingsValues = opportunityCards.map((card) => getSavingsSortValue(card));
         console.info("[PERF] quote_compare.top_savings.max_value", {
@@ -5399,10 +5499,8 @@
             visibleCards.length,
             cards.length,
             state.opportunityRenderCount || OPPORTUNITY_CARD_BATCH_SIZE,
-            visibleCards.map((card) => {
-                const cardKey = getScopedDecisionCardKey("spotlight", getDecisionCardKey(card));
-                return `${getDecisionCardKey(card)}:${state.collapsedDecisionCards[cardKey] ? 1 : 0}`;
-            }).join("|")
+            state.spotlightTableFilterKey || "",
+            visibleCards.map((card) => getDecisionCardKey(card)).join("|")
         ].join("::");
         if (memo.cardsRef === cards && memo.spotlightMarkupKey === spotlightMarkupKey && memo.spotlightMarkup) {
             return memo.spotlightMarkup;
@@ -5414,11 +5512,11 @@
                 ${visibleCards.map((card, index) => {
                     const theme = getOpportunityCardTheme(index);
                     const cardKey = getScopedDecisionCardKey("spotlight", getDecisionCardKey(card));
-                    const isExpanded = Boolean(state.collapsedDecisionCards[cardKey]);
+                    const isExpanded = String(state.spotlightTableFilterKey || "") === getNormalizedProductUnitKey(card.productName, card.unit);
                     const badgeLabel = getSpotlightBadgeLabel(card);
                     return `
                         <article
-                            class="qc2-spotlight-card ${isExpanded ? "is-expanded is-active-card" : ""}"
+                            class="qc2-spotlight-card ${isExpanded ? "is-active-card" : ""}"
                             data-qc-card-key="${escapeHtml(cardKey)}"
                             style="
                                 --qc2-card-border:${theme.border};
@@ -5467,7 +5565,7 @@
                                     ` : ""}
                                 </div>
                                 <div class="qc2-spotlight-actions">
-                                    <button type="button" class="secondary-btn qc2-collapse-btn" data-qc-action="open-product-summary" data-product-name="${escapeHtml(card.productName)}" data-product-unit="${escapeHtml(card.unit || "")}">
+                                    <button type="button" class="secondary-btn qc2-collapse-btn" data-qc-action="open-product-summary" data-product-name="${escapeHtml(card.productName)}" data-product-unit="${escapeHtml(card.unit || "")}" data-card-key="${escapeHtml(cardKey)}">
                                         View summary
                                     </button>
                                     <button type="button" class="secondary-btn qc2-collapse-btn" data-qc-action="toggle-decision-card" data-card-key="${escapeHtml(cardKey)}" aria-expanded="${isExpanded ? "true" : "false"}">
@@ -5476,7 +5574,6 @@
                                 </div>
                             </div>
                             <div class="qc2-spotlight-decision ${card.statusTone === "neutral" ? "is-neutral" : ""}">${escapeHtml(card.decisionSentence)}</div>
-                            ${isExpanded ? renderExpandedSpotlightDetail(card) : ""}
                         </article>
                     `;
                 }).join("")}
@@ -6033,7 +6130,7 @@
         `;
     }
 
-    function renderHistoryCombobox(key, label, placeholder, selectedValue, options) {
+    function renderHistoryCombobox(key, label, placeholder, selectedValue, options, searchValue = "") {
         const emptyLabel = key === "product" ? "Clear product" : "All suppliers";
         return `
             <label class="recipe-field">
@@ -6055,7 +6152,7 @@
                                 type="text"
                                 class="qc2-history-combobox-search"
                                 data-qc-history-filter-search="${key}"
-                                value=""
+                                value="${escapeHtml(searchValue)}"
                                 placeholder="${escapeHtml(placeholder)}"
                                 autocomplete="off"
                                 spellcheck="false"
@@ -6085,10 +6182,20 @@
     }
 
     function renderHistoryFilters(state, productOptions, supplierOptions) {
+        const selectedProductValue = resolveUiSelectionDisplayValue(
+            productOptions,
+            state.historyFilters.product || "",
+            state.historyFilterUi?.selectedDisplayValues?.product || ""
+        );
+        const selectedSupplierValue = resolveUiSelectionDisplayValue(
+            supplierOptions,
+            state.historyFilters.supplier || "",
+            state.historyFilterUi?.selectedDisplayValues?.supplier || ""
+        );
         return `
             <div class="qc2-history-filters">
-                ${renderHistoryCombobox("product", "Product", "Search product", state.historyFilters.product || "", productOptions)}
-                ${renderHistoryCombobox("supplier", "Supplier", "Search supplier", state.historyFilters.supplier || "", supplierOptions)}
+                ${renderHistoryCombobox("product", "Product", "Search product", selectedProductValue, productOptions, state.historyFilterUi?.queries?.product || "")}
+                ${renderHistoryCombobox("supplier", "Supplier", "Search supplier", selectedSupplierValue, supplierOptions, state.historyFilterUi?.queries?.supplier || "")}
                 <div class="recipe-field">
                     <span class="recipe-field-label">Start Date</span>
                     <label class="date-input-inline qc2-history-date-shell ${state.historyFilters.dateFrom ? "has-value" : ""}" data-date-shell>
@@ -6113,42 +6220,51 @@
 
     function applyHistoryFilterValue(state, key, value) {
         if (!["product", "supplier"].includes(key)) return false;
-        const normalizedValue = String(value || "").trim();
         const optionSource = getHistoryFilterOptions(state, key);
-        const matchedValue = optionSource.find((option) => option.toLowerCase() === normalizedValue.toLowerCase()) || "";
+        const matchedValue = resolveUiSelectionDisplayValue(optionSource, value, value);
         state.historyFilters[key] = matchedValue;
+        state.historyFilterUi.selectedDisplayValues[key] = matchedValue;
+        state.historyFilterUi.queries[key] = matchedValue;
         state.historyViewport = { start: 0, end: 120, scrollTop: 0 };
         syncHistoryFilterDefaults(state);
         return true;
     }
 
-function filterHistoryComboboxOptions(combobox, searchTerm) {
-    if (!combobox) return;
-
-    const normalizedSearch = String(searchTerm || "").trim().toLowerCase();
-    let visibleCount = 0;
-
-    combobox.querySelectorAll("[data-qc-history-filter-option]").forEach((option) => {
-        if (option.dataset.value === "") {
-            option.style.display = "";
-            return;
-        }
-
-        const text = option.textContent.toLowerCase();
-        const matches = !normalizedSearch || text.includes(normalizedSearch);
-
-        option.style.display = matches ? "" : "none";
-
-        if (matches) {
-            visibleCount += 1;
-        }
-    });
-
-    const emptyState = combobox.querySelector("[data-qc-history-filter-empty]");
-    if (emptyState) {
-        emptyState.style.display = visibleCount > 0 ? "none" : "";
+    function scrollHistoryComboboxSelectionIntoView(combobox) {
+        if (!combobox) return;
+        const selectedOption = combobox.querySelector(".qc2-history-combobox-option.is-selected");
+        selectedOption?.scrollIntoView({ block: "nearest" });
     }
-}
+
+    function filterHistoryComboboxOptions(combobox, searchTerm) {
+        if (!combobox) return;
+
+        const normalizedSearch = normalizeUiSelectionMatch(searchTerm);
+        let visibleCount = 0;
+
+        combobox.querySelectorAll("[data-qc-history-filter-option]").forEach((option) => {
+            if (option.dataset.value === "") {
+                option.style.display = "";
+                return;
+            }
+
+            const text = normalizeUiSelectionMatch(option.textContent);
+            const matches = !normalizedSearch || text.includes(normalizedSearch);
+
+            option.style.display = matches ? "" : "none";
+
+            if (matches) {
+                visibleCount += 1;
+            }
+        });
+
+        const emptyState = combobox.querySelector("[data-qc-history-filter-empty]");
+        if (emptyState) {
+            emptyState.style.display = visibleCount > 0 ? "none" : "";
+        }
+
+        scrollHistoryComboboxSelectionIntoView(combobox);
+    }
 
     function closeHistoryComboboxes(elements) {
         if (!elements.app) return;
@@ -6165,7 +6281,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
         });
     }
 
-    function openHistoryCombobox(elements, key) {
+    function openHistoryCombobox(elements, state, key) {
         if (!elements.app) return;
         closeHistoryComboboxes(elements);
         const combobox = elements.app.querySelector(`[data-qc-history-combobox="${key}"]`);
@@ -6181,10 +6297,14 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             panel.hidden = false;
         }
         if (searchInput) {
-            searchInput.value = "";
-            filterHistoryComboboxOptions(combobox, "");
+            const persistedQuery = String(state.historyFilterUi?.queries?.[key] || "");
+            searchInput.value = persistedQuery;
+            filterHistoryComboboxOptions(combobox, persistedQuery);
             searchInput.focus({ preventScroll: true });
+            searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
+            return;
         }
+        scrollHistoryComboboxSelectionIntoView(combobox);
     }
 
     function renderHistorySummaryCards(summary, currency) {
@@ -6727,6 +6847,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             state.showOpportunitySection = true;
             state.showFullComparison = false;
             state.opportunityRenderCount = OPPORTUNITY_CARD_BATCH_SIZE;
+            state.spotlightTableFilterKey = "";
             state.collapsedDecisionCards = clearDecisionCardsForScope(state.collapsedDecisionCards, "spotlight");
             state.selectedAnalysisRowKey = "";
             state.lastFlowScreen = "review";
@@ -7028,13 +7149,26 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             if (action === "open-product-summary") {
                 const productName = actionTarget.dataset.productName || "";
                 const productUnit = actionTarget.dataset.productUnit || "";
+                const scopedCardKey = actionTarget.dataset.cardKey || actionTarget.closest("[data-qc-card-key]")?.dataset.qcCardKey || "";
                 rememberFullComparisonTablePosition(elements, state);
-                if (openProductSummary(state, productName, productUnit)) {
-                    renderApp(elements, state, { preserveScroll: true });
-                    requestAnimationFrame(() => {
-                        restoreFullComparisonTablePosition(elements, state);
-                    });
+                const spotlightCard = scopedCardKey
+                    ? getAnalyzeRenderModel(state).opportunityCards.find((card) => getScopedDecisionCardKey("spotlight", getDecisionCardKey(card)) === scopedCardKey)
+                    : null;
+                if (spotlightCard?.productSummary) {
+                    state.productSummaryModalOpen = true;
+                    state.productSummaryModalData = {
+                        productName: spotlightCard.productName,
+                        unit: spotlightCard.unit || "",
+                        currentOffer: spotlightCard.currentOffer || null,
+                        productSummary: spotlightCard.productSummary
+                    };
+                } else if (!openProductSummary(state, productName, productUnit)) {
+                    return;
                 }
+                renderApp(elements, state, { preserveScroll: true });
+                requestAnimationFrame(() => {
+                    restoreFullComparisonTablePosition(elements, state);
+                });
                 return;
             }
             if (action === "toggle-decision-card") {
@@ -7042,7 +7176,27 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
                 if (cardKey) {
                     const cardScope = getDecisionCardScope(cardKey);
                     if (cardScope === "spotlight") {
-                        toggleSpotlightCardInPlace(elements, state, cardKey);
+                        const spotlightCard = getAnalyzeRenderModel(state).opportunityCards.find(
+                            (card) => getScopedDecisionCardKey("spotlight", getDecisionCardKey(card)) === cardKey
+                        );
+                        if (!spotlightCard) {
+                            return;
+                        }
+                        const spotlightGroupKey = getNormalizedProductUnitKey(spotlightCard.productName, spotlightCard.unit);
+                        state.spotlightTableFilterKey = state.spotlightTableFilterKey === spotlightGroupKey ? "" : spotlightGroupKey;
+                        state.showFullComparison = true;
+                        state.activeAnalyzeTab = "full-table";
+                        state.selectedAnalysisRowKey = "";
+                        renderApp(elements, state, {
+                            preserveScroll: true,
+                            anchorSelector: '[data-qc-anchor="full-comparison-section"]'
+                        });
+                        requestAnimationFrame(() => {
+                            const tableScroller = getFullComparisonTableScroller(elements);
+                            if (tableScroller) {
+                                tableScroller.scrollTop = 0;
+                            }
+                        });
                         return;
                     }
                     const shouldRestoreAnalysisPosition = cardScope === "analysis";
@@ -7076,12 +7230,14 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
             }
             if (action === "collapse-all-opportunity-tables") {
                 state.collapsedDecisionCards = clearDecisionCardsForScope(state.collapsedDecisionCards, "spotlight");
+                state.spotlightTableFilterKey = "";
                 renderApp(elements, state, { preserveScroll: true, anchorSelector: '[data-qc-anchor="opportunity-section"]' });
                 return;
             }
             if (action === "hide-opportunity-section") {
                 state.showOpportunitySection = false;
                 state.collapsedDecisionCards = clearDecisionCardsForScope(state.collapsedDecisionCards, "spotlight");
+                state.spotlightTableFilterKey = "";
                 renderApp(elements, state, { preserveScroll: true, anchorSelector: '[data-qc-anchor="opportunity-section"]' });
                 return;
             }
@@ -7089,6 +7245,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
                 state.showOpportunitySection = !state.showOpportunitySection;
                 if (!state.showOpportunitySection) {
                     state.collapsedDecisionCards = clearDecisionCardsForScope(state.collapsedDecisionCards, "spotlight");
+                    state.spotlightTableFilterKey = "";
                 }
                 renderApp(elements, state, { preserveScroll: true, anchorSelector: '[data-qc-anchor="opportunity-section"]' });
                 return;
@@ -7241,7 +7398,7 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
                 if (isOpen) {
                     closeHistoryComboboxes(elements);
                 } else {
-                    openHistoryCombobox(elements, key);
+                    openHistoryCombobox(elements, state, key);
                 }
                 return;
             }
@@ -7252,7 +7409,15 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
                 if (key === "product") {
                     state.historyFocusedSeriesKey = "";
                 }
-                applyHistoryFilterValue(state, key, historyOption.dataset.value || "");
+                if ((historyOption.dataset.value || "") === "") {
+                    state.historyFilters[key] = "";
+                    state.historyFilterUi.selectedDisplayValues[key] = "";
+                    state.historyFilterUi.queries[key] = "";
+                    state.historyViewport = { start: 0, end: 120, scrollTop: 0 };
+                    syncHistoryFilterDefaults(state);
+                } else {
+                    applyHistoryFilterValue(state, key, historyOption.dataset.value || "");
+                }
                 clearHistorySelectedSeries(state);
                 closeHistoryDetailModal(state);
                 scheduleHistoryViewRefresh(elements, state);
@@ -7402,7 +7567,11 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
         elements.app.addEventListener("input", (event) => {
             const historySearchInput = event.target.closest("[data-qc-history-filter-search]");
             if (historySearchInput) {
+                const key = historySearchInput.dataset.qcHistoryFilterSearch;
                 const combobox = historySearchInput.closest("[data-qc-history-combobox]");
+                if (key && state.historyFilterUi?.queries) {
+                    state.historyFilterUi.queries[key] = historySearchInput.value || "";
+                }
                 filterHistoryComboboxOptions(combobox, historySearchInput.value || "");
                 return;
             }
@@ -7482,14 +7651,23 @@ function filterHistoryComboboxOptions(combobox, searchTerm) {
 
             if (event.key === "Enter") {
                 event.preventDefault();
-                const firstVisibleOption = Array.from(combobox.querySelectorAll("[data-qc-history-filter-option]"))
-                    .find((option) => !option.hidden);
+                const visibleOptions = Array.from(combobox.querySelectorAll("[data-qc-history-filter-option]"))
+                    .filter((option) => option.style.display !== "none");
+                const selectedOption = visibleOptions.find((option) => option.classList.contains("is-selected") && (option.dataset.value || ""));
+                const firstValueOption = visibleOptions.find((option) => (option.dataset.value || ""));
+                const firstVisibleOption = selectedOption || firstValueOption || visibleOptions[0];
                 if (!firstVisibleOption) return;
-                applyHistoryFilterValue(
-                    state,
-                    firstVisibleOption.dataset.qcHistoryFilterOption,
-                    firstVisibleOption.dataset.value || ""
-                );
+                const optionKey = firstVisibleOption.dataset.qcHistoryFilterOption;
+                const optionValue = firstVisibleOption.dataset.value || "";
+                if (optionValue === "") {
+                    state.historyFilters[optionKey] = "";
+                    state.historyFilterUi.selectedDisplayValues[optionKey] = "";
+                    state.historyFilterUi.queries[optionKey] = "";
+                    state.historyViewport = { start: 0, end: 120, scrollTop: 0 };
+                    syncHistoryFilterDefaults(state);
+                } else {
+                    applyHistoryFilterValue(state, optionKey, optionValue);
+                }
                 clearHistorySelectedSeries(state);
                 closeHistoryDetailModal(state);
                 scheduleHistoryViewRefresh(elements, state);

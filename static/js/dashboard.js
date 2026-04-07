@@ -621,6 +621,11 @@
                     product: "",
                     supplier: "",
                     status: ""
+                },
+                selectedDisplayValues: {
+                    product: "",
+                    supplier: "",
+                    status: ""
                 }
             }
         };
@@ -805,14 +810,40 @@
         return normalizedValue;
     }
 
+    function normalizeUiSelectionMatch(value) {
+        return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+    }
+
+    function resolveUiSelectionDisplayValue(options, selectedValue, preferredDisplayValue = "") {
+        const optionList = Array.isArray(options) ? options : [];
+        const preferred = String(preferredDisplayValue || "").trim();
+        if (preferred && optionList.includes(preferred)) {
+            return preferred;
+        }
+        const exactValue = String(selectedValue || "").trim();
+        if (exactValue && optionList.includes(exactValue)) {
+            return exactValue;
+        }
+        const normalizedValue = normalizeUiSelectionMatch(selectedValue);
+        if (!normalizedValue) {
+            return "";
+        }
+        return optionList.find((option) => normalizeUiSelectionMatch(option) === normalizedValue) || "";
+    }
+
     function renderSearchableFilterOptions(elements, state, key) {
         const config = getFilterControlConfig(state)[key];
-        const query = String(state.filterUi.queries[key] || "").trim().toLowerCase();
+        const query = normalizeUiSelectionMatch(state.filterUi.queries[key] || "");
         const availableOptions = query
-            ? config.options.filter((option) => option.toLowerCase().includes(query))
+            ? config.options.filter((option) => normalizeUiSelectionMatch(option).includes(query))
             : config.options;
 
         const selectedValue = normalizeAppliedFilterValue(key, config.selectedValue);
+        const selectedDisplayValue = resolveUiSelectionDisplayValue(
+            config.options,
+            selectedValue,
+            state.filterUi.selectedDisplayValues[key] || ""
+        );
         const allLabel = config.allLabel;
         const allSelected = selectedValue === "" || selectedValue === "all";
         const allOptionMarkup = `<button type="button" class="filter-popover-option ${allSelected ? "is-selected" : ""}" data-filter-key="${key}" data-filter-value="">${allLabel}</button>`;
@@ -823,9 +854,14 @@
 
         return `${allOptionMarkup}${availableOptions.map((option) => {
             const normalizedOptionValue = normalizeAppliedFilterValue(key, option);
-            const isSelected = normalizedOptionValue === selectedValue;
+            const isSelected = option === selectedDisplayValue || (!selectedDisplayValue && normalizedOptionValue === selectedValue);
             return `<button type="button" class="filter-popover-option ${isSelected ? "is-selected" : ""}" data-filter-key="${key}" data-filter-value="${option}">${getFilterOptionLabel(key, option)}</button>`;
         }).join("")}`;
+    }
+
+    function scrollSelectedFilterOptionIntoView(optionsContainer) {
+        const selectedOption = optionsContainer?.querySelector(".filter-popover-option.is-selected");
+        selectedOption?.scrollIntoView({ block: "nearest" });
     }
 
     function positionFilterPopover(elements, state) {
@@ -923,12 +959,13 @@
             </div>
         `;
 
-        requestAnimationFrame(() => {
-            positionFilterPopover(elements, state);
-        });
-
         const searchInput = popoverRoot.querySelector("#filterPopoverSearch");
         const optionsContainer = popoverRoot.querySelector("#filterPopoverOptions");
+
+        requestAnimationFrame(() => {
+            positionFilterPopover(elements, state);
+            scrollSelectedFilterOptionIntoView(optionsContainer);
+        });
 
         if (searchInput) {
             searchInput.focus();
@@ -940,6 +977,7 @@
                 }
                 requestAnimationFrame(() => {
                     positionFilterPopover(elements, state);
+                    scrollSelectedFilterOptionIntoView(optionsContainer);
                 });
             });
             searchInput.addEventListener("keydown", (event) => {
@@ -949,7 +987,11 @@
                     return;
                 }
                 if (event.key === "Enter") {
-                    const firstOption = optionsContainer?.querySelector(".filter-popover-option");
+                    const visibleOptions = Array.from(optionsContainer?.querySelectorAll(".filter-popover-option") || [])
+                        .filter((option) => option.offsetParent !== null);
+                    const selectedOption = visibleOptions.find((option) => option.classList.contains("is-selected") && (option.dataset.filterValue || ""));
+                    const firstValueOption = visibleOptions.find((option) => (option.dataset.filterValue || ""));
+                    const firstOption = selectedOption || firstValueOption || visibleOptions[0];
                     if (!firstOption) return;
                     event.preventDefault();
                     firstOption.click();
@@ -963,7 +1005,8 @@
                 if (!option) return;
                 const rawValue = option.dataset.filterValue || "";
                 state.filters[key] = normalizeAppliedFilterValue(key, rawValue);
-                state.filterUi.queries[key] = "";
+                state.filterUi.selectedDisplayValues[key] = rawValue;
+                state.filterUi.queries[key] = rawValue;
                 closeFilterDropdown(elements, state, key);
                 refresh(elements, state);
             });
@@ -988,8 +1031,17 @@
         Object.entries(elements.filterControls).forEach(([key, control]) => {
             if (!control?.value) return;
             const selectedValue = normalizeAppliedFilterValue(key, config[key].selectedValue);
+            const selectedDisplayValue = resolveUiSelectionDisplayValue(
+                config[key].options,
+                selectedValue,
+                state.filterUi.selectedDisplayValues[key] || ""
+            );
+            state.filterUi.selectedDisplayValues[key] = selectedDisplayValue;
+            if (!selectedDisplayValue && (selectedValue === "" || selectedValue === "all")) {
+                state.filterUi.queries[key] = "";
+            }
             const isAllSelected = selectedValue === "" || selectedValue === "all";
-            control.value.textContent = isAllSelected ? config[key].allLabel : getFilterOptionLabel(key, selectedValue);
+            control.value.textContent = isAllSelected ? config[key].allLabel : getFilterOptionLabel(key, selectedDisplayValue || selectedValue);
             if (control.search) {
                 control.search.value = state.filterUi.queries[key] || "";
             }
@@ -2487,6 +2539,7 @@
             elements.resetFiltersButton.addEventListener("click", () => {
                 state.filters = { ...defaultFilters };
                 state.filterUi.queries = { product: "", supplier: "", status: "" };
+                state.filterUi.selectedDisplayValues = { product: "", supplier: "", status: "" };
                 closeAllFilterDropdowns(elements, state);
                 refresh(elements, state);
             });
@@ -2527,6 +2580,9 @@
             state.filters[button.dataset.filterKey] = defaultFilters[button.dataset.filterKey] || "";
             if (state.filterUi.queries[button.dataset.filterKey] !== undefined) {
                 state.filterUi.queries[button.dataset.filterKey] = "";
+            }
+            if (state.filterUi.selectedDisplayValues[button.dataset.filterKey] !== undefined) {
+                state.filterUi.selectedDisplayValues[button.dataset.filterKey] = "";
             }
             refresh(elements, state);
         });
