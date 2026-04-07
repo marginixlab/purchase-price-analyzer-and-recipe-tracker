@@ -500,7 +500,8 @@
             statusTimer: null,
             bootstrapPromise: null,
             bootstrapSequence: 0,
-            firstVisiblePaintLogged: false
+            firstVisiblePaintLogged: false,
+            frontendBootstrapRequestCount: 0
         };
     }
 
@@ -1449,6 +1450,10 @@
 
     async function loadBootstrap(elements, state) {
         const bootstrapStartedAt = performance.now();
+        state.frontendBootstrapRequestCount = Number(state.frontendBootstrapRequestCount || 0) + 1;
+        logRecipesPerf("recipes.bootstrap.frontend_request_count", {
+            count: state.frontendBootstrapRequestCount
+        });
         const data = await fetchJson("/recipes/bootstrap");
         applyBootstrapData(elements, state, data, {
             analysisAvailable: hasAnalysis(elements)
@@ -2201,6 +2206,13 @@
         if (!elements.recipesShell || !stateHost) {
             return;
         }
+        if (window.__priceAnalyzerRecipesInitStarted) {
+            logRecipesPerf("recipes.init.frontend", {
+                phase: "skipped_duplicate_init"
+            });
+            return;
+        }
+        window.__priceAnalyzerRecipesInitStarted = true;
 
         const state = createState();
         renderScopeSummary(elements, state);
@@ -2279,8 +2291,7 @@
             }
             state.dataScope = nextScope;
             try {
-                await loadBootstrap(elements, state);
-                await calculateRecipe(elements, state, { quiet: true });
+                await refreshBootstrap();
             } catch (error) {
                 setStatus(elements, error.message, "error");
             }
@@ -2289,8 +2300,7 @@
         window.addEventListener("shared-analysis-context-updated", async () => {
             state.dataScope = readSharedDataScope();
             try {
-                await loadBootstrap(elements, state);
-                await calculateRecipe(elements, state, { quiet: true });
+                await refreshBootstrap();
             } catch (error) {
                 setStatus(elements, error.message, "error");
             }

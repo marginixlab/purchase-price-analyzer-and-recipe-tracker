@@ -94,6 +94,10 @@ ANALYSIS_HISTORY_CACHE: dict[str, Any] = {
     "signature": None,
     "store": None
 }
+CURRENT_UPLOAD_ANALYSIS_FRAME_CACHE: dict[str, Any] = {
+    "signature": None,
+    "frame": None
+}
 RECIPES_STORE_CACHE: dict[str, Any] = {
     "signature": None,
     "store": None
@@ -104,8 +108,16 @@ RECIPE_ANALYSIS_CACHE: dict[str, Any] = {
     "product_catalog": None,
     "pricing_lookup": None
 }
+RECIPES_BOOTSTRAP_RESPONSE_CACHE: dict[str, Any] = {
+    "signature": None,
+    "response_json": None
+}
 CURRENT_STORAGE_USER_ID: contextvars.ContextVar[int | None] = contextvars.ContextVar(
     "current_storage_user_id",
+    default=None
+)
+RECIPE_BOOTSTRAP_METRICS_CONTEXT: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "recipe_bootstrap_metrics_context",
     default=None
 )
 OPTIONAL_UNIT_COLUMNS = ["Purchase Unit", "Unit"]
@@ -1767,6 +1779,8 @@ def save_recipes_store(store: dict[str, Any], user_id: int | str | None = None) 
         recipes_path.stat().st_size
     )
     RECIPES_STORE_CACHE["store"] = store
+    RECIPES_BOOTSTRAP_RESPONSE_CACHE["signature"] = None
+    RECIPES_BOOTSTRAP_RESPONSE_CACHE["response_json"] = None
 
 
 def ensure_quote_comparisons_file(user_id: int | str | None = None) -> None:
@@ -2013,6 +2027,10 @@ def deduplicate_analysis_frame(
     if frame.empty:
         return frame.copy()
 
+    recipe_bootstrap_metrics = RECIPE_BOOTSTRAP_METRICS_CONTEXT.get()
+    if isinstance(recipe_bootstrap_metrics, dict):
+        recipe_bootstrap_metrics["deduplicate_call_count"] = int(recipe_bootstrap_metrics.get("deduplicate_call_count") or 0) + 1
+
     dedupe_started_at = perf_counter()
     dedupe_substeps: dict[str, Any] = {
         "input_rows": int(len(frame.index)),
@@ -2079,8 +2097,22 @@ def load_current_upload_analysis_frame() -> pd.DataFrame:
     if not latest_results_path.exists():
         return pd.DataFrame()
 
+    cache_signature = (
+        str(latest_results_path),
+        latest_results_path.stat().st_mtime_ns,
+        latest_results_path.stat().st_size
+    )
+    if (
+        CURRENT_UPLOAD_ANALYSIS_FRAME_CACHE["signature"] == cache_signature
+        and isinstance(CURRENT_UPLOAD_ANALYSIS_FRAME_CACHE["frame"], pd.DataFrame)
+    ):
+        return CURRENT_UPLOAD_ANALYSIS_FRAME_CACHE["frame"].copy()
+
     frame = pd.read_csv(latest_results_path)
-    return deduplicate_analysis_frame(frame)
+    deduplicated_frame = deduplicate_analysis_frame(frame)
+    CURRENT_UPLOAD_ANALYSIS_FRAME_CACHE["signature"] = cache_signature
+    CURRENT_UPLOAD_ANALYSIS_FRAME_CACHE["frame"] = deduplicated_frame
+    return deduplicated_frame.copy()
 
 
 def save_current_upload_analysis_frame(frame: pd.DataFrame) -> None:
@@ -2088,10 +2120,14 @@ def save_current_upload_analysis_frame(frame: pd.DataFrame) -> None:
     frame.to_csv(latest_results_path, index=False)
     LATEST_ANALYSIS_CACHE["signature"] = None
     LATEST_ANALYSIS_CACHE["context"] = None
+    CURRENT_UPLOAD_ANALYSIS_FRAME_CACHE["signature"] = None
+    CURRENT_UPLOAD_ANALYSIS_FRAME_CACHE["frame"] = None
     RECIPE_ANALYSIS_CACHE["signature"] = None
     RECIPE_ANALYSIS_CACHE["frame"] = None
     RECIPE_ANALYSIS_CACHE["product_catalog"] = None
     RECIPE_ANALYSIS_CACHE["pricing_lookup"] = None
+    RECIPES_BOOTSTRAP_RESPONSE_CACHE["signature"] = None
+    RECIPES_BOOTSTRAP_RESPONSE_CACHE["response_json"] = None
 
 
 def get_scope_reference_date(frame: pd.DataFrame) -> pd.Timestamp | None:
@@ -3401,6 +3437,27 @@ def build_analysis_scope_summary(frame: pd.DataFrame, *, scope: str) -> dict[str
     }
 
 
+def build_analysis_scope_summary_with_upload(
+    frame: pd.DataFrame,
+    *,
+    latest_upload: dict[str, Any] | None
+) -> dict[str, Any]:
+    dated_rows = frame["Date"].dropna() if "Date" in frame.columns else pd.Series(dtype="datetime64[ns]")
+    return {
+        "scope": "current_upload",
+        "scope_label": get_analysis_scope_label("current_upload"),
+        "row_count": int(len(frame.index)),
+        "product_count": int(frame["Product Name"].nunique()) if "Product Name" in frame.columns and not frame.empty else 0,
+        "supplier_count": int(frame["Supplier"].nunique()) if "Supplier" in frame.columns and not frame.empty else 0,
+        "current_upload_id": str((latest_upload or {}).get("upload_id") or "").strip(),
+        "current_upload_name": str((latest_upload or {}).get("source_name") or "").strip(),
+        "date_range": {
+            "start": dated_rows.min().strftime("%Y-%m-%d") if not dated_rows.empty else "",
+            "end": dated_rows.max().strftime("%Y-%m-%d") if not dated_rows.empty else ""
+        }
+    }
+
+
 def normalize_recipe_analysis_frame(frame: pd.DataFrame) -> pd.DataFrame:
     if frame.empty:
         raise ValueError("No analyzed dataset is available yet. Please upload and analyze a file first.")
@@ -3432,6 +3489,17 @@ def get_recipe_analysis_cache_signature() -> tuple[str, int, int] | None:
     )
 
 
+def get_recipes_store_cache_signature(user_id: int | str | None = None) -> tuple[str, int, int]:
+    resolved_user_id = get_storage_user_id(user_id)
+    recipes_path = get_user_recipes_path(resolved_user_id)
+    ensure_recipes_file(resolved_user_id)
+    return (
+        str(recipes_path),
+        recipes_path.stat().st_mtime_ns,
+        recipes_path.stat().st_size
+    )
+
+
 def build_recipe_pricing_lookup(frame: pd.DataFrame) -> dict[tuple[str, str], dict[str, Any]]:
     pricing_lookup: dict[tuple[str, str], dict[str, Any]] = {}
     if frame.empty:
@@ -3456,20 +3524,41 @@ def load_recipe_analysis_bundle(*, scope: str = "current_upload") -> dict[str, A
     if cache_signature is None:
         raise ValueError("No analyzed dataset is available yet. Please upload and analyze a file first.")
 
+    analysis_load_metrics = {
+        "scope": scope,
+        "cache_hit": False,
+        "cache_reason": "miss"
+    }
     if RECIPE_ANALYSIS_CACHE["signature"] == cache_signature and isinstance(RECIPE_ANALYSIS_CACHE["frame"], pd.DataFrame):
+        analysis_load_metrics["cache_hit"] = True
+        analysis_load_metrics["cache_reason"] = "signature_match"
+        log_perf_details("recipes.bootstrap.analysis_load.substeps", **analysis_load_metrics)
         return {
             "frame": RECIPE_ANALYSIS_CACHE["frame"],
             "product_catalog": RECIPE_ANALYSIS_CACHE["product_catalog"] or [],
             "pricing_lookup": RECIPE_ANALYSIS_CACHE["pricing_lookup"] or {}
         }
 
-    frame = normalize_recipe_analysis_frame(load_current_upload_analysis_frame())
+    frame_load_started_at = perf_counter()
+    current_upload_frame = load_current_upload_analysis_frame()
+    analysis_load_metrics["load_current_upload_frame_ms"] = round((perf_counter() - frame_load_started_at) * 1000, 1)
+    normalize_started_at = perf_counter()
+    frame = normalize_recipe_analysis_frame(current_upload_frame)
+    analysis_load_metrics["normalize_recipe_frame_ms"] = round((perf_counter() - normalize_started_at) * 1000, 1)
+    product_catalog_started_at = perf_counter()
     product_catalog = build_recipe_product_catalog(frame)
+    analysis_load_metrics["product_catalog_ms"] = round((perf_counter() - product_catalog_started_at) * 1000, 1)
+    pricing_lookup_started_at = perf_counter()
     pricing_lookup = build_recipe_pricing_lookup(frame)
+    analysis_load_metrics["pricing_lookup_ms"] = round((perf_counter() - pricing_lookup_started_at) * 1000, 1)
     RECIPE_ANALYSIS_CACHE["signature"] = cache_signature
     RECIPE_ANALYSIS_CACHE["frame"] = frame
     RECIPE_ANALYSIS_CACHE["product_catalog"] = product_catalog
     RECIPE_ANALYSIS_CACHE["pricing_lookup"] = pricing_lookup
+    analysis_load_metrics["frame_rows"] = int(len(frame.index))
+    analysis_load_metrics["product_count"] = len(product_catalog)
+    analysis_load_metrics["pricing_lookup_entries"] = len(pricing_lookup)
+    log_perf_details("recipes.bootstrap.analysis_load.substeps", **analysis_load_metrics)
     return {
         "frame": frame,
         "product_catalog": product_catalog,
@@ -4934,59 +5023,118 @@ def create_app() -> FastAPI:
         bootstrap_substeps: dict[str, Any] = {
             "scope": scope
         }
+        recipe_bootstrap_metrics = {
+            "deduplicate_call_count": 0
+        }
+        bootstrap_metrics_token = RECIPE_BOOTSTRAP_METRICS_CONTEXT.set(recipe_bootstrap_metrics)
+        analysis_signature = get_recipe_analysis_cache_signature()
+        recipes_signature = get_recipes_store_cache_signature()
+        response_cache_signature = (
+            str(scope or "current_upload"),
+            analysis_signature,
+            recipes_signature
+        )
         try:
-            analysis_load_started_at = perf_counter()
-            analysis_bundle = load_recipe_analysis_bundle(scope=scope)
-            frame = analysis_bundle["frame"]
-            bootstrap_substeps["analysis_load_ms"] = round((perf_counter() - analysis_load_started_at) * 1000, 1)
-        except ValueError:
-            frame = pd.DataFrame()
-            analysis_bundle = {"product_catalog": [], "pricing_lookup": {}}
-            bootstrap_substeps["analysis_load_ms"] = round((perf_counter() - bootstrap_started_at) * 1000, 1)
-
-        recipes_load_started_at = perf_counter()
-        recipes = load_recipes_store().get("recipes", [])
-        bootstrap_substeps["load_recipes_store_ms"] = round((perf_counter() - recipes_load_started_at) * 1000, 1)
-        if frame.empty:
-            products = []
-            enriched_recipes = recipes
-            bootstrap_substeps["product_catalog_ms"] = 0.0
-            bootstrap_substeps["enrich_recipes_ms"] = 0.0
-        else:
-            product_catalog_started_at = perf_counter()
-            products = analysis_bundle["product_catalog"]
-            bootstrap_substeps["product_catalog_ms"] = round((perf_counter() - product_catalog_started_at) * 1000, 1)
-            enrich_started_at = perf_counter()
-            enriched_recipes = enrich_saved_recipes_with_costs(
-                recipes,
-                frame,
-                pricing_lookup=analysis_bundle.get("pricing_lookup")
+            cache_hit = (
+                RECIPES_BOOTSTRAP_RESPONSE_CACHE["signature"] == response_cache_signature
+                and isinstance(RECIPES_BOOTSTRAP_RESPONSE_CACHE["response_json"], str)
             )
-            bootstrap_substeps["enrich_recipes_ms"] = round((perf_counter() - enrich_started_at) * 1000, 1)
+            log_perf_details(
+                "recipes.bootstrap.cache_status",
+                cache_hit=cache_hit,
+                cache_reason="signature_match" if cache_hit else "signature_miss",
+                has_analysis_signature=analysis_signature is not None,
+                deduplicate_call_count=int(recipe_bootstrap_metrics.get("deduplicate_call_count") or 0)
+            )
+            if cache_hit:
+                cached_response_json = RECIPES_BOOTSTRAP_RESPONSE_CACHE["response_json"]
+                bootstrap_substeps["deduplicate_call_count"] = int(recipe_bootstrap_metrics.get("deduplicate_call_count") or 0)
+                bootstrap_substeps["payload_bytes"] = len(cached_response_json.encode("utf-8"))
+                bootstrap_substeps["total_ms"] = round((perf_counter() - bootstrap_started_at) * 1000, 1)
+                log_perf_details("recipes.bootstrap.backend", **bootstrap_substeps)
+                return Response(content=cached_response_json, media_type="application/json")
 
-        payload_started_at = perf_counter()
-        response_payload = {
-            "success": True,
-            "scope_options": build_analysis_scope_options(),
-            "scope_summary": build_analysis_scope_summary(frame, scope="current_upload"),
-            "pricing_modes": [
+            try:
+                analysis_load_started_at = perf_counter()
+                analysis_bundle = load_recipe_analysis_bundle(scope=scope)
+                frame = analysis_bundle["frame"]
+                bootstrap_substeps["analysis_load_ms"] = round((perf_counter() - analysis_load_started_at) * 1000, 1)
+            except ValueError:
+                frame = pd.DataFrame()
+                analysis_bundle = {"product_catalog": [], "pricing_lookup": {}}
+                bootstrap_substeps["analysis_load_ms"] = round((perf_counter() - bootstrap_started_at) * 1000, 1)
+
+            recipes_load_started_at = perf_counter()
+            recipes = load_recipes_store().get("recipes", [])
+            bootstrap_substeps["load_recipes_store_ms"] = round((perf_counter() - recipes_load_started_at) * 1000, 1)
+            if frame.empty:
+                products = []
+                enriched_recipes = recipes
+                bootstrap_substeps["product_catalog_ms"] = 0.0
+                bootstrap_substeps["pricing_lookup_ms"] = 0.0
+                bootstrap_substeps["recipe_enrichment_ms"] = 0.0
+            else:
+                product_catalog_started_at = perf_counter()
+                products = analysis_bundle["product_catalog"]
+                bootstrap_substeps["product_catalog_ms"] = round((perf_counter() - product_catalog_started_at) * 1000, 1)
+                pricing_lookup_started_at = perf_counter()
+                pricing_lookup = analysis_bundle.get("pricing_lookup") or {}
+                bootstrap_substeps["pricing_lookup_ms"] = round((perf_counter() - pricing_lookup_started_at) * 1000, 1)
+                enrich_started_at = perf_counter()
+                enriched_recipes = enrich_saved_recipes_with_costs(
+                    recipes,
+                    frame,
+                    pricing_lookup=pricing_lookup
+                )
+                bootstrap_substeps["recipe_enrichment_ms"] = round((perf_counter() - enrich_started_at) * 1000, 1)
+
+            payload_started_at = perf_counter()
+            build_payload_substeps: dict[str, Any] = {}
+            scope_options_started_at = perf_counter()
+            scope_options = build_analysis_scope_options()
+            build_payload_substeps["scope_options_ms"] = round((perf_counter() - scope_options_started_at) * 1000, 1)
+            latest_upload_started_at = perf_counter()
+            latest_upload = get_latest_analysis_upload_meta()
+            build_payload_substeps["latest_upload_meta_ms"] = round((perf_counter() - latest_upload_started_at) * 1000, 1)
+            scope_summary_started_at = perf_counter()
+            scope_summary = build_analysis_scope_summary_with_upload(frame, latest_upload=latest_upload)
+            build_payload_substeps["scope_summary_ms"] = round((perf_counter() - scope_summary_started_at) * 1000, 1)
+            pricing_modes_started_at = perf_counter()
+            pricing_modes = [
                 {"value": value, "label": label}
                 for value, label in RECIPE_PRICING_MODES.items()
-            ],
-            "products": products,
-            "recipes": enriched_recipes
-        }
-        bootstrap_substeps["build_payload_ms"] = round((perf_counter() - payload_started_at) * 1000, 1)
-        serialize_started_at = perf_counter()
-        response_json = json.dumps(response_payload, ensure_ascii=False, separators=(",", ":"))
-        bootstrap_substeps["serialize_ms"] = round((perf_counter() - serialize_started_at) * 1000, 1)
-        bootstrap_substeps["payload_bytes"] = len(response_json.encode("utf-8"))
-        bootstrap_substeps["products_count"] = len(products)
-        bootstrap_substeps["recipes_count"] = len(enriched_recipes)
-        bootstrap_substeps["frame_rows"] = int(len(frame.index))
-        bootstrap_substeps["total_ms"] = round((perf_counter() - bootstrap_started_at) * 1000, 1)
-        log_perf_details("recipes.bootstrap.backend", **bootstrap_substeps)
-        return Response(content=response_json, media_type="application/json")
+            ]
+            build_payload_substeps["pricing_modes_ms"] = round((perf_counter() - pricing_modes_started_at) * 1000, 1)
+            response_payload = {
+                "success": True,
+                "scope_options": scope_options,
+                "scope_summary": scope_summary,
+                "pricing_modes": pricing_modes,
+                "products": products,
+                "recipes": enriched_recipes
+            }
+            bootstrap_substeps["build_payload_ms"] = round((perf_counter() - payload_started_at) * 1000, 1)
+            build_payload_substeps["products_count"] = len(products)
+            build_payload_substeps["recipes_count"] = len(enriched_recipes)
+            build_payload_substeps["frame_rows"] = int(len(frame.index))
+            log_perf_details("recipes.bootstrap.build_payload.substeps", **build_payload_substeps)
+
+            serialize_started_at = perf_counter()
+            response_json = json.dumps(response_payload, ensure_ascii=False, separators=(",", ":"))
+            bootstrap_substeps["serialize_ms"] = round((perf_counter() - serialize_started_at) * 1000, 1)
+            bootstrap_substeps["payload_bytes"] = len(response_json.encode("utf-8"))
+            bootstrap_substeps["products_count"] = len(products)
+            bootstrap_substeps["recipes_count"] = len(enriched_recipes)
+            bootstrap_substeps["frame_rows"] = int(len(frame.index))
+            bootstrap_substeps["deduplicate_call_count"] = int(recipe_bootstrap_metrics.get("deduplicate_call_count") or 0)
+            bootstrap_substeps["total_ms"] = round((perf_counter() - bootstrap_started_at) * 1000, 1)
+            log_perf_details("recipes.bootstrap.deduplicate_call_count", count=bootstrap_substeps["deduplicate_call_count"])
+            log_perf_details("recipes.bootstrap.backend", **bootstrap_substeps)
+            RECIPES_BOOTSTRAP_RESPONSE_CACHE["signature"] = response_cache_signature
+            RECIPES_BOOTSTRAP_RESPONSE_CACHE["response_json"] = response_json
+            return Response(content=response_json, media_type="application/json")
+        finally:
+            RECIPE_BOOTSTRAP_METRICS_CONTEXT.reset(bootstrap_metrics_token)
 
     @app.get("/analysis/scope-bootstrap")
     def analysis_scope_bootstrap(scope: str = "current_upload"):
