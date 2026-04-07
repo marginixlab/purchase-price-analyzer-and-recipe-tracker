@@ -2228,7 +2228,13 @@ def save_quote_compare_active_session(
     persist_substeps["compact_ms"] = round((perf_counter() - compact_started_at) * 1000, 1)
 
     normalize_started_at = perf_counter()
-    normalized_payload = make_json_safe(compacted_payload)
+    payload_is_json_safe = bool(compacted_payload.pop("_json_safe_payload", False))
+    if payload_is_json_safe:
+        normalized_payload = dict(compacted_payload)
+        persist_substeps["json_safe_skipped"] = True
+    else:
+        normalized_payload = make_json_safe(compacted_payload)
+        persist_substeps["json_safe_skipped"] = False
     persist_substeps["json_safe_ms"] = round((perf_counter() - normalize_started_at) * 1000, 1)
     normalized_payload["session_id"] = session_id
 
@@ -2889,6 +2895,28 @@ def validate_quote_comparison_payload(comparison: dict[str, Any], *, require_nam
             raise ValueError("Each offer must include a total price greater than zero.")
 
 
+def build_pre_normalized_quote_comparison(
+    *,
+    bids: list[dict[str, Any]],
+    upload_id: str | None = None,
+    name: str = "",
+    sourcing_need: str = "",
+    weighting: dict[str, Any] | None = None,
+    source_type: str = "manual",
+    mode: str = "compare"
+) -> dict[str, Any]:
+    return {
+        "comparison_id": None,
+        "upload_id": normalize_text_value(upload_id) or None,
+        "name": normalize_text_value(name),
+        "sourcing_need": normalize_text_value(sourcing_need),
+        "weighting": normalize_quote_weighting(weighting),
+        "source_type": normalize_text_value(source_type) or "manual",
+        "mode": normalize_text_value(mode) or "compare",
+        "bids": list(bids or [])
+    }
+
+
 def build_quote_bid_import_result(dataframe: pd.DataFrame, *, text_already_normalized: bool = False) -> dict[str, Any]:
     import_started_at = perf_counter()
     import_substeps: dict[str, Any] = {
@@ -2930,6 +2958,8 @@ def build_quote_bid_import_result(dataframe: pd.DataFrame, *, text_already_norma
         return normalize_text_value(value)
 
     row_loop_started_at = perf_counter()
+    append_bid = bids.append
+    coerce_numeric = coerce_numeric_value
     for index in range(row_count):
         row_number = index + 1
         supplier_value = supplier_values[index]
@@ -2950,18 +2980,18 @@ def build_quote_bid_import_result(dataframe: pd.DataFrame, *, text_already_norma
         product_name = normalize_import_text(product_name_value)
         unit = normalize_import_text(unit_value)
 
-        quantity = coerce_numeric_value(
+        quantity = coerce_numeric(
             quantity_value,
             field_name="Quantity",
             context=row_context
         )
-        unit_price = coerce_numeric_value(
+        unit_price = coerce_numeric(
             unit_price_value,
             field_name="Unit Price",
             context=row_context
         )
         total_price = (
-            coerce_numeric_value(
+            coerce_numeric(
                 total_price_value,
                 field_name="Total Price",
                 context=row_context
@@ -3018,7 +3048,7 @@ def build_quote_bid_import_result(dataframe: pd.DataFrame, *, text_already_norma
             })
         if resolved_total > 0:
             positive_total_count += 1
-        bids.append({
+        append_bid({
             "supplier_name": supplier_name,
             "product_name": product_name,
             "unit": unit,
@@ -3120,37 +3150,49 @@ def normalize_metric_scores(values: list[float], *, reverse: bool = False) -> li
 
 
 def calculate_quote_comparison(comparison: dict[str, Any]) -> dict[str, Any]:
+    calculation_started_at = perf_counter()
+    calculation_substeps: dict[str, Any] = {
+        "input_bids": int(len((comparison or {}).get("bids", [])))
+    }
     validate_quote_comparison_payload(comparison)
-    currencies = sorted({bid.get("currency") or "USD" for bid in comparison["bids"]})
-
+    build_breakdown_started_at = perf_counter()
+    currency_set: set[str] = set()
     bid_breakdown: list[dict[str, Any]] = []
+    product_groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    lowest_price_bid: dict[str, Any] | None = None
+    lowest_price_key: tuple[float, str] | None = None
+    fastest_delivery_bid: dict[str, Any] | None = None
+    fastest_delivery_key: tuple[int, str] | None = None
+    best_payment_bid: dict[str, Any] | None = None
+    best_payment_key: tuple[int, str] | None = None
     for bid in comparison["bids"]:
-        bid_breakdown.append({
+        enriched_bid = {
             **bid,
             "delivery_days": parse_days_from_text(bid.get("delivery_time")),
             "payment_days": parse_payment_term_days(bid.get("payment_term")) or 0
-        })
-
-    lowest_price_bid = min(
-        bid_breakdown,
-        key=lambda item: (item["total_price"], item["supplier_name"].lower())
-    )
-    fastest_delivery_bid = min(
-        bid_breakdown,
-        key=lambda item: (
-            item["delivery_days"] if item["delivery_days"] is not None else 9999,
-            item["supplier_name"].lower()
+        }
+        bid_breakdown.append(enriched_bid)
+        currency_set.add(enriched_bid.get("currency") or "USD")
+        product_groups.setdefault((enriched_bid["product_name"], enriched_bid["unit"]), []).append(enriched_bid)
+        lowest_key = (float(enriched_bid["total_price"]), str(enriched_bid["supplier_name"]).lower())
+        if lowest_price_key is None or lowest_key < lowest_price_key:
+            lowest_price_key = lowest_key
+            lowest_price_bid = enriched_bid
+        delivery_key = (
+            enriched_bid["delivery_days"] if enriched_bid["delivery_days"] is not None else 9999,
+            str(enriched_bid["supplier_name"]).lower()
         )
-    )
-    best_payment_bid = max(
-        bid_breakdown,
-        key=lambda item: (item["payment_days"], item["supplier_name"].lower())
-    )
+        if fastest_delivery_key is None or delivery_key < fastest_delivery_key:
+            fastest_delivery_key = delivery_key
+            fastest_delivery_bid = enriched_bid
+        payment_key = (int(enriched_bid["payment_days"]), str(enriched_bid["supplier_name"]).lower())
+        if best_payment_key is None or payment_key > best_payment_key:
+            best_payment_key = payment_key
+            best_payment_bid = enriched_bid
+    calculation_substeps["build_breakdown_ms"] = round((perf_counter() - build_breakdown_started_at) * 1000, 1)
+    currencies = sorted(currency_set)
 
-    product_groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for bid in bid_breakdown:
-        product_groups.setdefault((bid["product_name"], bid["unit"]), []).append(bid)
-
+    group_products_started_at = perf_counter()
     grouped_products: list[dict[str, Any]] = []
     supplier_wins: dict[str, dict[str, Any]] = {}
     for (product_name, unit), offers in sorted(
@@ -3194,7 +3236,9 @@ def calculate_quote_comparison(comparison: dict[str, Any]) -> dict[str, Any]:
             "best_offer_value": best_offer["total_price"],
             "offers": sorted_offers
         })
+    calculation_substeps["group_products_ms"] = round((perf_counter() - group_products_started_at) * 1000, 1)
 
+    insights_started_at = perf_counter()
     recommended_supplier_name = min(
         supplier_wins.items(),
         key=lambda item: (-item[1]["wins"], item[1]["total_best_value"], item[0].lower())
@@ -3217,6 +3261,11 @@ def calculate_quote_comparison(comparison: dict[str, Any]) -> dict[str, Any]:
     ]
     if len(currencies) > 1:
         insights.append("Mixed currencies were detected, so price ranking assumes the entered totals are directly comparable.")
+    calculation_substeps["insights_ms"] = round((perf_counter() - insights_started_at) * 1000, 1)
+    calculation_substeps["product_groups"] = len(grouped_products)
+    calculation_substeps["currencies"] = len(currencies)
+    calculation_substeps["total_ms"] = round((perf_counter() - calculation_started_at) * 1000, 1)
+    log_perf_details("quote_compare.compare_calculation.substeps", **calculation_substeps)
 
     return {
         "summary": {
@@ -5783,14 +5832,21 @@ def create_app() -> FastAPI:
                 raise ValueError("No valid supplier offer rows were found after filtering invalid or missing data.")
             log_perf("confirm.import_rows", import_started_at)
             comparison_started_at = perf_counter()
-            normalized_comparison = normalize_quote_comparison_payload({
-                "upload_id": session_id,
-                "name": Path(filename).stem.replace("_", " ").strip() or "Uploaded quote comparison",
-                "sourcing_need": "",
-                "source_type": "upload",
-                "bids": import_result["bids"]
-            })
+            normalized_comparison_started_at = perf_counter()
+            normalized_comparison = build_pre_normalized_quote_comparison(
+                upload_id=session_id,
+                name=Path(filename).stem.replace("_", " ").strip() or "Uploaded quote comparison",
+                sourcing_need="",
+                source_type="upload",
+                bids=import_result["bids"]
+            )
+            compare_substeps = {
+                "build_pre_normalized_comparison_ms": round((perf_counter() - normalized_comparison_started_at) * 1000, 1)
+            }
+            evaluation_started_at = perf_counter()
             evaluation = calculate_quote_comparison(normalized_comparison)
+            compare_substeps["calculate_quote_comparison_ms"] = round((perf_counter() - evaluation_started_at) * 1000, 1)
+            log_perf_details("confirm.compare_calculation.substeps", **compare_substeps)
             log_perf("confirm.compare_calculation", comparison_started_at)
             persistence_started_at = perf_counter()
             persist_quote_compare_analysis_results(
@@ -5826,7 +5882,8 @@ def create_app() -> FastAPI:
                     "review_message": (session_payload or {}).get("review_message", ""),
                     "message": (session_payload or {}).get("message", ""),
                     "comparison": normalized_comparison,
-                    "evaluation": compact_evaluation
+                    "evaluation": compact_evaluation,
+                    "_json_safe_payload": True
                 }
                 logger.info(
                     "[PERF] confirm.save_active_session.serialization: %s",
