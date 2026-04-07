@@ -4968,27 +4968,6 @@
         return OPPORTUNITY_CARD_PALETTE[index % OPPORTUNITY_CARD_PALETTE.length];
     }
 
-    function getTopPricingOpportunityPriority(card) {
-        if (card.hasValidAlternative && card.savingsAmount > 0) return 0;
-        if (card.decisionType === "lower-historical-price-with-current-supplier") return 1;
-        if (card.decisionType === "lower-price-with-another-supplier") return 2;
-        if (card.observedAtDifferentQuantity) return 3;
-        return 4;
-    }
-
-    function getTopPricingOpportunityScore(card) {
-        if (card.hasValidAlternative && card.savingsAmount > 0) {
-            return Number(card.savingsAmount || 0);
-        }
-        if (Number(card.potentialSavingsAmount || 0) > 0) {
-            return Number(card.potentialSavingsAmount || 0);
-        }
-        return Math.max(
-            Number(card.currentOffer?.unit_price || 0) - Number(card.referenceOffer?.unit_price || 0),
-            0
-        );
-    }
-
     function getTopPricingOpportunityCards(cards, state = null) {
         const sourceCards = Array.isArray(cards) ? cards : [];
         const memo = state ? getAnalysisMemo(state) : null;
@@ -5002,12 +4981,11 @@
             return card.decisionType === "lower-historical-price-with-current-supplier"
                 || card.decisionType === "lower-price-with-another-supplier";
         });
+        const getSavingsSortValue = (card) => Number(card?.savingsAmount || 0);
         const rankedCandidates = [...meaningfulCandidates]
             .sort((left, right) => {
-                const priorityDelta = getTopPricingOpportunityPriority(left) - getTopPricingOpportunityPriority(right);
-                if (priorityDelta !== 0) return priorityDelta;
-                const scoreDelta = getTopPricingOpportunityScore(right) - getTopPricingOpportunityScore(left);
-                if (scoreDelta !== 0) return scoreDelta;
+                const savingsDelta = getSavingsSortValue(right) - getSavingsSortValue(left);
+                if (savingsDelta !== 0) return savingsDelta;
                 return String(left.productName || "").localeCompare(String(right.productName || ""));
             });
         const topDirectSavingsCards = rankedCandidates
@@ -5039,6 +5017,16 @@
         });
         console.info("[PERF] quote_compare.top_savings.rendered_count", {
             count: opportunityCards.length
+        });
+        const renderedSavingsValues = opportunityCards.map((card) => getSavingsSortValue(card));
+        console.info("[PERF] quote_compare.top_savings.max_value", {
+            value: renderedSavingsValues.length ? Math.max(...renderedSavingsValues) : 0
+        });
+        console.info("[PERF] quote_compare.top_savings.min_value", {
+            value: renderedSavingsValues.length ? Math.min(...renderedSavingsValues) : 0
+        });
+        console.info("[PERF] quote_compare.top_savings.sorted_correctly", {
+            value: renderedSavingsValues.every((value, index) => index === 0 || renderedSavingsValues[index - 1] >= value)
         });
         if (memo && memo.cardsRef === sourceCards) {
             memo.topOpportunityCards = opportunityCards;
