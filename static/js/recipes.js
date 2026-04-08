@@ -488,18 +488,21 @@
         const rawProductName = String(ingredient.product_name || "");
         const lookupProductName = rawProductName.trim();
         const sourcePurchaseUnit = state ? getSourcePurchaseUnitForProduct(state, lookupProductName) : "";
+        const sourcePurchaseBaseUnit = state ? getSourcePurchaseBaseUnitForProduct(state, lookupProductName) : "";
+        const sourcePurchaseSize = state ? getSourcePurchaseSizeForProduct(state, lookupProductName) : 0;
+        const preferredUsageUnit = state ? getPreferredUsageUnitForProduct(state, lookupProductName) : "";
         const purchaseUnit = normalizeUnit(sourcePurchaseUnit || ingredient.purchase_unit || ingredient.unit || "");
         const storedBaseUnit = normalizeUnit(ingredient.purchase_base_unit || ingredient.conversion_unit || "");
         const rememberedConversion = getRememberedPackageConversion(state, lookupProductName, purchaseUnit);
         const purchaseBaseUnit = resolvePurchaseBaseUnit(
             purchaseUnit,
-            ingredient.unit || storedBaseUnit || purchaseUnit,
-            rememberedConversion?.purchase_base_unit || storedBaseUnit
+            ingredient.unit || preferredUsageUnit || storedBaseUnit || purchaseUnit,
+            rememberedConversion?.purchase_base_unit || sourcePurchaseBaseUnit || storedBaseUnit
         );
         const purchaseType = getUnitType(purchaseUnit);
         const defaultUsageUnit = purchaseType === "package"
-            ? (purchaseBaseUnit || "each")
-            : purchaseUnit;
+            ? (preferredUsageUnit || purchaseBaseUnit || "each")
+            : (preferredUsageUnit || purchaseUnit);
         const candidateUsageUnit = normalizeUnit(ingredient.unit || defaultUsageUnit || "");
         const usageUnit = getUnitType(candidateUsageUnit) === "package"
             ? normalizeUnit(defaultUsageUnit || purchaseBaseUnit || "each")
@@ -515,6 +518,7 @@
         const purchaseSize = Number(
             ingredient.purchase_size
             || rememberedConversion?.purchase_size
+            || sourcePurchaseSize
             || 0
         );
         const normalizedIngredient = {
@@ -831,6 +835,22 @@
         return normalizeUnit(product?.purchase_unit || product?.units?.[0] || "");
     }
 
+    function getSourcePurchaseBaseUnitForProduct(state, productName) {
+        const product = state.productMap.get(productName);
+        return normalizeUnit(product?.purchase_base_unit || "");
+    }
+
+    function getSourcePurchaseSizeForProduct(state, productName) {
+        const product = state.productMap.get(productName);
+        const purchaseSize = Number(product?.purchase_size || 0);
+        return purchaseSize > 0 ? purchaseSize : 0;
+    }
+
+    function getPreferredUsageUnitForProduct(state, productName) {
+        const product = state.productMap.get(productName);
+        return normalizeUnit(product?.preferred_usage_unit || product?.purchase_base_unit || "");
+    }
+
     function clearIngredientProductSelection(state, index) {
         if (!state.draft.ingredients[index]) {
             return;
@@ -853,27 +873,33 @@
             return false;
         }
         state.draft.ingredients[index].product_name = productName;
-        state.draft.ingredients[index].purchase_unit = getSourcePurchaseUnitForProduct(state, productName)
+        const sourcePurchaseUnit = getSourcePurchaseUnitForProduct(state, productName);
+        const sourcePurchaseBaseUnit = getSourcePurchaseBaseUnitForProduct(state, productName);
+        const sourcePurchaseSize = getSourcePurchaseSizeForProduct(state, productName);
+        const preferredUsageUnit = getPreferredUsageUnitForProduct(state, productName);
+        state.draft.ingredients[index].purchase_unit = sourcePurchaseUnit
             || normalizeUnit(state.draft.ingredients[index].purchase_unit || "");
         const rememberedConversion = getRememberedPackageConversion(
             state,
             productName,
             state.draft.ingredients[index].purchase_unit
         );
+        const nextUsageUnit = normalizeUnit(state.draft.ingredients[index].unit || preferredUsageUnit);
         state.draft.ingredients[index].purchase_base_unit = resolvePurchaseBaseUnit(
             state.draft.ingredients[index].purchase_unit,
-            state.draft.ingredients[index].unit,
-            rememberedConversion?.purchase_base_unit || state.draft.ingredients[index].purchase_base_unit
+            nextUsageUnit,
+            rememberedConversion?.purchase_base_unit || sourcePurchaseBaseUnit || state.draft.ingredients[index].purchase_base_unit
         );
-        const nextUsageUnit = normalizeUnit(state.draft.ingredients[index].unit);
         const compatibleUsageType = getUnitType(nextUsageUnit) === getUnitType(state.draft.ingredients[index].purchase_base_unit);
         state.draft.ingredients[index].unit = nextUsageUnit && compatibleUsageType
             ? nextUsageUnit
-            : normalizeUnit(state.draft.ingredients[index].purchase_base_unit || state.draft.ingredients[index].purchase_unit || "");
-        state.draft.ingredients[index].purchase_size = inferPurchaseSize(
-            state.draft.ingredients[index].purchase_unit,
-            state.draft.ingredients[index].purchase_base_unit || state.draft.ingredients[index].unit
-        );
+            : normalizeUnit(preferredUsageUnit || state.draft.ingredients[index].purchase_base_unit || state.draft.ingredients[index].purchase_unit || "");
+        state.draft.ingredients[index].purchase_size = sourcePurchaseSize > 0
+            ? sourcePurchaseSize
+            : inferPurchaseSize(
+                state.draft.ingredients[index].purchase_unit,
+                state.draft.ingredients[index].purchase_base_unit || state.draft.ingredients[index].unit
+            );
         if (rememberedConversion?.purchase_size > 0) {
             state.draft.ingredients[index].purchase_size = rememberedConversion.purchase_size;
         }
@@ -2212,6 +2238,9 @@
                         return;
                     }
                     const currentUnit = normalizeUnit(state.draft.ingredients[index].unit);
+                    const sourcePurchaseBaseUnit = getSourcePurchaseBaseUnitForProduct(state, event.target.value);
+                    const sourcePurchaseSize = getSourcePurchaseSizeForProduct(state, event.target.value);
+                    const preferredUsageUnit = getPreferredUsageUnitForProduct(state, event.target.value);
                     const rememberedConversion = getRememberedPackageConversion(
                         state,
                         event.target.value,
@@ -2221,13 +2250,13 @@
                         || normalizeUnit(state.draft.ingredients[index].purchase_unit || "");
                     state.draft.ingredients[index].purchase_base_unit = resolvePurchaseBaseUnit(
                         state.draft.ingredients[index].purchase_unit,
-                        currentUnit,
-                        rememberedConversion?.purchase_base_unit || state.draft.ingredients[index].purchase_base_unit
+                        currentUnit || preferredUsageUnit,
+                        rememberedConversion?.purchase_base_unit || sourcePurchaseBaseUnit || state.draft.ingredients[index].purchase_base_unit
                     );
                     const compatibleUsageType = getUnitType(currentUnit) === getUnitType(state.draft.ingredients[index].purchase_base_unit);
                     state.draft.ingredients[index].unit = currentUnit && compatibleUsageType
                         ? currentUnit
-                        : normalizeUnit(state.draft.ingredients[index].purchase_base_unit || state.draft.ingredients[index].purchase_unit || "");
+                        : normalizeUnit(preferredUsageUnit || state.draft.ingredients[index].purchase_base_unit || state.draft.ingredients[index].purchase_unit || "");
                     if (
                         state.draft.ingredients[index].purchase_unit
                         && state.draft.ingredients[index].unit
@@ -2235,10 +2264,12 @@
                     ) {
                         state.draft.ingredients[index].purchase_base_unit = state.draft.ingredients[index].unit;
                     }
-                    state.draft.ingredients[index].purchase_size = inferPurchaseSize(
-                        state.draft.ingredients[index].purchase_unit,
-                        state.draft.ingredients[index].purchase_base_unit || state.draft.ingredients[index].unit
-                    );
+                    state.draft.ingredients[index].purchase_size = sourcePurchaseSize > 0
+                        ? sourcePurchaseSize
+                        : inferPurchaseSize(
+                            state.draft.ingredients[index].purchase_unit,
+                            state.draft.ingredients[index].purchase_base_unit || state.draft.ingredients[index].unit
+                        );
                     if (rememberedConversion?.purchase_size > 0) {
                         state.draft.ingredients[index].purchase_size = rememberedConversion.purchase_size;
                     }

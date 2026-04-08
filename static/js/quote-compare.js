@@ -177,6 +177,14 @@
         }
     }
 
+    function shouldOpenDemoEntry() {
+        try {
+            return new URLSearchParams(window.location.search || "").get("demo-entry") === "1";
+        } catch (error) {
+            return false;
+        }
+    }
+
     function clearAutoStartDemoFlag() {
         try {
             const url = new URL(window.location.href);
@@ -184,6 +192,19 @@
                 return;
             }
             url.searchParams.delete("demo");
+            window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+        } catch (error) {
+            // Ignore URL cleanup failures.
+        }
+    }
+
+    function clearDemoEntryFlag() {
+        try {
+            const url = new URL(window.location.href);
+            if (url.searchParams.get("demo-entry") !== "1") {
+                return;
+            }
+            url.searchParams.delete("demo-entry");
             window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
         } catch (error) {
             // Ignore URL cleanup failures.
@@ -1531,6 +1552,19 @@
         if (message) {
             setStatus(state, message, "info");
         }
+    }
+
+    function enterDemoSafeStartState(state, message = "") {
+        resetQuoteCompareUploadState(state, message);
+        state.demoMode = true;
+        state.demoSessionId = "";
+        state.dataScope = "demo";
+        state.currentScreen = "start";
+        state.currentStep = 1;
+        state.lastQuoteCompareScreen = { currentScreen: "start", currentStep: 1 };
+        state.hasSharedScopeAnalysis = false;
+        state.dataScopeSummary = null;
+        writeSharedDataScope("demo", "");
     }
 
     function clearDemoMode(state) {
@@ -3637,6 +3671,12 @@
                     </div>
                 ` : ""}
                 <div class="qc2-choice-grid">
+                    ${state?.demoMode ? `
+                        <button type="button" class="qc2-choice-card" data-qc-action="start-demo">
+                            <span class="qc2-choice-title">Try Demo</span>
+                            <span class="qc2-choice-copy">Load the sample pricing dataset and continue through the same analysis experience buyers see after a successful upload.</span>
+                        </button>
+                    ` : ""}
                     <button type="button" class="qc2-choice-card" data-qc-action="start-upload" ${state?.demoMode ? "hidden" : ""}>
                         <span class="qc2-choice-title">Upload Pricing File</span>
                         <span class="qc2-choice-copy">Parse one CSV or Excel file, review the detected mappings, and move straight into analysis.</span>
@@ -7031,6 +7071,7 @@
         }));
         state.demoMode = true;
         state.demoSessionId = data.session_id || state.demoSessionId || "";
+        state.dataScope = "demo";
         state.mode = "upload";
         state.uploadReview = {
             session_id: data.session_id || "",
@@ -7441,6 +7482,7 @@
             if (action === "start-demo") {
                 closeProductSummary(state);
                 state.demoMode = true;
+                state.dataScope = "demo";
                 state.mode = "upload";
                 state.currentScreen = "review";
                 state.isSubmitting = false;
@@ -8259,6 +8301,7 @@
         let readyMarked = false;
         const forceStartHome = shouldForceQuoteCompareStart();
         const autoStartDemo = shouldAutoStartDemo();
+        const demoEntryRequested = shouldOpenDemoEntry();
         const resumeRequested = shouldResumeQuoteCompareSession();
         const hasPersistedActiveSession = hasPersistedQuoteCompareActiveSession();
         const markFirstVisibleWithoutScope = () => {
@@ -8284,7 +8327,7 @@
         };
         try {
             hardResetRequested = Boolean(window.PriceAnalyzerBootGuard?.didHardReset?.());
-            if (hardResetRequested || autoStartDemo) {
+            if (hardResetRequested || autoStartDemo || demoEntryRequested) {
                 resetQuoteCompareUploadState(state);
             } else {
                 restoreQuoteCompareSession(state);
@@ -8362,10 +8405,17 @@
             if (autoStartDemo && !hasRestorableAnalyzeContext(state)) {
                 clearAutoStartDemoFlag();
                 state.demoMode = true;
+                state.dataScope = "demo";
                 state.currentScreen = "review";
                 state.mode = "upload";
                 renderApp(elements, state);
                 await triggerStep2StartAnalysis(elements, state);
+            }
+
+            if (demoEntryRequested && !autoStartDemo && !hasRestorableAnalyzeContext(state)) {
+                clearDemoEntryFlag();
+                enterDemoSafeStartState(state);
+                renderApp(elements, state);
             }
 
             if (!forceStartHome && scopeBootstrapDeferred) {

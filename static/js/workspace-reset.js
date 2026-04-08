@@ -28,6 +28,10 @@
         });
     }
 
+    function isDemoMode() {
+        return document.body?.dataset?.demoMode === "true";
+    }
+
     async function reloadSavedRecipesUi() {
         if (window.PriceAnalyzerRecipes?.reloadSavedRecipes) {
             await window.PriceAnalyzerRecipes.reloadSavedRecipes();
@@ -48,6 +52,12 @@
     }
 
     function applyResetUiState() {
+        if (isDemoMode()) {
+            clearFrontendResetState();
+            window.PriceAnalyzerBootGuard?.resetAllUiState?.();
+            window.location.assign("/?demo-entry=1");
+            return true;
+        }
         const scopeSummaryText = "No analyzed file yet";
         document.getElementById("mainDashboardView")?.setAttribute("data-has-analysis", "false");
         document.getElementById("recipesWorkspaceState")?.setAttribute("data-has-analysis", "false");
@@ -73,6 +83,7 @@
         }));
         window.dispatchEvent(new CustomEvent("workspace-reset-completed"));
         window.resetQuoteCompareToStep1?.();
+        return false;
     }
 
     async function resetWorkspaceData() {
@@ -159,7 +170,10 @@
             confirmButton.textContent = "Resetting...";
             try {
                 await resetWorkspaceData();
-                applyResetUiState();
+                const redirectedToDemoEntry = applyResetUiState();
+                if (redirectedToDemoEntry) {
+                    return;
+                }
                 if (document.body?.dataset.activeView === "recipes") {
                     window.location.assign("/");
                     return;

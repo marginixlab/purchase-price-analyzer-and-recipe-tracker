@@ -951,6 +951,33 @@ def build_demo_recipes() -> list[dict[str, Any]]:
     ]
 
 
+def build_recipe_product_defaults(recipes: list[dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
+    defaults: dict[str, dict[str, Any]] = {}
+    for recipe in recipes or []:
+        for ingredient in recipe.get("ingredients", []):
+            product_name = str(ingredient.get("product_name") or "").strip()
+            if not product_name or product_name in defaults:
+                continue
+            purchase_unit = normalize_recipe_unit_name(str(ingredient.get("purchase_unit") or "").strip())
+            purchase_base_unit = resolve_recipe_purchase_base_unit(
+                purchase_unit,
+                str(ingredient.get("unit") or "").strip(),
+                ingredient.get("purchase_base_unit")
+            )
+            purchase_size = normalize_request_value(ingredient.get("purchase_size", 0))
+            try:
+                normalized_purchase_size = float(purchase_size)
+            except (TypeError, ValueError):
+                normalized_purchase_size = 0.0
+            defaults[product_name] = {
+                "purchase_unit": purchase_unit,
+                "purchase_base_unit": purchase_base_unit,
+                "purchase_size": normalized_purchase_size if normalized_purchase_size > 0 else None,
+                "preferred_usage_unit": normalize_recipe_unit_name(str(ingredient.get("unit") or purchase_base_unit or purchase_unit or "").strip())
+            }
+    return defaults
+
+
 def ensure_demo_recipe_session_dir() -> Path:
     DEMO_RECIPES_SESSION_DIR.mkdir(parents=True, exist_ok=True)
     return DEMO_RECIPES_SESSION_DIR
@@ -4115,9 +4142,10 @@ def load_recipe_analysis_bundle(*, scope: str = "current_upload", session_id: st
     normalized_scope = normalize_analysis_scope(scope)
     if normalized_scope == "demo":
         frame = normalize_recipe_analysis_frame(build_demo_analysis_dataframe())
+        demo_recipe_defaults = build_recipe_product_defaults(build_demo_recipes())
         return {
             "frame": frame,
-            "product_catalog": build_recipe_product_catalog(frame),
+            "product_catalog": build_recipe_product_catalog(frame, recipe_defaults=demo_recipe_defaults),
             "pricing_lookup": build_recipe_pricing_lookup(frame)
         }
 
@@ -4189,7 +4217,10 @@ def load_recipe_analysis_dataframe(*, scope: str = "current_upload", session_id:
     raise ValueError("No analyzed dataset is available yet. Please upload and analyze a file first.")
 
 
-def build_recipe_product_catalog(frame: pd.DataFrame) -> list[dict[str, Any]]:
+def build_recipe_product_catalog(
+    frame: pd.DataFrame,
+    recipe_defaults: dict[str, dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
     catalog: list[dict[str, Any]] = []
     for product_name, group in frame.groupby("Product Name", sort=True):
         units = sorted({
@@ -4197,10 +4228,18 @@ def build_recipe_product_catalog(frame: pd.DataFrame) -> list[dict[str, Any]]:
             for unit in group.get("Normalized Unit", group["Unit"]).fillna("").tolist()
             if str(unit)
         })
+        product_defaults = (recipe_defaults or {}).get(str(product_name), {})
+        purchase_unit = normalize_recipe_unit_name(str(product_defaults.get("purchase_unit") or (units[0] if units else "")).strip())
+        purchase_base_unit = normalize_recipe_unit_name(str(product_defaults.get("purchase_base_unit") or "").strip())
+        preferred_usage_unit = normalize_recipe_unit_name(str(product_defaults.get("preferred_usage_unit") or purchase_base_unit or purchase_unit).strip())
+        purchase_size_value = product_defaults.get("purchase_size")
         catalog.append({
             "product_name": str(product_name),
             "units": units,
-            "purchase_unit": units[0] if units else ""
+            "purchase_unit": purchase_unit,
+            "purchase_base_unit": purchase_base_unit,
+            "purchase_size": purchase_size_value if purchase_size_value is not None else "",
+            "preferred_usage_unit": preferred_usage_unit
         })
     return catalog
 
