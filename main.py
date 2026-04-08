@@ -4526,9 +4526,8 @@ def get_saved_recipe_export_metrics(recipe: dict[str, Any]) -> dict[str, float |
     }
 
 
-def build_saved_recipe_export_rows(recipe: dict[str, Any]) -> list[dict[str, Any]]:
+def build_saved_recipe_export_context(recipe: dict[str, Any]) -> dict[str, Any]:
     normalized_recipe = normalize_recipe_payload(recipe)
-    rows: list[dict[str, Any]] = []
     ingredient_breakdown: list[dict[str, Any]] = []
     try:
         analysis_bundle = load_recipe_analysis_bundle()
@@ -4541,55 +4540,59 @@ def build_saved_recipe_export_rows(recipe: dict[str, Any]) -> list[dict[str, Any
     except ValueError:
         ingredient_breakdown = []
 
-    summary_columns = {
-        "Recipe Name": normalized_recipe.get("name"),
-        "Yield / Portions": normalized_recipe.get("yield_portions"),
-        "Total Recipe Cost": recipe.get("total_recipe_cost"),
-        "Cost Per Portion": recipe.get("cost_per_portion"),
-        "Created Date": recipe.get("created_at") or recipe.get("updated_at") or ""
+    created_date = recipe.get("created_at") or recipe.get("updated_at") or ""
+    summary = {
+        "Recipe Name": normalized_recipe.get("name") or "",
+        "Yield / Portions": normalized_recipe.get("yield_portions") or "",
+        "Total Recipe Cost": recipe.get("total_recipe_cost") if recipe.get("total_recipe_cost") is not None else "",
+        "Cost Per Portion": recipe.get("cost_per_portion") if recipe.get("cost_per_portion") is not None else "",
+        "Created Date": created_date
     }
 
-    if not normalized_recipe.get("ingredients"):
-        rows.append({
+    ingredient_rows: list[dict[str, Any]] = []
+    for index, ingredient in enumerate(normalized_recipe.get("ingredients", [])):
+        breakdown_item = ingredient_breakdown[index] if index < len(ingredient_breakdown) else {}
+        ingredient_rows.append({
+            "Ingredient Name": ingredient.get("product_name") or "",
+            "Quantity": ingredient.get("quantity") if ingredient.get("quantity") is not None else "",
+            "Unit": ingredient.get("unit") or "",
+            "Purchase Unit": ingredient.get("purchase_unit") or "",
+            "Purchase Size": ingredient.get("purchase_size") if ingredient.get("purchase_size") is not None else "",
+            "Unit Cost": breakdown_item.get("price_used") if breakdown_item.get("price_used") is not None else "",
+            "Ingredient Cost": breakdown_item.get("ingredient_cost") if breakdown_item.get("ingredient_cost") is not None else "",
+            "Supplier / Source": str(breakdown_item.get("supplier") or "").strip() or "N/A"
+        })
+
+    return {
+        "summary": summary,
+        "ingredient_rows": ingredient_rows
+    }
+
+
+def build_saved_recipe_export_rows(recipe: dict[str, Any]) -> list[dict[str, Any]]:
+    export_context = build_saved_recipe_export_context(recipe)
+    summary_columns = export_context["summary"]
+    ingredient_rows = export_context["ingredient_rows"]
+
+    if not ingredient_rows:
+        return [{
             **summary_columns,
             "Ingredient Name": "",
             "Quantity": "",
             "Unit": "",
+            "Purchase Unit": "",
+            "Purchase Size": "",
             "Unit Cost": "",
             "Ingredient Cost": "",
             "Supplier / Source": ""
-        })
-        return rows
+        }]
 
-    for index, ingredient in enumerate(normalized_recipe.get("ingredients", [])):
-        breakdown_item = ingredient_breakdown[index] if index < len(ingredient_breakdown) else {}
-        supplier_name = str(breakdown_item.get("supplier") or "").strip()
+    rows: list[dict[str, Any]] = []
+    for ingredient_row in ingredient_rows:
         rows.append({
-            "Recipe Name": summary_columns["Recipe Name"] if index == 0 else "",
-            "Yield / Portions": summary_columns["Yield / Portions"] if index == 0 else "",
-            "Total Recipe Cost": summary_columns["Total Recipe Cost"] if index == 0 else "",
-            "Cost Per Portion": summary_columns["Cost Per Portion"] if index == 0 else "",
-            "Created Date": summary_columns["Created Date"] if index == 0 else "",
-            "Ingredient Name": ingredient.get("product_name"),
-            "Quantity": ingredient.get("quantity"),
-            "Unit": ingredient.get("unit"),
-            "Unit Cost": breakdown_item.get("price_used"),
-            "Ingredient Cost": breakdown_item.get("ingredient_cost"),
-            "Supplier / Source": supplier_name or "N/A"
+            **summary_columns,
+            **ingredient_row
         })
-    rows.append({
-        "Recipe Name": "",
-        "Yield / Portions": "",
-        "Total Recipe Cost": "",
-        "Cost Per Portion": "",
-        "Created Date": "",
-        "Ingredient Name": "",
-        "Quantity": "",
-        "Unit": "",
-        "Unit Cost": "",
-        "Ingredient Cost": "",
-        "Supplier / Source": ""
-    })
     return rows
 
 
@@ -4598,17 +4601,13 @@ def build_saved_recipe_export_dataframe(recipe: dict[str, Any]) -> pd.DataFrame:
 
 
 def build_saved_recipe_export_summary_rows(recipe: dict[str, Any]) -> list[tuple[str, Any]]:
-    normalized_recipe = normalize_recipe_payload(recipe)
-    export_metrics = get_saved_recipe_export_metrics(recipe)
+    summary = build_saved_recipe_export_context(recipe)["summary"]
     return [
-        ("Recipe Name", normalized_recipe.get("name")),
-        ("Yield Portions", normalized_recipe.get("yield_portions")),
-        ("Pricing Mode", RECIPE_PRICING_MODES.get(normalized_recipe.get("pricing_mode"), normalized_recipe.get("pricing_mode") or "")),
-        ("Total Recipe Cost", recipe.get("total_recipe_cost")),
-        ("Cost Per Portion", recipe.get("cost_per_portion")),
-        ("Selling Price", export_metrics.get("selling_price_total") or None),
-        ("Food Cost %", export_metrics.get("food_cost_pct")),
-        ("Gross Margin %", export_metrics.get("gross_margin_pct"))
+        ("Recipe Name", summary.get("Recipe Name")),
+        ("Yield / Portions", summary.get("Yield / Portions")),
+        ("Total Recipe Cost", summary.get("Total Recipe Cost")),
+        ("Cost Per Portion", summary.get("Cost Per Portion")),
+        ("Created Date", summary.get("Created Date"))
     ]
 
 
@@ -4642,23 +4641,25 @@ def build_saved_recipe_excel_stream(recipe: dict[str, Any]) -> io.BytesIO:
         "Purchase Unit",
         "Purchase Size",
         "Unit Cost",
-        "Ingredient Cost"
+        "Ingredient Cost",
+        "Supplier / Source"
     ]
     for column_index, header in enumerate(ingredient_headers, start=1):
         cell = sheet.cell(row=ingredient_table_row, column=column_index, value=header)
         cell.font = bold_font
         cell.fill = header_fill
 
-    ingredient_rows = build_saved_recipe_export_rows(recipe)
+    ingredient_rows = build_saved_recipe_export_context(recipe)["ingredient_rows"]
     for row_offset, ingredient_row in enumerate(ingredient_rows, start=1):
         row_number = ingredient_table_row + row_offset
-        sheet.cell(row=row_number, column=1, value=ingredient_row.get("Ingredient"))
-        sheet.cell(row=row_number, column=2, value=ingredient_row.get("Quantity Used"))
-        sheet.cell(row=row_number, column=3, value=ingredient_row.get("Usage Unit"))
+        sheet.cell(row=row_number, column=1, value=ingredient_row.get("Ingredient Name"))
+        sheet.cell(row=row_number, column=2, value=ingredient_row.get("Quantity"))
+        sheet.cell(row=row_number, column=3, value=ingredient_row.get("Unit"))
         sheet.cell(row=row_number, column=4, value=ingredient_row.get("Purchase Unit"))
         sheet.cell(row=row_number, column=5, value=ingredient_row.get("Purchase Size"))
         sheet.cell(row=row_number, column=6, value=ingredient_row.get("Unit Cost"))
         sheet.cell(row=row_number, column=7, value=ingredient_row.get("Ingredient Cost"))
+        sheet.cell(row=row_number, column=8, value=ingredient_row.get("Supplier / Source"))
 
     for cell_ref in ("A1", f"A{ingredient_header_row}"):
         sheet[cell_ref].fill = section_fill
@@ -4670,7 +4671,8 @@ def build_saved_recipe_excel_stream(recipe: dict[str, Any]) -> io.BytesIO:
         "D": 16,
         "E": 14,
         "F": 14,
-        "G": 16
+        "G": 16,
+        "H": 20
     }.items():
         sheet.column_dimensions[column_letter].width = width
 
@@ -5981,7 +5983,7 @@ def create_app() -> FastAPI:
         export_df.to_csv(output, index=False)
         filename = build_saved_recipe_export_filename(recipe, "csv")
         return StreamingResponse(
-            iter([output.getvalue().encode("utf-8")]),
+            iter([output.getvalue().encode("utf-8-sig")]),
             media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
