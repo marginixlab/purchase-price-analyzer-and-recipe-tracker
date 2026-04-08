@@ -1048,6 +1048,18 @@ def save_demo_recipe_store(session_id: str, store: dict[str, Any]) -> None:
     )
 
 
+def clear_demo_recipe_store(session_id: str | None) -> None:
+    normalized_session_id = str(session_id or "").strip()
+    if not normalized_session_id:
+        return
+    session_path = get_demo_recipe_session_path(normalized_session_id)
+    try:
+        if session_path.exists():
+            session_path.unlink()
+    except FileNotFoundError:
+        return
+
+
 def dataframe_to_excel_stream(dataframe: pd.DataFrame, sheet_name: str) -> io.BytesIO:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -6206,8 +6218,16 @@ def create_app() -> FastAPI:
         return Response(content=response_json, media_type="application/json")
 
     @app.post("/workspace/reset")
-    def workspace_reset():
+    def workspace_reset(request: Request, demo_session_id: str | None = None):
         try:
+            if getattr(request.state, "demo_mode", False):
+                clear_demo_recipe_store(demo_session_id)
+                return JSONResponse({
+                    "success": True,
+                    "has_analysis": True,
+                    "scope_summary": build_analysis_scope_summary(build_demo_analysis_dataframe(), scope="demo"),
+                    "message": "Workspace data reset successfully."
+                })
             reset_workspace_data_store()
             return JSONResponse({
                 "success": True,
@@ -6473,8 +6493,8 @@ def create_app() -> FastAPI:
         return Response(content=response_json, media_type="application/json")
 
     @app.post("/quote-compare/demo-data")
-    def quote_compare_demo_data():
-        session_id = str(uuid.uuid4())
+    def quote_compare_demo_data(demo_session_id: str | None = None):
+        session_id = str(demo_session_id or "").strip() or str(uuid.uuid4())
         demo_frame = build_demo_analysis_dataframe()
         normalized_comparison = normalize_quote_comparison_payload({
             "name": "Demo Data",

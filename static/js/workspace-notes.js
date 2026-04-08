@@ -1,7 +1,9 @@
 (function () {
     const NOTES_ITEMS_KEY = "workspaceNotesItemsV2";
+    const DEMO_SESSION_ID_KEY = "demo_session_id";
     const MAX_NOTES = 60;
     const QUOTE_COMPARE_STATE_KEY = "quote_compare_state_v1";
+    const SHARED_DATA_SCOPE_KEY = "shared_analysis_scope_v1";
     const NOTE_SECTIONS = [
         { id: "quick_notes", title: "Quick Notes" },
         { id: "supplier_notes", title: "Supplier Notes" },
@@ -14,7 +16,78 @@
         return rawUserId || "anonymous";
     }
 
+    function createDemoSessionId() {
+        if (window.crypto?.randomUUID) {
+            return window.crypto.randomUUID();
+        }
+        return `demo-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+
+    function getStoredDemoSessionId() {
+        try {
+            return String(window.localStorage.getItem(DEMO_SESSION_ID_KEY) || "").trim();
+        } catch (error) {
+            return "";
+        }
+    }
+
+    function getOrCreateDemoSessionId() {
+        const existingId = getStoredDemoSessionId();
+        if (existingId) {
+            return existingId;
+        }
+        const nextId = createDemoSessionId();
+        try {
+            window.localStorage.setItem(DEMO_SESSION_ID_KEY, nextId);
+        } catch (error) {
+            return nextId;
+        }
+        return nextId;
+    }
+
+    function readSharedDataScope() {
+        const fallbackScope = document.body?.dataset?.demoMode === "true" ? "demo" : "current_upload";
+        const fallbackDemoSessionId = fallbackScope === "demo" ? getOrCreateDemoSessionId() : "";
+        try {
+            const rawValue = String(window.sessionStorage.getItem(SHARED_DATA_SCOPE_KEY) || "").trim();
+            if (!rawValue) {
+                return {
+                    scope: fallbackScope,
+                    session_id: fallbackDemoSessionId
+                };
+            }
+            const parsed = JSON.parse(rawValue);
+            if (parsed && typeof parsed === "object") {
+                const parsedScope = String(parsed.scope || "current_upload").trim() || "current_upload";
+                const parsedSessionId = String(parsed.session_id || "").trim();
+                if (fallbackScope === "demo" && parsedScope !== "demo") {
+                    return {
+                        scope: "demo",
+                        session_id: getOrCreateDemoSessionId()
+                    };
+                }
+                return {
+                    scope: parsedScope,
+                    session_id: parsedScope === "demo" ? (parsedSessionId || getOrCreateDemoSessionId()) : parsedSessionId
+                };
+            }
+        } catch (error) {
+            return {
+                scope: fallbackScope,
+                session_id: fallbackDemoSessionId
+            };
+        }
+        return {
+            scope: fallbackScope,
+            session_id: fallbackDemoSessionId
+        };
+    }
+
     function getScopedStorageKey(baseKey) {
+        const sharedScope = readSharedDataScope();
+        if (sharedScope.scope === "demo") {
+            return `${baseKey}:demo:${sharedScope.session_id || getOrCreateDemoSessionId()}`;
+        }
         return `${baseKey}:${getAuthUserStorageSuffix()}`;
     }
 

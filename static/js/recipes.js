@@ -2,6 +2,7 @@
     const DEFAULT_PRICING_MODE = "latest_price";
     const SHARED_DATA_SCOPE_KEY = "shared_analysis_scope_v1";
     const RECIPES_BOOTSTRAP_CACHE_KEY = "recipes_bootstrap_cache_v2";
+    const DEMO_SESSION_ID_KEY = "demo_session_id";
     const RECIPE_UNIT_OPTIONS = ["g", "kg", "oz", "lb", "ml", "l", "fl oz", "each", "portion"];
     const PACKAGE_BASE_UNIT_OPTIONS = ["g", "ml", "each"];
     const UNIT_TYPE_MAP = {
@@ -117,6 +118,35 @@
     function getAuthUserStorageSuffix() {
         const rawUserId = String(document.body?.dataset?.authUserId || "").trim();
         return rawUserId || "anonymous";
+    }
+
+    function createDemoSessionId() {
+        if (window.crypto?.randomUUID) {
+            return window.crypto.randomUUID();
+        }
+        return `demo-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+
+    function getStoredDemoSessionId() {
+        try {
+            return String(window.localStorage.getItem(DEMO_SESSION_ID_KEY) || "").trim();
+        } catch (error) {
+            return "";
+        }
+    }
+
+    function getOrCreateDemoSessionId() {
+        const existingId = getStoredDemoSessionId();
+        if (existingId) {
+            return existingId;
+        }
+        const nextId = createDemoSessionId();
+        try {
+            window.localStorage.setItem(DEMO_SESSION_ID_KEY, nextId);
+        } catch (error) {
+            return nextId;
+        }
+        return nextId;
     }
 
     function getRecipesBootstrapCacheKey() {
@@ -298,38 +328,52 @@
     }
 
     function readSharedDataScope() {
+        const fallbackScope = document.body?.dataset?.demoMode === "true" ? "demo" : "current_upload";
+        const fallbackDemoSessionId = fallbackScope === "demo" ? getOrCreateDemoSessionId() : "";
         try {
             const rawValue = String(sessionStorage.getItem(SHARED_DATA_SCOPE_KEY) || "").trim();
             if (!rawValue) {
                 return {
-                    scope: document.body?.dataset?.demoMode === "true" ? "demo" : "current_upload",
-                    session_id: ""
+                    scope: fallbackScope,
+                    session_id: fallbackDemoSessionId
                 };
             }
             const parsed = JSON.parse(rawValue);
             if (parsed && typeof parsed === "object") {
+                const parsedScope = String(parsed.scope || "current_upload").trim() || "current_upload";
+                const parsedSessionId = String(parsed.session_id || "").trim();
+                if (fallbackScope === "demo" && parsedScope !== "demo") {
+                    return {
+                        scope: "demo",
+                        session_id: getOrCreateDemoSessionId()
+                    };
+                }
                 return {
-                    scope: String(parsed.scope || "current_upload").trim() || "current_upload",
-                    session_id: String(parsed.session_id || "").trim()
+                    scope: parsedScope,
+                    session_id: parsedScope === "demo" ? (parsedSessionId || getOrCreateDemoSessionId()) : parsedSessionId
                 };
             }
         } catch (error) {
             return {
-                scope: document.body?.dataset?.demoMode === "true" ? "demo" : "current_upload",
-                session_id: ""
+                scope: fallbackScope,
+                session_id: fallbackDemoSessionId
             };
         }
         return {
-            scope: document.body?.dataset?.demoMode === "true" ? "demo" : "current_upload",
-            session_id: ""
+            scope: fallbackScope,
+            session_id: fallbackDemoSessionId
         };
     }
 
     function writeSharedDataScope(scope, sessionId = "") {
+        const normalizedScope = String(scope || "current_upload").trim() || "current_upload";
+        const normalizedSessionId = normalizedScope === "demo"
+            ? String(sessionId || getOrCreateDemoSessionId()).trim()
+            : String(sessionId || "").trim();
         try {
             sessionStorage.setItem(SHARED_DATA_SCOPE_KEY, JSON.stringify({
-                scope: String(scope || "current_upload").trim() || "current_upload",
-                session_id: String(sessionId || "").trim()
+                scope: normalizedScope,
+                session_id: normalizedSessionId
             }));
         } catch (error) {
             // Ignore storage failures.

@@ -4,10 +4,81 @@
     const QUOTE_COMPARE_SCROLL_KEY = "quote_compare_scroll_v1";
     const QUOTE_COMPARE_LAST_SCREEN_KEY = "quote_compare_last_screen_v1";
     const RECIPES_BOOTSTRAP_CACHE_KEY = "recipes_bootstrap_cache_v1";
+    const RECIPES_BOOTSTRAP_CACHE_KEY_V2 = "recipes_bootstrap_cache_v2";
+    const NOTES_ITEMS_KEY = "workspaceNotesItemsV2";
+    const SHARED_ANALYSIS_SCOPE_KEY = "shared_analysis_scope_v1";
+    const DEMO_SESSION_ID_KEY = "demo_session_id";
 
     function getAuthUserStorageSuffix() {
         const rawUserId = String(document.body?.dataset?.authUserId || "").trim();
         return rawUserId || "anonymous";
+    }
+
+    function createDemoSessionId() {
+        if (window.crypto?.randomUUID) {
+            return window.crypto.randomUUID();
+        }
+        return `demo-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+
+    function getStoredDemoSessionId() {
+        try {
+            return String(window.localStorage.getItem(DEMO_SESSION_ID_KEY) || "").trim();
+        } catch (error) {
+            return "";
+        }
+    }
+
+    function getOrCreateDemoSessionId() {
+        const existingId = getStoredDemoSessionId();
+        if (existingId) {
+            return existingId;
+        }
+        const nextId = createDemoSessionId();
+        try {
+            window.localStorage.setItem(DEMO_SESSION_ID_KEY, nextId);
+        } catch (error) {
+            return nextId;
+        }
+        return nextId;
+    }
+
+    function readSharedDataScope() {
+        const fallbackScope = document.body?.dataset?.demoMode === "true" ? "demo" : "current_upload";
+        const fallbackDemoSessionId = fallbackScope === "demo" ? getOrCreateDemoSessionId() : "";
+        try {
+            const rawValue = String(window.sessionStorage.getItem(SHARED_ANALYSIS_SCOPE_KEY) || "").trim();
+            if (!rawValue) {
+                return {
+                    scope: fallbackScope,
+                    session_id: fallbackDemoSessionId
+                };
+            }
+            const parsed = JSON.parse(rawValue);
+            if (parsed && typeof parsed === "object") {
+                const parsedScope = String(parsed.scope || "current_upload").trim() || "current_upload";
+                const parsedSessionId = String(parsed.session_id || "").trim();
+                if (fallbackScope === "demo" && parsedScope !== "demo") {
+                    return {
+                        scope: "demo",
+                        session_id: getOrCreateDemoSessionId()
+                    };
+                }
+                return {
+                    scope: parsedScope,
+                    session_id: parsedScope === "demo" ? (parsedSessionId || getOrCreateDemoSessionId()) : parsedSessionId
+                };
+            }
+        } catch (error) {
+            return {
+                scope: fallbackScope,
+                session_id: fallbackDemoSessionId
+            };
+        }
+        return {
+            scope: fallbackScope,
+            session_id: fallbackDemoSessionId
+        };
     }
 
     function clearFrontendResetState() {
@@ -17,8 +88,14 @@
             sessionStorage.removeItem(QUOTE_COMPARE_SCROLL_KEY);
             sessionStorage.removeItem(QUOTE_COMPARE_LAST_SCREEN_KEY);
             sessionStorage.removeItem(`${RECIPES_BOOTSTRAP_CACHE_KEY}:${getAuthUserStorageSuffix()}`);
+            const sharedScope = readSharedDataScope();
+            const scopedRecipeBootstrapKey = `${RECIPES_BOOTSTRAP_CACHE_KEY_V2}:${getAuthUserStorageSuffix()}:${sharedScope.scope}:${sharedScope.session_id || "default"}`;
+            sessionStorage.removeItem(scopedRecipeBootstrapKey);
             if (window.__analysisScopeBootstrapCache && typeof window.__analysisScopeBootstrapCache === "object") {
                 window.__analysisScopeBootstrapCache = {};
+            }
+            if (sharedScope.scope === "demo" && sharedScope.session_id) {
+                window.localStorage.removeItem(`${NOTES_ITEMS_KEY}:demo:${sharedScope.session_id}`);
             }
         } catch (error) {
             // Ignore storage failures.
@@ -87,7 +164,11 @@
     }
 
     async function resetWorkspaceData() {
-        const response = await fetch("/workspace/reset", {
+        const sharedScope = readSharedDataScope();
+        const query = sharedScope.scope === "demo" && sharedScope.session_id
+            ? `?demo_session_id=${encodeURIComponent(sharedScope.session_id)}`
+            : "";
+        const response = await fetch(`/workspace/reset${query}`, {
             method: "POST",
             headers: {
                 Accept: "application/json"

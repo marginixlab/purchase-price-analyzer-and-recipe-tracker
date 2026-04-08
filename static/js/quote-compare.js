@@ -23,6 +23,7 @@
     const QUOTE_COMPARE_HISTORY_COLUMNS_KEY = "quote_compare_history_columns_v1";
     const QUOTE_COMPARE_HISTORY_COLUMNS_ORDER_KEY = "quote_compare_history_columns_order_v1";
     const SHARED_ANALYSIS_SCOPE_KEY = "shared_analysis_scope_v1";
+    const DEMO_SESSION_ID_KEY = "demo_session_id";
     const OPPORTUNITY_CARD_BATCH_SIZE = 24;
     const RESTORE_INITIAL_OPPORTUNITY_CARD_BATCH_SIZE = 8;
     const RESTORE_INITIAL_ANALYSIS_VIEWPORT_END = 24;
@@ -476,14 +477,47 @@
     }
 
     function writeSharedDataScope(scope, sessionId = "") {
+        const normalizedScope = String(scope || "current_upload").trim() || "current_upload";
+        const normalizedSessionId = normalizedScope === "demo"
+            ? String(sessionId || getOrCreateDemoSessionId()).trim()
+            : String(sessionId || "").trim();
         try {
             sessionStorage.setItem(SHARED_ANALYSIS_SCOPE_KEY, JSON.stringify({
-                scope: String(scope || "current_upload").trim() || "current_upload",
-                session_id: String(sessionId || "").trim()
+                scope: normalizedScope,
+                session_id: normalizedSessionId
             }));
         } catch (error) {
             // Ignore storage failures.
         }
+    }
+
+    function createDemoSessionId() {
+        if (window.crypto?.randomUUID) {
+            return window.crypto.randomUUID();
+        }
+        return `demo-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+
+    function getStoredDemoSessionId() {
+        try {
+            return String(window.localStorage.getItem(DEMO_SESSION_ID_KEY) || "").trim();
+        } catch (error) {
+            return "";
+        }
+    }
+
+    function getOrCreateDemoSessionId() {
+        const existingId = getStoredDemoSessionId();
+        if (existingId) {
+            return existingId;
+        }
+        const nextId = createDemoSessionId();
+        try {
+            window.localStorage.setItem(DEMO_SESSION_ID_KEY, nextId);
+        } catch (error) {
+            return nextId;
+        }
+        return nextId;
     }
 
     function updateDemoStateBanner(elements, state) {
@@ -1555,7 +1589,7 @@
     function enterDemoSafeStartState(state, message = "") {
         resetQuoteCompareUploadState(state, message);
         state.demoMode = true;
-        state.demoSessionId = "";
+        state.demoSessionId = getOrCreateDemoSessionId();
         state.dataScope = "demo";
         state.currentScreen = "start";
         state.currentStep = 1;
@@ -7076,7 +7110,8 @@
     }
 
     async function startDemoAnalysis(state) {
-        const data = await fetchJson("/quote-compare/demo-data", {
+        const demoSessionId = getOrCreateDemoSessionId();
+        const data = await fetchJson(`/quote-compare/demo-data?demo_session_id=${encodeURIComponent(demoSessionId)}`, {
             method: "POST"
         });
         const fieldReviews = [...REQUIRED_FIELDS, ...OPTIONAL_FIELDS].map((field) => ({
@@ -7086,11 +7121,11 @@
             match_quality: data.mapping?.[field] ? "exact" : "missing"
         }));
         state.demoMode = true;
-        state.demoSessionId = data.session_id || state.demoSessionId || "";
+        state.demoSessionId = demoSessionId;
         state.dataScope = "demo";
         state.mode = "upload";
         state.uploadReview = {
-            session_id: data.session_id || "",
+            session_id: demoSessionId,
             filename: "Demo Data",
             required_fields: REQUIRED_FIELDS,
             optional_fields: OPTIONAL_FIELDS,
