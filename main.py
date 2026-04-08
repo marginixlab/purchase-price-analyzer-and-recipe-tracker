@@ -7390,11 +7390,3 @@ async def admin_generate_license(request: Request):
 
 
 
-@app.get("/admin/delete-old-admin")
-def delete_old_admin():
-    conn = sqlite3.connect(str(AUTH_DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM users WHERE email = 'admin@test.com'")
-    conn.commit()
-    conn.close()
-    return {"status": "deleted"}
