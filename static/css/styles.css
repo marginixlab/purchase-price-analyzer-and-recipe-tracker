@@ -1715,6 +1715,24 @@ body.is-workspace-reset-open {
     flex-wrap: wrap;
 }
 
+.info-box {
+    padding: 12px 14px;
+    border-radius: 14px;
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    background: var(--surface-tinted);
+    color: var(--text-muted);
+    font-size: 0.93rem;
+    line-height: 1.55;
+}
+
+.info-box strong {
+    color: var(--text-strong);
+}
+
+.quote-compare-info-box {
+    margin-bottom: 14px;
+}
+
 .quote-upload-title {
     color: var(--text-strong);
     font-size: 0.93rem;
@@ -13896,4 +13914,181 @@ body[data-density="compact"] .table-wrap td {
     font-weight: 700;
     white-space: normal;
     overflow-wrap: anywhere;
+}
+
+.qc2-mobile-card-list {
+    display: none;
+}
+
+.qc2-mobile-data-card {
+    padding: 14px 16px;
+    border-radius: 18px;
+    border: 1px solid rgba(125, 167, 255, 0.16);
+    background: linear-gradient(180deg, rgba(18, 34, 58, 0.96), rgba(12, 24, 42, 0.98));
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 14px 30px rgba(2, 6, 23, 0.18);
+}
+
+.qc2-mobile-data-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 0;
+}
+
+.qc2-mobile-data-label {
+    color: rgba(191, 219, 254, 0.76);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.qc2-mobile-data-value {
+    color: rgba(240, 246, 255, 0.96);
+    font-size: 13px;
+    font-weight: 700;
+    text-align: right;
+    overflow-wrap: anywhere;
+}
+
+.qc2-mobile-data-value--positive {
+    color: #86efac;
+}
+
+.qc2-mobile-data-value--negative {
+    color: #fca5a5;
+}
+
+@media (max-width: 1023px) {
+    .recipes-layout,
+    .quote-compare-layout,
+    .quote-compare-main,
+    .quote-compare-hero-top,
+    .workspace-hero-actions {
+        grid-template-columns: 1fr;
+    }
+
+    .recipes-sidebar,
+    .quote-compare-hero-right,
+    .shared-scope-card {
+        position: static;
+        width: 100%;
+    }
+
+    .recipes-panel-head,
+    .recipes-editor-head,
+    .recipe-breakdown-head,
+    .quote-compare-editor-head,
+    .quote-compare-hero-top {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .recipes-library-detail,
+    .recipes-library-list,
+    .recipes-main,
+    .quote-compare-shell,
+    .quote-compare-main {
+        min-width: 0;
+    }
+}
+
+@media (max-width: 767px) {
+    html,
+    body {
+        max-width: 100%;
+        overflow-x: hidden;
+    }
+
+    .recipes-layout,
+    .recipes-main,
+    .quote-compare-main,
+    .quote-compare-shell,
+    .qc2-analyze-tab-panels {
+        grid-template-columns: 1fr;
+    }
+
+    .recipes-sidebar,
+    .recipes-editor-card,
+    .recipe-breakdown-card,
+    .quote-compare-shell,
+    .qc2-card,
+    .qc2-analysis-table-frame,
+    .qc2-history-table-shell {
+        min-width: 0;
+        max-width: 100%;
+    }
+
+    .qc2-mobile-card-list {
+        display: grid;
+        gap: 12px;
+    }
+
+    .qc2-analysis-table,
+    .qc2-history-table-shell {
+        display: none;
+    }
+
+    .qc2-analysis-table-frame,
+    .qc2-analysis-table-scroll,
+    .qc2-history-table-scroll {
+        max-height: none;
+        padding-right: 0;
+        overflow: visible;
+    }
+
+    .qc2-analysis-filterbar,
+    .qc2-actions,
+    .qc2-upload-shell,
+    .qc2-upload-actions,
+    .recipes-library-head-actions,
+    .recipes-library-toolbar,
+    .recipes-library-actions,
+    .recipes-sidebar-actions {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .qc2-history-table thead th,
+    .qc2-ft-head {
+        position: static;
+    }
+
+    .side-panel,
+    .side-panel-left,
+    .side-panel-right {
+        position: static;
+        inset: auto;
+        transform: none;
+        max-height: none;
+    }
+}
+
+@media (hover: none), (pointer: coarse) {
+    tbody tr:hover,
+    .qc2-analysis-row:hover,
+    .qc2-history-table tbody tr:hover td,
+    .qc2-history-table tbody tr[data-qc-history-row]:hover td,
+    .summary-card:hover,
+    .decision-card:hover,
+    .chart-card:hover,
+    .top-insight-card:hover,
+    .action-priority-panel:hover,
+    .ai-entry-shell:hover,
+    .ai-workspace:hover,
+    .filter-panel:hover,
+    .table-shell:hover,
+    .recipe-list-item:hover,
+    .qc2-choice-card:hover {
+        background: inherit;
+        box-shadow: none;
+        transform: none;
+    }
+
+    .qc2-analysis-table-scroll,
+    .qc2-analysis-table-scroll.is-dragging,
+    .qc2-analysis-table-scroll.is-dragging * {
+        cursor: auto;
+    }
 }

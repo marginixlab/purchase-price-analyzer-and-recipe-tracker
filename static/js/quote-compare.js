@@ -116,6 +116,10 @@
         console.info(`[PERF] ${label}`, details);
     }
 
+    function isCompactTouchViewport() {
+        return window.matchMedia("(max-width: 767px)").matches;
+    }
+
     function getElements() {
         return {
             workspace: document.getElementById("quoteCompareWorkspaceView"),
@@ -3521,6 +3525,10 @@
                     <h2 class="qc2-title">Choose how you want to begin</h2>
                     <p class="qc2-copy">Upload a supplier pricing file for column review or enter supplier price rows manually when you need a quick buying decision.</p>
                 </div>
+                <div class="info-box quote-compare-info-box">
+                    <strong>Before you start:</strong>
+                    Analysis quality depends on your data. Make sure your product names and units are consistent (e.g., lb vs lbs, case vs pcs).
+                </div>
                 <div class="qc2-choice-grid">
                     <button type="button" class="qc2-choice-card" data-qc-action="start-upload">
                         <span class="qc2-choice-title">Upload Pricing File</span>
@@ -5698,6 +5706,36 @@
         `;
     }
 
+    function renderAnalysisMobileCards(cards) {
+        return `
+            <div class="qc2-mobile-card-list qc2-mobile-analysis-list">
+                ${cards.map((card) => {
+                    const bestOffer = card.bestOffer || card.currentOffer || null;
+                    const bestPrice = Number(bestOffer?.unit_price || card.currentOffer?.unit_price || 0);
+                    const changePercent = card.hasValidAlternative
+                        ? Number(card.savingsPercent || 0)
+                        : 0;
+                    return `
+                        <article class="qc2-mobile-data-card qc2-mobile-analysis-card">
+                            <div class="qc2-mobile-data-row">
+                                <span class="qc2-mobile-data-label">Product</span>
+                                <span class="qc2-mobile-data-value">${escapeHtml(card.productName || "Product missing")}</span>
+                            </div>
+                            <div class="qc2-mobile-data-row">
+                                <span class="qc2-mobile-data-label">Best price</span>
+                                <span class="qc2-mobile-data-value">${escapeHtml(formatCurrency(bestPrice, card.currency))}</span>
+                            </div>
+                            <div class="qc2-mobile-data-row">
+                                <span class="qc2-mobile-data-label">Change %</span>
+                                <span class="qc2-mobile-data-value ${changePercent > 0 ? "qc2-mobile-data-value--positive" : changePercent < 0 ? "qc2-mobile-data-value--negative" : ""}">${escapeHtml(formatPercent(changePercent))}</span>
+                            </div>
+                        </article>
+                    `;
+                }).join("")}
+            </div>
+        `;
+    }
+
     function renderAnalyzeRows(cards, state) {
         const renderStartedAt = performance.now();
         const filteredCards = getFilteredAnalysisCards(state, cards);
@@ -5727,7 +5765,9 @@
         const headerModel = getAnalysisTableViewModel(visibleCards[0] || filteredCards[0] || {});
         const savingsSortIndicator = savingsSortDirection === "asc" ? "↑" : savingsSortDirection === "desc" ? "↓" : "↕";
         const markup = `
-            <div class="qc2-analysis-table qc2-full-table-v3">
+            <div class="qc2-analysis-responsive-shell">
+                ${renderAnalysisMobileCards(visibleCards)}
+                <div class="qc2-analysis-table qc2-full-table-v3">
                 <div class="qc2-analysis-table-head qc2-ft-head qc2-ft-grid" role="row">
                     <span class="qc2-ft-head-cell qc2-ft-head-cell--product" role="columnheader">Product</span>
                     <span class="qc2-ft-head-cell" role="columnheader">${escapeHtml(headerModel.leftHeader)}</span>
@@ -5856,6 +5896,7 @@
                 }).join("")}
                 ${bottomSpacer ? `<div class="qc2-virtual-spacer" style="height:${bottomSpacer}px" aria-hidden="true"></div>` : ""}
                 <div class="qc2-analysis-filter-empty" data-qc-analysis-empty hidden>No comparison rows match the selected filter.</div>
+                </div>
             </div>
         `;
         console.info("[compare prices table render]", {
@@ -6357,6 +6398,29 @@
         persistQuoteCompareSession(state, elements);
     }
 
+    function renderHistoryMobileCards(rows) {
+        return `
+            <div class="qc2-mobile-card-list qc2-mobile-history-list">
+                ${rows.map((row) => `
+                    <article class="qc2-mobile-data-card qc2-mobile-history-card" data-qc-history-row data-qc-history-series-key="${escapeHtml(getHistorySeriesKey(row.productName, row.unit))}" data-qc-history-row-id="${escapeHtml(row.historyId)}" tabindex="0" role="button" aria-label="${escapeHtml(`${row.productName} ${row.unit || ""}. Tap to inspect movement.`)}">
+                        <div class="qc2-mobile-data-row">
+                            <span class="qc2-mobile-data-label">Product</span>
+                            <span class="qc2-mobile-data-value">${escapeHtml(row.productName)}</span>
+                        </div>
+                        <div class="qc2-mobile-data-row">
+                            <span class="qc2-mobile-data-label">Best price</span>
+                            <span class="qc2-mobile-data-value">${escapeHtml(formatCurrency(row.unitPrice, row.currency))}</span>
+                        </div>
+                        <div class="qc2-mobile-data-row">
+                            <span class="qc2-mobile-data-label">Change %</span>
+                            <span class="qc2-mobile-data-value ${row.changePercent > 0 ? "qc2-mobile-data-value--negative" : row.changePercent < 0 ? "qc2-mobile-data-value--positive" : ""}">${row.changePercent == null ? "--" : escapeHtml(formatPercent(row.changePercent))}</span>
+                        </div>
+                    </article>
+                `).join("")}
+            </div>
+        `;
+    }
+
     function renderHistoryTable(state, rows, { hasHistoryContext = false } = {}) {
         if (!rows.length) {
             if (hasHistoryContext) {
@@ -6366,7 +6430,9 @@
         }
         const visibleColumns = getVisibleHistoryColumns(state);
         return `
-            <div class="qc2-history-table-shell">
+            <div class="qc2-history-responsive-shell">
+                ${renderHistoryMobileCards(rows)}
+                <div class="qc2-history-table-shell">
                 <div class="qc2-history-table-scroll" data-qc-history-table-scroll>
                     <table class="quote-compare-table qc2-history-table">
                     <thead>
@@ -6420,6 +6486,7 @@
                         `).join("")}
                     </tbody>
                     </table>
+                </div>
                 </div>
             </div>
         `;
@@ -7447,6 +7514,17 @@
             if (historyRow) {
                 const seriesKey = historyRow.dataset.qcHistorySeriesKey || "";
                 const rowId = historyRow.dataset.qcHistoryRowId || "";
+                if (isCompactTouchViewport()) {
+                    const previousScrollTop = readScrollPosition(elements);
+                    const previousTableScrollTop = getHistoryTableScroller(elements)?.scrollTop || 0;
+                    const viewModel = getHistoryViewModel(state);
+                    setHistorySelectedSeries(state, viewModel.filteredRows, seriesKey, rowId);
+                    const fullSeriesRows = getHistoryFullSeriesRows(state, seriesKey);
+                    openHistoryDetailModal(state, fullSeriesRows, true);
+                    refreshHistoryView(elements, state);
+                    restoreHistoryTablePosition(elements, previousScrollTop, previousTableScrollTop);
+                    return;
+                }
                 if (state.historyRowClickTimer) {
                     clearTimeout(state.historyRowClickTimer);
                 }
@@ -7721,6 +7799,7 @@
         });
 
         elements.app.addEventListener("dblclick", (event) => {
+            if (isCompactTouchViewport()) return;
             const historyRow = event.target.closest("[data-qc-history-row]");
             if (!historyRow) return;
             if (state.historyRowClickTimer) {

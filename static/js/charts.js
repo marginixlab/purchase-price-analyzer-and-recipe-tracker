@@ -111,9 +111,14 @@
         };
     }
 
+    function isCompactTouchViewport() {
+        return window.matchMedia("(max-width: 767px)").matches;
+    }
+
     function buildBarChartConfig(labels, values, colors, datasetLabel, themeTokens) {
         const strongestIndex = values.indexOf(Math.max(...values, 0));
         const backgroundColor = colors.map((color, index) => index === strongestIndex ? color : `${color}cc`);
+        const compactTouch = isCompactTouchViewport();
 
         return {
             type: "bar",
@@ -133,6 +138,11 @@
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                events: compactTouch ? ["click", "touchstart", "touchmove"] : undefined,
+                interaction: {
+                    mode: "nearest",
+                    intersect: true
+                },
                 animation: {
                     duration: 220,
                     easing: "easeOutCubic"
@@ -199,6 +209,7 @@
         const dominantLabel = dominantIndex >= 0 ? labels[dominantIndex] : "No data";
         const dominantValue = dominantIndex >= 0 ? values[dominantIndex] : 0;
         const dominantShare = total ? `${Math.round((dominantValue / total) * 100)}% largest slice` : "No visible rows";
+        const compactTouch = isCompactTouchViewport();
 
         return {
             type: "doughnut",
@@ -209,7 +220,7 @@
                     data: values,
                     backgroundColor: colors,
                     borderWidth: 0,
-                    hoverOffset: 4,
+                    hoverOffset: compactTouch ? 0 : 4,
                     spacing: 3
                 }]
             },
@@ -217,6 +228,11 @@
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                events: compactTouch ? ["click", "touchstart", "touchmove"] : undefined,
+                interaction: {
+                    mode: "nearest",
+                    intersect: true
+                },
                 animation: {
                     duration: 220,
                     easing: "easeOutCubic"
