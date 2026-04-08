@@ -3,9 +3,12 @@ __pycache__/
 *.pyc
 .env
 *.log
+
+# app runtime data
+data/
+
+# optional specific ignores
 latest_results.csv
-.quote_compare_sessions/
-.quote_compare_uploads/
 quote_comparisons.json
 auth.db
 codes.json
