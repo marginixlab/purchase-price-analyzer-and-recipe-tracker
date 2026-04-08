@@ -5803,8 +5803,17 @@
 
     function toCsvValue(value) {
         const text = value == null ? "" : String(value);
+        if (/^=".*"$/.test(text)) return text;
         if (!/[",\n]/.test(text)) return text;
         return `"${text.replace(/"/g, "\"\"")}"`;
+    }
+
+    function toExcelSafeNumericText(value, { decimals = 2, suffix = "" } = {}) {
+        const numericValue = Number(value);
+        if (!Number.isFinite(numericValue)) {
+            return "";
+        }
+        return `="${numericValue.toFixed(decimals)}${suffix}"`;
     }
 
     function buildAnalysisExportFilename(state, scope) {
@@ -5819,10 +5828,10 @@
             return {
                 Product: card.productName || "",
                 "Lowest Supplier": getOfferSupplierLabel(viewModel.leftOffer) || "",
-                "Lowest Price": formatCurrency(viewModel.leftUnitPrice, card.currency),
+                "Lowest Price": toExcelSafeNumericText(viewModel.leftUnitPrice),
                 "Highest Supplier": getOfferSupplierLabel(viewModel.rightOffer) || "",
-                "Highest Price": formatCurrency(viewModel.rightUnitPrice, card.currency),
-                Savings: formatCurrency(viewModel.savingsAmount || 0, card.currency)
+                "Highest Price": toExcelSafeNumericText(viewModel.rightUnitPrice),
+                Savings: toExcelSafeNumericText(viewModel.savingsAmount || 0)
             };
         });
     }
@@ -5830,10 +5839,10 @@
     function buildTopSavingsExportRows(cards) {
         return cards.map((card) => ({
             Product: card.productName || "",
-            "Current Price": formatCurrency(card.currentOffer?.unit_price || 0, card.currency),
-            "Lowest Price": formatCurrency(card.referenceOffer?.unit_price || card.bestOffer?.unit_price || 0, card.currency),
-            Savings: formatCurrency(card.savingsAmount || 0, card.currency),
-            "Savings %": formatPercent(card.savingsPercent || 0)
+            "Current Price": toExcelSafeNumericText(card.currentOffer?.unit_price || 0),
+            "Lowest Price": toExcelSafeNumericText(card.referenceOffer?.unit_price || card.bestOffer?.unit_price || 0),
+            Savings: toExcelSafeNumericText(card.savingsAmount || 0),
+            "Savings %": toExcelSafeNumericText(card.savingsPercent || 0, { suffix: "%" })
         }));
     }
 
