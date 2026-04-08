@@ -1272,6 +1272,7 @@
             savedComparisons: [],
             collapsedDecisionCards: state.collapsedDecisionCards,
             spotlightTableFilterKey: state.spotlightTableFilterKey,
+            activeProductFilter: state.activeProductFilter,
             selectedAnalysisRowKey: state.selectedAnalysisRowKey,
             analysisTableFilter: state.analysisTableFilter,
             analysisTableSearch: state.analysisTableSearch,
@@ -1442,6 +1443,7 @@
         state.isParsing = false;
         state.isSubmitting = false;
         state.spotlightTableFilterKey = "";
+        state.activeProductFilter = null;
         state.selectedAnalysisRowKey = "";
         state.currentScreen = "start";
         state.currentStep = 1;
@@ -1532,6 +1534,7 @@
         state.savedComparisons = Array.isArray(snapshot.savedComparisons) ? snapshot.savedComparisons : state.savedComparisons;
         state.collapsedDecisionCards = snapshot.collapsedDecisionCards || state.collapsedDecisionCards;
         state.spotlightTableFilterKey = snapshot.spotlightTableFilterKey || state.spotlightTableFilterKey;
+        state.activeProductFilter = snapshot.activeProductFilter || state.activeProductFilter;
         state.selectedAnalysisRowKey = snapshot.currentScreen === "analyze"
             ? ""
             : (snapshot.selectedAnalysisRowKey || state.selectedAnalysisRowKey);
@@ -1830,6 +1833,7 @@
             selectedAnalysisRowKey: "",
             analysisTableFilter: "all",
             analysisTableSearch: "",
+            activeProductFilter: null,
             analysisTableSort: { key: "", direction: "" },
             analysisViewport: { start: 0, end: 80, scrollTop: 0 },
             activeAnalyzeTab: "savings",
@@ -2810,7 +2814,11 @@
     function getAnalyzeRenderModel(state) {
         const result = state.analysisResult || { comparison: { bids: [] }, evaluation: null, summary: { rowCount: 0, supplierCount: 0, productCount: 0, productsWithSavings: 0, totalVisibleSavings: 0, currentSpend: 0, optimizedSpend: 0, optimizedSavings: 0, optimizedSavingsPercent: 0, optimizedRows: [], decisionCards: [] } };
         const summary = getAnalysisSummary(result);
-        const decisionCards = summary.decisionCards || [];
+        const fullDecisionCards = summary.decisionCards || [];
+        const activeProductFilter = String(state.activeProductFilter || "").trim().toLowerCase();
+        const decisionCards = activeProductFilter
+            ? fullDecisionCards.filter((card) => String(card.productName || "").trim().toLowerCase() === activeProductFilter)
+            : fullDecisionCards;
         const opportunityCards = getTopPricingOpportunityCards(decisionCards, state);
         const comparisonCurrency = result.comparison?.bids?.[0]?.currency || "USD";
         const isOpportunitySectionVisible = state.showOpportunitySection !== false;
@@ -2821,7 +2829,10 @@
         const shouldRenderFullComparison = state.showFullComparison && activeAnalyzeTab === "full-table";
         return {
             result,
-            summary,
+            summary: {
+                ...summary,
+                decisionCards
+            },
             decisionCards,
             opportunityCards,
             comparisonCurrency,
@@ -4884,13 +4895,13 @@
     function getFilteredAnalysisCards(state, cards) {
         const activeFilter = normalizeAnalysisTableFilter(state.analysisTableFilter);
         const searchTerm = String(state.analysisTableSearch || "").trim().toLowerCase();
-        const spotlightTableFilterKey = String(state.spotlightTableFilterKey || "").trim();
+        const activeProductFilter = String(state.activeProductFilter || "").trim().toLowerCase();
         const sourceCards = Array.isArray(cards) ? cards : [];
         const memo = getAnalysisMemo(state);
         const filteredKey = [
             activeFilter,
             searchTerm,
-            spotlightTableFilterKey,
+            activeProductFilter,
             state.analysisTableSort?.key || "",
             state.analysisTableSort?.direction || "",
             sourceCards.length
@@ -4899,7 +4910,7 @@
             return memo.filteredCards;
         }
         let filteredCards = [...sourceCards].filter((card) => {
-            if (spotlightTableFilterKey && getNormalizedProductUnitKey(card.productName, card.unit) !== spotlightTableFilterKey) {
+            if (activeProductFilter && String(card.productName || "").trim().toLowerCase() !== activeProductFilter) {
                 return false;
             }
             const matchesFilter = activeFilter === "all" || getAnalysisFilterResultValue(card) === activeFilter;
@@ -4933,6 +4944,7 @@
         const summaryKey = [
             normalizeAnalysisTableFilter(state.analysisTableFilter),
             String(state.analysisTableSearch || "").trim().toLowerCase(),
+            String(state.activeProductFilter || "").trim().toLowerCase(),
             state.analysisTableSort?.key || "",
             state.analysisTableSort?.direction || "",
             filteredCards.length
@@ -5052,8 +5064,14 @@
             { value: "pricing-opportunities", label: "Pricing opportunities" },
             { value: "no-immediate-action", label: "No immediate action" }
         ];
+        const activeProductFilter = String(state.activeProductFilter || "").trim();
         return `
             <div class="qc2-analysis-filterbar" data-qc-analysis-filterbar>
+                ${activeProductFilter ? `
+                    <div class="qc2-analysis-filter-scope">
+                        Filtered by: ${escapeHtml(activeProductFilter)}
+                    </div>
+                ` : ""}
                 <div class="qc2-analysis-filterbar-actions">
                     ${filters.map((filter) => `
                         <button
@@ -5520,7 +5538,8 @@
                 ${visibleCards.map((card, index) => {
                     const theme = getOpportunityCardTheme(index);
                     const cardKey = getScopedDecisionCardKey("spotlight", getDecisionCardKey(card));
-                    const isExpanded = String(state.spotlightTableFilterKey || "") === getNormalizedProductUnitKey(card.productName, card.unit);
+                    const isExpanded = String(state.spotlightTableFilterKey || "") === getNormalizedProductUnitKey(card.productName, card.unit)
+                        || String(state.activeProductFilter || "").trim().toLowerCase() === String(card.productName || "").trim().toLowerCase();
                     const badgeLabel = getSpotlightBadgeLabel(card);
                     return `
                         <article
@@ -5640,6 +5659,11 @@
     function closeProductSummary(state) {
         state.productSummaryModalOpen = false;
         state.productSummaryModalData = null;
+    }
+
+    function clearActiveProductFilterState(state) {
+        state.activeProductFilter = null;
+        state.spotlightTableFilterKey = "";
     }
 
     function renderProductSummaryDrawer(state) {
@@ -6068,10 +6092,10 @@
                                     </div>
                                 </div>
                                 ${shouldRenderFullComparison ? `
-                                    ${renderAnalysisFilterBar(state, summary.decisionCards)}
+                                    ${renderAnalysisFilterBar(state, decisionCards)}
                                     <div class="qc2-analysis-table-frame">
                                         <div class="qc2-analysis-table-scroll" tabindex="0" aria-label="Full comparison table results">
-                                            <div data-qc-analysis-table-content>${renderAnalyzeRows(summary.decisionCards, state)}</div>
+                                            <div data-qc-analysis-table-content>${renderAnalyzeRows(decisionCards, state)}</div>
                                         </div>
                                     </div>
                                 ` : ""}
@@ -6741,6 +6765,7 @@
         });
         const renderModel = getAnalyzeRenderModel(state);
         const summaryGrid = elements.app.querySelector("[data-qc-analyze-summary-grid]");
+        const filterBar = elements.app.querySelector("[data-qc-analysis-filterbar]");
         const tableContent = elements.app.querySelector("[data-qc-analysis-table-content]");
         if (summaryGrid) {
             summaryGrid.innerHTML = renderAnalyzeSummaryGridMarkup(
@@ -6748,6 +6773,9 @@
                 renderModel.activeAnalyzeTab,
                 renderModel.comparisonCurrency
             );
+        }
+        if (filterBar && renderModel.shouldRenderFullComparison) {
+            filterBar.outerHTML = renderAnalysisFilterBar(state, renderModel.decisionCards || []);
         }
         if (tableContent) {
             tableContent.innerHTML = renderAnalyzeRows(renderModel.summary.decisionCards || [], state);
@@ -6922,7 +6950,7 @@
             state.showOpportunitySection = true;
             state.showFullComparison = false;
             state.opportunityRenderCount = OPPORTUNITY_CARD_BATCH_SIZE;
-            state.spotlightTableFilterKey = "";
+            clearActiveProductFilterState(state);
             state.collapsedDecisionCards = clearDecisionCardsForScope(state.collapsedDecisionCards, "spotlight");
             state.selectedAnalysisRowKey = "";
             state.lastFlowScreen = "review";
@@ -6993,6 +7021,7 @@
             state.showOpportunitySection = true;
             state.showFullComparison = false;
             state.opportunityRenderCount = OPPORTUNITY_CARD_BATCH_SIZE;
+            clearActiveProductFilterState(state);
             state.collapsedDecisionCards = clearDecisionCardsForScope(state.collapsedDecisionCards, "spotlight");
             state.selectedAnalysisRowKey = "";
             state.lastFlowScreen = "review";
@@ -7258,7 +7287,11 @@
                             return;
                         }
                         const spotlightGroupKey = getNormalizedProductUnitKey(spotlightCard.productName, spotlightCard.unit);
-                        state.spotlightTableFilterKey = state.spotlightTableFilterKey === spotlightGroupKey ? "" : spotlightGroupKey;
+                        const nextProductFilter = String(state.activeProductFilter || "").trim().toLowerCase() === String(spotlightCard.productName || "").trim().toLowerCase()
+                            ? null
+                            : spotlightCard.productName;
+                        state.spotlightTableFilterKey = nextProductFilter ? spotlightGroupKey : "";
+                        state.activeProductFilter = nextProductFilter;
                         state.showFullComparison = true;
                         state.activeAnalyzeTab = "full-table";
                         state.selectedAnalysisRowKey = "";
@@ -7299,20 +7332,22 @@
                 state.activeAnalyzeTab = nextTab;
                 if (nextTab === "full-table") {
                     state.showFullComparison = true;
+                } else {
+                    clearActiveProductFilterState(state);
                 }
                 renderApp(elements, state, { preserveScroll: true, anchorSelector: '[data-qc-anchor="opportunity-section"], [data-qc-anchor="full-comparison-section"]' });
                 return;
             }
             if (action === "collapse-all-opportunity-tables") {
                 state.collapsedDecisionCards = clearDecisionCardsForScope(state.collapsedDecisionCards, "spotlight");
-                state.spotlightTableFilterKey = "";
+                clearActiveProductFilterState(state);
                 renderApp(elements, state, { preserveScroll: true, anchorSelector: '[data-qc-anchor="opportunity-section"]' });
                 return;
             }
             if (action === "hide-opportunity-section") {
                 state.showOpportunitySection = false;
                 state.collapsedDecisionCards = clearDecisionCardsForScope(state.collapsedDecisionCards, "spotlight");
-                state.spotlightTableFilterKey = "";
+                clearActiveProductFilterState(state);
                 renderApp(elements, state, { preserveScroll: true, anchorSelector: '[data-qc-anchor="opportunity-section"]' });
                 return;
             }
@@ -7320,12 +7355,13 @@
                 state.showOpportunitySection = !state.showOpportunitySection;
                 if (!state.showOpportunitySection) {
                     state.collapsedDecisionCards = clearDecisionCardsForScope(state.collapsedDecisionCards, "spotlight");
-                    state.spotlightTableFilterKey = "";
+                    clearActiveProductFilterState(state);
                 }
                 renderApp(elements, state, { preserveScroll: true, anchorSelector: '[data-qc-anchor="opportunity-section"]' });
                 return;
             }
             if (action === "hide-all-details") {
+                clearActiveProductFilterState(state);
                 state.collapsedDecisionCards = clearFullComparisonDetails(state.collapsedDecisionCards);
                 renderApp(elements, state, { preserveScroll: true, anchorSelector: '[data-qc-anchor="full-comparison-section"]' });
                 return;
@@ -7338,6 +7374,9 @@
             }
             if (action === "set-analysis-filter") {
                 state.analysisTableFilter = actionTarget.dataset.filterValue || "all";
+                if (state.analysisTableFilter === "all") {
+                    clearActiveProductFilterState(state);
+                }
                 state.analysisViewport = { start: 0, end: 80, scrollTop: 0 };
                 const scroller = elements.app?.querySelector(".qc2-analysis-table-scroll");
                 if (scroller) scroller.scrollTop = 0;
@@ -7665,6 +7704,9 @@
             const searchInput = event.target.closest("[data-qc-analysis-search]");
             if (searchInput) {
                 state.analysisTableSearch = searchInput.value || "";
+                if (!String(state.analysisTableSearch || "").trim() && normalizeAnalysisTableFilter(state.analysisTableFilter) === "all") {
+                    clearActiveProductFilterState(state);
+                }
                 scheduleAnalysisTableFilter(elements, state);
                 return;
             }

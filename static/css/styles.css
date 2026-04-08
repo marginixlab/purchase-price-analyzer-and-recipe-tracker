@@ -6216,6 +6216,14 @@ body.is-workspace-reset-open {
     padding: 0 2px;
 }
 
+.qc2-analysis-filter-scope {
+    grid-column: 1 / -1;
+    color: rgba(191, 219, 254, 0.82);
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.4;
+}
+
 .recipes-view-hero .panel-copy {
     margin-top: 10px;
     max-width: 760px;
