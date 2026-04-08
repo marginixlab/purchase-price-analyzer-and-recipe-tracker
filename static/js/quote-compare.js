@@ -5095,6 +5095,7 @@
                         autocomplete="off"
                     >
                     <button type="button" class="secondary-btn qc2-analysis-search-clear" data-qc-action="clear-analysis-search" ${state.analysisTableSearch ? "" : "hidden"} aria-label="Clear search">X</button>
+                    <button type="button" class="secondary-btn qc2-analysis-search-export" data-qc-action="export-analysis-csv" data-export-scope="full-table">Export CSV</button>
                     <button type="button" class="action-btn qc2-analysis-search-button" tabindex="-1" aria-hidden="true">Search</button>
                 </div>
             </div>
@@ -5804,10 +5805,10 @@
         return `"${text.replace(/"/g, "\"\"")}"`;
     }
 
-    function buildAnalysisExportFilename(state, scope, extension) {
+    function buildAnalysisExportFilename(state, scope) {
         const baseName = scope === "top-savings" ? "top_savings_export" : "full_table_export";
         const productPart = state.activeProductFilter ? `_${sanitizeExportFilePart(state.activeProductFilter, "product")}` : "";
-        return `${baseName}${productPart}.${extension}`;
+        return `${baseName}${productPart}.csv`;
     }
 
     function buildFullTableExportRows(cards) {
@@ -5842,27 +5843,7 @@
         return lines.join("\n");
     }
 
-    function buildExcelTableMarkup(rows, columns, title) {
-        return `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>${escapeHtml(title)}</title>
-</head>
-<body>
-<table>
-<thead>
-<tr>${columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr>
-</thead>
-<tbody>
-${rows.map((row) => `<tr>${columns.map((column) => `<td>${escapeHtml(row[column] == null ? "" : String(row[column]))}</td>`).join("")}</tr>`).join("")}
-</tbody>
-</table>
-</body>
-</html>`;
-    }
-
-    function exportCurrentVisibleData(state, scope, format) {
+    function exportCurrentVisibleData(state, scope) {
         const visibleData = getCurrentVisibleData(state, scope);
         const rows = scope === "top-savings"
             ? buildTopSavingsExportRows(visibleData)
@@ -5870,18 +5851,10 @@ ${rows.map((row) => `<tr>${columns.map((column) => `<td>${escapeHtml(row[column]
         const columns = scope === "top-savings"
             ? ["Product", "Current Price", "Lowest Price", "Savings", "Savings %"]
             : ["Product", "Lowest Supplier", "Lowest Price", "Highest Supplier", "Highest Price", "Savings"];
-        if (format === "csv") {
-            triggerAnalysisDownload(
-                buildAnalysisExportFilename(state, scope, "csv"),
-                buildCsvFromRows(rows, columns),
-                "text/csv;charset=utf-8"
-            );
-            return;
-        }
         triggerAnalysisDownload(
-            buildAnalysisExportFilename(state, scope, "xls"),
-            buildExcelTableMarkup(rows, columns, scope === "top-savings" ? "Top Savings Export" : "Full Table Export"),
-            "application/vnd.ms-excel"
+            buildAnalysisExportFilename(state, scope),
+            buildCsvFromRows(rows, columns),
+            "text/csv;charset=utf-8"
         );
     }
 
@@ -6187,7 +6160,6 @@ ${rows.map((row) => `<tr>${columns.map((column) => `<td>${escapeHtml(row[column]
                                         </div>
                                         <div class="qc2-analysis-section-actions">
                                             <button type="button" class="secondary-btn qc2-section-action-btn" data-qc-action="export-analysis-csv" data-export-scope="top-savings">Export CSV</button>
-                                            <button type="button" class="secondary-btn qc2-section-action-btn" data-qc-action="export-analysis-excel" data-export-scope="top-savings">Export Excel</button>
                                             <button type="button" class="secondary-btn qc2-section-action-btn" data-qc-action="collapse-all-opportunity-tables">Collapse all tables</button>
                                             <button type="button" class="secondary-btn qc2-section-action-btn" data-qc-action="hide-opportunity-section">Hide section</button>
                                         </div>
@@ -6212,8 +6184,6 @@ ${rows.map((row) => `<tr>${columns.map((column) => `<td>${escapeHtml(row[column]
                                         <div class="mapping-section-copy">Structured all-products price intelligence view across the complete pricing set.</div>
                                     </div>
                                     <div class="qc2-analysis-section-actions">
-                                        <button type="button" class="secondary-btn qc2-section-action-btn" data-qc-action="export-analysis-csv" data-export-scope="full-table">Export CSV</button>
-                                        <button type="button" class="secondary-btn qc2-section-action-btn" data-qc-action="export-analysis-excel" data-export-scope="full-table">Export Excel</button>
                                         ${shouldRenderFullComparison ? '<button type="button" class="secondary-btn qc2-section-action-btn" data-qc-action="hide-all-details">Hide selections</button>' : ""}
                                         <button type="button" class="secondary-btn qc2-section-action-btn" data-qc-action="toggle-full-comparison" aria-expanded="${state.showFullComparison ? "true" : "false"}">
                                             ${state.showFullComparison ? "Hide table" : "Open table"}
@@ -7510,11 +7480,7 @@ ${rows.map((row) => `<tr>${columns.map((column) => `<td>${escapeHtml(row[column]
                 return;
             }
             if (action === "export-analysis-csv") {
-                exportCurrentVisibleData(state, actionTarget.dataset.exportScope || "full-table", "csv");
-                return;
-            }
-            if (action === "export-analysis-excel") {
-                exportCurrentVisibleData(state, actionTarget.dataset.exportScope || "full-table", "excel");
+                exportCurrentVisibleData(state, actionTarget.dataset.exportScope || "full-table");
                 return;
             }
             if (action === "set-analysis-filter") {

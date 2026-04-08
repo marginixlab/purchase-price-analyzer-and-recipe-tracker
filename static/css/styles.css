@@ -6446,6 +6446,11 @@ body.is-workspace-reset-open {
     display: none;
 }
 
+.qc2-analysis-search-export {
+    min-height: 38px;
+    white-space: nowrap;
+}
+
 @media (max-width: 1180px) {
     .qc2-analysis-filterbar {
         grid-template-columns: 1fr;
