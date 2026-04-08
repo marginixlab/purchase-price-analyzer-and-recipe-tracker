@@ -5462,7 +5462,6 @@ def create_app() -> FastAPI:
         logger.info("Templates directory verified: %s", TEMPLATES_DIR)
         logger.info("Static directory mounted: %s", STATIC_DIR)
         ensure_auth_db()
-        ensure_seed_admin_user()
         ensure_recipes_file()
         logger.info("Recipes file ready: %s", RECIPES_PATH)
         ensure_quote_comparisons_file()
@@ -6501,41 +6500,6 @@ def hash_password(password: str) -> str:
     )
     password_digest = base64.urlsafe_b64encode(derived_key).decode("ascii")
     return f"pbkdf2_sha256${PASSWORD_HASH_ITERATIONS}${salt}${password_digest}"
-
-def ensure_seed_admin_user() -> None:
-    conn = sqlite3.connect(str(AUTH_DB_PATH))
-    try:
-        cursor = conn.cursor()
-        existing_user = cursor.execute(
-            "SELECT id FROM users WHERE email = ?",
-            ("admin@test.com",)
-        ).fetchone()
-        if existing_user:
-            return
-
-        cursor.execute("""
-            INSERT INTO users (email, password_hash, created_at, is_active, is_admin)
-            VALUES (?, ?, ?, ?, ?)
-        """, (
-            "admin@test.com",
-            hash_password("123456"),
-            datetime.now().isoformat(),
-            1,
-            1
-        ))
-        conn.commit()
-        logger.info("Seeded startup admin user: admin@test.com")
-    except Exception:
-        logger.exception("Failed to seed startup admin user.")
-    finally:
-        conn.close()
-
-
-
-
-
-
-
 
 def hash_reset_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
