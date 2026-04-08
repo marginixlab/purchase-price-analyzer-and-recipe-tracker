@@ -7383,3 +7383,18 @@ async def admin_generate_license(request: Request):
     new_code = create_unique_license_code()
     redirect_url = "/admin/licenses?" + urlencode({"success": new_code})
     return RedirectResponse(url=redirect_url, status_code=303)
+
+
+
+
+
+
+
+@app.get("/admin/delete-old-admin")
+def delete_old_admin():
+    conn = sqlite3.connect(str(AUTH_DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM users WHERE email = 'admin@test.com'")
+    conn.commit()
+    conn.close()
+    return {"status": "deleted"}
