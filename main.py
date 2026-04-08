@@ -978,6 +978,43 @@ def build_recipe_product_defaults(recipes: list[dict[str, Any]] | None = None) -
     return defaults
 
 
+def with_demo_recipe_product_fallbacks(
+    frame: pd.DataFrame,
+    recipe_defaults: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    defaults = dict(recipe_defaults or {})
+    if frame.empty or "Product Name" not in frame.columns:
+        return defaults
+    unit_column = "Normalized Unit" if "Normalized Unit" in frame.columns else "Unit"
+    grouped = frame.groupby("Product Name", sort=True)
+    for product_name, group in grouped:
+        normalized_product_name = str(product_name or "").strip()
+        if not normalized_product_name or normalized_product_name in defaults:
+            continue
+        units = [
+            normalize_recipe_unit_name(str(unit or "").strip())
+            for unit in group.get(unit_column, group["Unit"]).fillna("").tolist()
+            if str(unit or "").strip()
+        ]
+        purchase_unit = units[0] if units else ""
+        purchase_category = get_recipe_unit_category(purchase_unit)
+        if purchase_category == "package":
+            purchase_base_unit = "each"
+            purchase_size = 1.0
+            preferred_usage_unit = "each"
+        else:
+            purchase_base_unit = resolve_recipe_purchase_base_unit(purchase_unit, purchase_unit, purchase_unit)
+            purchase_size = 1.0
+            preferred_usage_unit = purchase_base_unit or purchase_unit
+        defaults[normalized_product_name] = {
+            "purchase_unit": purchase_unit,
+            "purchase_base_unit": purchase_base_unit,
+            "purchase_size": purchase_size,
+            "preferred_usage_unit": preferred_usage_unit
+        }
+    return defaults
+
+
 def ensure_demo_recipe_session_dir() -> Path:
     DEMO_RECIPES_SESSION_DIR.mkdir(parents=True, exist_ok=True)
     return DEMO_RECIPES_SESSION_DIR
@@ -4142,7 +4179,10 @@ def load_recipe_analysis_bundle(*, scope: str = "current_upload", session_id: st
     normalized_scope = normalize_analysis_scope(scope)
     if normalized_scope == "demo":
         frame = normalize_recipe_analysis_frame(build_demo_analysis_dataframe())
-        demo_recipe_defaults = build_recipe_product_defaults(build_demo_recipes())
+        demo_recipe_defaults = with_demo_recipe_product_fallbacks(
+            frame,
+            build_recipe_product_defaults(build_demo_recipes())
+        )
         return {
             "frame": frame,
             "product_catalog": build_recipe_product_catalog(frame, recipe_defaults=demo_recipe_defaults),

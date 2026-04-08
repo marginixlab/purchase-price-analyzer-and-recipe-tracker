@@ -492,7 +492,7 @@
         if (!elements.demoState) return;
         elements.demoState.hidden = !Boolean(state.demoMode);
         if (elements.exitDemoButton) {
-            elements.exitDemoButton.hidden = Boolean(state.demoMode);
+            elements.exitDemoButton.hidden = true;
         }
     }
 
@@ -1565,6 +1565,22 @@
         state.hasSharedScopeAnalysis = false;
         state.dataScopeSummary = null;
         writeSharedDataScope("demo", "");
+    }
+
+    function returnDemoUserToSafeState(elements, state, message = "") {
+        closeProductSummary(state);
+        closeHistoryDetailModal(state);
+        if (hasRestorableAnalyzeContext(state)) {
+            if (message) {
+                setStatus(state, message, "info");
+            }
+            state.currentScreen = "analyze";
+            state.currentStep = 3;
+            renderApp(elements, state);
+            return;
+        }
+        enterDemoSafeStartState(state, message);
+        renderApp(elements, state);
     }
 
     function clearDemoMode(state) {
@@ -8234,12 +8250,20 @@
 
         window.PriceAnalyzerQuoteCompare = {
             openStartAction(action) {
+                if (state.demoMode) {
+                    returnDemoUserToSafeState(elements, state, "Demo mode is preview-only.");
+                    return;
+                }
                 state.currentScreen = action === "manual" ? "manual" : "upload";
                 state.mode = action === "manual" ? "manual" : "upload";
                 syncQuoteCompareStepState(state);
                 renderApp(elements, state);
             },
             openUploadFilePicker() {
+                if (state.demoMode) {
+                    returnDemoUserToSafeState(elements, state, "Demo mode is preview-only.");
+                    return;
+                }
                 state.currentScreen = "upload";
                 syncQuoteCompareStepState(state);
                 renderApp(elements, state);
@@ -8247,14 +8271,26 @@
             },
             syncUploadFileName() {},
             continueUploadReview() {
+                if (state.demoMode) {
+                    returnDemoUserToSafeState(elements, state, "Demo mode is preview-only.");
+                    return;
+                }
                 state.currentScreen = "review";
                 state.currentStep = 2;
                 renderApp(elements, state);
             },
             clearUploadFile() {
+                if (state.demoMode) {
+                    returnDemoUserToSafeState(elements, state, "Demo mode is preview-only.");
+                    return;
+                }
                 parseSelectedFile(state, null).then(() => renderApp(elements, state));
             },
             addManualSupplier() {
+                if (state.demoMode) {
+                    returnDemoUserToSafeState(elements, state, "Demo mode is preview-only.");
+                    return;
+                }
                 state.currentScreen = "manual";
                 state.manualRows.push(createEmptyManualRow());
                 syncQuoteCompareStepState(state);
@@ -8262,11 +8298,19 @@
             },
             saveManualProduct() {},
             addAnotherManualProduct() {
+                if (state.demoMode) {
+                    returnDemoUserToSafeState(elements, state, "Demo mode is preview-only.");
+                    return;
+                }
                 state.currentScreen = "manual";
                 state.manualRows.push(createEmptyManualRow());
                 renderApp(elements, state);
             },
             continueManualReview() {
+                if (state.demoMode) {
+                    returnDemoUserToSafeState(elements, state, "Demo mode is preview-only.");
+                    return;
+                }
                 try {
                     prepareManualDraftForReview(state);
                     state.lastFlowScreen = "manual";
@@ -8278,6 +8322,10 @@
                 }
             },
             goToStart() {
+                if (state.demoMode) {
+                    returnDemoUserToSafeState(elements, state);
+                    return;
+                }
                 state.currentScreen = "start";
                 state.currentStep = 1;
                 renderApp(elements, state);
@@ -8340,6 +8388,10 @@
             bindEvents(elements, state);
             exposeApi(elements, state);
             elements.exitDemoButton?.addEventListener("click", () => {
+                if (state.demoMode) {
+                    returnDemoUserToSafeState(elements, state, "Demo mode is preview-only.");
+                    return;
+                }
                 resetQuoteCompareUploadState(state);
                 renderApp(elements, state);
                 refreshSharedScopeSummaryCached(elements, state, { force: true }).catch(() => null);

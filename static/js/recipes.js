@@ -1,7 +1,7 @@
 (function () {
     const DEFAULT_PRICING_MODE = "latest_price";
     const SHARED_DATA_SCOPE_KEY = "shared_analysis_scope_v1";
-    const RECIPES_BOOTSTRAP_CACHE_KEY = "recipes_bootstrap_cache_v1";
+    const RECIPES_BOOTSTRAP_CACHE_KEY = "recipes_bootstrap_cache_v2";
     const RECIPE_UNIT_OPTIONS = ["g", "kg", "oz", "lb", "ml", "l", "fl oz", "each", "portion"];
     const PACKAGE_BASE_UNIT_OPTIONS = ["g", "ml", "each"];
     const UNIT_TYPE_MAP = {
