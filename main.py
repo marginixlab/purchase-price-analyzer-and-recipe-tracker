@@ -4401,6 +4401,9 @@ def resolve_recipe_purchase_base_unit(
     purchase_category = get_recipe_unit_category(normalized_purchase_unit)
     base_category = get_recipe_unit_category(normalized_base_unit)
 
+    if normalized_purchase_unit and normalized_usage_unit and normalized_purchase_unit == normalized_usage_unit:
+        return normalized_purchase_unit
+
     if purchase_category == "package":
         if base_category and base_category != "package":
             return RECIPE_BASE_UNITS.get(base_category, normalized_base_unit)

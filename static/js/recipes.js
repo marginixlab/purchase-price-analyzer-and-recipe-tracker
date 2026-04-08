@@ -444,13 +444,19 @@
     }
 
     function hasUnitTypeMismatch(ingredient) {
-        const usageType = getUnitType(ingredient?.unit);
-        const purchaseType = getUnitType(ingredient?.purchase_unit);
-        const purchaseBaseType = getUnitType(ingredient?.purchase_base_unit);
+        const normalizedUsageUnit = normalizeUnit(ingredient?.unit);
+        const normalizedPurchaseUnit = normalizeUnit(ingredient?.purchase_unit);
+        const normalizedPurchaseBaseUnit = normalizeUnit(ingredient?.purchase_base_unit);
+        const usageType = getUnitType(normalizedUsageUnit);
+        const purchaseType = getUnitType(normalizedPurchaseUnit);
+        const purchaseBaseType = getUnitType(normalizedPurchaseBaseUnit);
         if (!usageType || !purchaseType) {
             return Boolean(usageType && purchaseType !== "package" && purchaseBaseType && usageType !== purchaseBaseType);
         }
         if (purchaseType === "package") {
+            if (normalizedUsageUnit === normalizedPurchaseUnit) {
+                return false;
+            }
             return !purchaseBaseType || purchaseBaseType === "package" || usageType !== purchaseBaseType;
         }
         return usageType !== purchaseType;
@@ -501,7 +507,7 @@
         );
         const purchaseType = getUnitType(purchaseUnit);
         const defaultUsageUnit = purchaseType === "package"
-            ? (preferredUsageUnit || purchaseBaseUnit || "each")
+            ? (ingredient.unit || purchaseUnit || preferredUsageUnit || purchaseBaseUnit || "each")
             : (preferredUsageUnit || purchaseUnit);
         const candidateUsageUnit = normalizeUnit(ingredient.unit || defaultUsageUnit || "");
         const usageUnit = getUnitType(candidateUsageUnit) === "package"
@@ -570,7 +576,8 @@
         const usageUnit = normalizeUnit(
             compatibleCurrentUnit
                 ? currentUnit
-                : rememberedConversion?.purchase_base_unit
+                : sourcePurchaseUnit
+                    || rememberedConversion?.purchase_base_unit
                     || preferredUsageUnit
                     || sourcePurchaseBaseUnit
                     || (purchaseUnitType === "package" ? "each" : sourcePurchaseUnit)
