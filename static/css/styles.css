@@ -6428,6 +6428,24 @@ body.is-workspace-reset-open {
     pointer-events: none;
 }
 
+.qc2-analysis-search-clear {
+    min-height: 38px;
+    min-width: 38px;
+    padding: 0 10px;
+    border-radius: 12px;
+    border: 1px solid rgba(148, 163, 184, 0.26);
+    background: rgba(15, 23, 42, 0.62);
+    color: #e2e8f0;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.qc2-analysis-search-clear[hidden] {
+    display: none;
+}
+
 @media (max-width: 1180px) {
     .qc2-analysis-filterbar {
         grid-template-columns: 1fr;

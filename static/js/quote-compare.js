@@ -5094,6 +5094,7 @@
                         placeholder="Search product or supplier"
                         autocomplete="off"
                     >
+                    <button type="button" class="secondary-btn qc2-analysis-search-clear" data-qc-action="clear-analysis-search" ${state.analysisTableSearch ? "" : "hidden"} aria-label="Clear search">X</button>
                     <button type="button" class="action-btn qc2-analysis-search-button" tabindex="-1" aria-hidden="true">Search</button>
                 </div>
             </div>
@@ -5661,9 +5662,12 @@
         state.productSummaryModalData = null;
     }
 
-    function clearActiveProductFilterState(state) {
+    function clearActiveProductFilterState(state, { clearSearch = true } = {}) {
         state.activeProductFilter = null;
         state.spotlightTableFilterKey = "";
+        if (clearSearch) {
+            state.analysisTableSearch = "";
+        }
     }
 
     function renderProductSummaryDrawer(state) {
@@ -5758,6 +5762,127 @@
                 }).join("")}
             </div>
         `;
+    }
+
+    function getCurrentVisibleData(state, scope = "") {
+        const renderModel = getAnalyzeRenderModel(state);
+        if (scope === "top-savings") {
+            if (!renderModel.isOpportunitySectionVisible) {
+                return [];
+            }
+            return (renderModel.opportunityCards || []).slice(
+                0,
+                Math.max(state.opportunityRenderCount || OPPORTUNITY_CARD_BATCH_SIZE, OPPORTUNITY_CARD_BATCH_SIZE)
+            );
+        }
+        return getFilteredAnalysisCards(state, renderModel.decisionCards || []);
+    }
+
+    function sanitizeExportFilePart(value, fallback = "export") {
+        const sanitized = String(value || "")
+            .trim()
+            .replace(/[^a-z0-9]+/gi, "_")
+            .replace(/^_+|_+$/g, "");
+        return sanitized || fallback;
+    }
+
+    function triggerAnalysisDownload(filename, content, mimeType) {
+        const blob = new Blob([content], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    }
+
+    function toCsvValue(value) {
+        const text = value == null ? "" : String(value);
+        if (!/[",\n]/.test(text)) return text;
+        return `"${text.replace(/"/g, "\"\"")}"`;
+    }
+
+    function buildAnalysisExportFilename(state, scope, extension) {
+        const baseName = scope === "top-savings" ? "top_savings_export" : "full_table_export";
+        const productPart = state.activeProductFilter ? `_${sanitizeExportFilePart(state.activeProductFilter, "product")}` : "";
+        return `${baseName}${productPart}.${extension}`;
+    }
+
+    function buildFullTableExportRows(cards) {
+        return cards.map((card) => {
+            const viewModel = getAnalysisTableViewModel(card);
+            return {
+                Product: card.productName || "",
+                "Lowest Supplier": getOfferSupplierLabel(viewModel.leftOffer) || "",
+                "Lowest Price": formatCurrency(viewModel.leftUnitPrice, card.currency),
+                "Highest Supplier": getOfferSupplierLabel(viewModel.rightOffer) || "",
+                "Highest Price": formatCurrency(viewModel.rightUnitPrice, card.currency),
+                Savings: formatCurrency(viewModel.savingsAmount || 0, card.currency)
+            };
+        });
+    }
+
+    function buildTopSavingsExportRows(cards) {
+        return cards.map((card) => ({
+            Product: card.productName || "",
+            "Current Price": formatCurrency(card.currentOffer?.unit_price || 0, card.currency),
+            "Lowest Price": formatCurrency(card.referenceOffer?.unit_price || card.bestOffer?.unit_price || 0, card.currency),
+            Savings: formatCurrency(card.savingsAmount || 0, card.currency),
+            "Savings %": formatPercent(card.savingsPercent || 0)
+        }));
+    }
+
+    function buildCsvFromRows(rows, columns) {
+        const lines = [columns.map(toCsvValue).join(",")];
+        rows.forEach((row) => {
+            lines.push(columns.map((column) => toCsvValue(row[column])).join(","));
+        });
+        return lines.join("\n");
+    }
+
+    function buildExcelTableMarkup(rows, columns, title) {
+        return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>${escapeHtml(title)}</title>
+</head>
+<body>
+<table>
+<thead>
+<tr>${columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr>
+</thead>
+<tbody>
+${rows.map((row) => `<tr>${columns.map((column) => `<td>${escapeHtml(row[column] == null ? "" : String(row[column]))}</td>`).join("")}</tr>`).join("")}
+</tbody>
+</table>
+</body>
+</html>`;
+    }
+
+    function exportCurrentVisibleData(state, scope, format) {
+        const visibleData = getCurrentVisibleData(state, scope);
+        const rows = scope === "top-savings"
+            ? buildTopSavingsExportRows(visibleData)
+            : buildFullTableExportRows(visibleData);
+        const columns = scope === "top-savings"
+            ? ["Product", "Current Price", "Lowest Price", "Savings", "Savings %"]
+            : ["Product", "Lowest Supplier", "Lowest Price", "Highest Supplier", "Highest Price", "Savings"];
+        if (format === "csv") {
+            triggerAnalysisDownload(
+                buildAnalysisExportFilename(state, scope, "csv"),
+                buildCsvFromRows(rows, columns),
+                "text/csv;charset=utf-8"
+            );
+            return;
+        }
+        triggerAnalysisDownload(
+            buildAnalysisExportFilename(state, scope, "xls"),
+            buildExcelTableMarkup(rows, columns, scope === "top-savings" ? "Top Savings Export" : "Full Table Export"),
+            "application/vnd.ms-excel"
+        );
     }
 
     function renderAnalyzeRows(cards, state) {
@@ -6061,6 +6186,8 @@
                                             <div class="mapping-section-copy">Review direct savings first, then the strongest supplier, historical, and quantity-based price opportunities that may warrant action.</div>
                                         </div>
                                         <div class="qc2-analysis-section-actions">
+                                            <button type="button" class="secondary-btn qc2-section-action-btn" data-qc-action="export-analysis-csv" data-export-scope="top-savings">Export CSV</button>
+                                            <button type="button" class="secondary-btn qc2-section-action-btn" data-qc-action="export-analysis-excel" data-export-scope="top-savings">Export Excel</button>
                                             <button type="button" class="secondary-btn qc2-section-action-btn" data-qc-action="collapse-all-opportunity-tables">Collapse all tables</button>
                                             <button type="button" class="secondary-btn qc2-section-action-btn" data-qc-action="hide-opportunity-section">Hide section</button>
                                         </div>
@@ -6085,6 +6212,8 @@
                                         <div class="mapping-section-copy">Structured all-products price intelligence view across the complete pricing set.</div>
                                     </div>
                                     <div class="qc2-analysis-section-actions">
+                                        <button type="button" class="secondary-btn qc2-section-action-btn" data-qc-action="export-analysis-csv" data-export-scope="full-table">Export CSV</button>
+                                        <button type="button" class="secondary-btn qc2-section-action-btn" data-qc-action="export-analysis-excel" data-export-scope="full-table">Export Excel</button>
                                         ${shouldRenderFullComparison ? '<button type="button" class="secondary-btn qc2-section-action-btn" data-qc-action="hide-all-details">Hide selections</button>' : ""}
                                         <button type="button" class="secondary-btn qc2-section-action-btn" data-qc-action="toggle-full-comparison" aria-expanded="${state.showFullComparison ? "true" : "false"}">
                                             ${state.showFullComparison ? "Hide table" : "Open table"}
@@ -7292,6 +7421,7 @@
                             : spotlightCard.productName;
                         state.spotlightTableFilterKey = nextProductFilter ? spotlightGroupKey : "";
                         state.activeProductFilter = nextProductFilter;
+                        state.analysisTableSearch = nextProductFilter || "";
                         state.showFullComparison = true;
                         state.activeAnalyzeTab = "full-table";
                         state.selectedAnalysisRowKey = "";
@@ -7366,10 +7496,25 @@
                 renderApp(elements, state, { preserveScroll: true, anchorSelector: '[data-qc-anchor="full-comparison-section"]' });
                 return;
             }
+            if (action === "clear-analysis-search") {
+                clearActiveProductFilterState(state);
+                state.analysisViewport = { start: 0, end: 80, scrollTop: 0 };
+                applyAnalysisTableFilter(elements, state);
+                persistQuoteCompareSession(state, elements);
+                return;
+            }
             if (action === "toggle-full-comparison") {
                 state.showFullComparison = !state.showFullComparison;
                 state.activeAnalyzeTab = "full-table";
                 renderApp(elements, state, { preserveScroll: true, anchorSelector: '[data-qc-anchor="full-comparison-section"]' });
+                return;
+            }
+            if (action === "export-analysis-csv") {
+                exportCurrentVisibleData(state, actionTarget.dataset.exportScope || "full-table", "csv");
+                return;
+            }
+            if (action === "export-analysis-excel") {
+                exportCurrentVisibleData(state, actionTarget.dataset.exportScope || "full-table", "excel");
                 return;
             }
             if (action === "set-analysis-filter") {
@@ -7704,8 +7849,14 @@
             const searchInput = event.target.closest("[data-qc-analysis-search]");
             if (searchInput) {
                 state.analysisTableSearch = searchInput.value || "";
-                if (!String(state.analysisTableSearch || "").trim() && normalizeAnalysisTableFilter(state.analysisTableFilter) === "all") {
+                if (!String(state.analysisTableSearch || "").trim()) {
                     clearActiveProductFilterState(state);
+                } else if (
+                    state.activeProductFilter
+                    && String(state.analysisTableSearch || "").trim().toLowerCase() !== String(state.activeProductFilter || "").trim().toLowerCase()
+                ) {
+                    state.activeProductFilter = null;
+                    state.spotlightTableFilterKey = "";
                 }
                 scheduleAnalysisTableFilter(elements, state);
                 return;
