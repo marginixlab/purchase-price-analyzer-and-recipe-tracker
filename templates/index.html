@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Purchase Price Analyzer</title>
-    {% if not is_authenticated %}
+    {% if not has_workspace_access %}
     <script>
         document.documentElement.classList.add("auth-pending");
     </script>
@@ -16,8 +16,8 @@
         }
     </style>
 </head>
-<body data-active-view="{{ active_view }}" data-is-authenticated="{{ 'true' if is_authenticated else 'false' }}" data-auth-user-id="{{ current_user_id if current_user_id is not none else '' }}" class="{% if not is_authenticated %}app-booting{% endif %}">
-    {% if not is_authenticated %}
+<body data-active-view="{{ active_view }}" data-is-authenticated="{{ 'true' if has_workspace_access else 'false' }}" data-demo-mode="{{ 'true' if demo_mode else 'false' }}" data-auth-user-id="{{ current_user_id if current_user_id is not none else '' }}" class="{% if not has_workspace_access %}app-booting{% endif %}">
+    {% if not has_workspace_access %}
     <section class="access-shell" id="accessShell" hidden>
         <div class="access-atmosphere" aria-hidden="true">
             <div class="access-gradient-layer"></div>
@@ -52,7 +52,7 @@
     </section>
     {% endif %}
 
-    <div class="container app-shell{% if not is_authenticated %} app-shell-locked{% endif %}" id="appShell" {% if not is_authenticated %}hidden{% endif %}>
+    <div class="container app-shell{% if not has_workspace_access %} app-shell-locked{% endif %}" id="appShell" {% if not has_workspace_access %}hidden{% endif %}>
         <header class="page-header">
             <div class="brand-lockup">
                 <div class="brand-kicker">Purchase Price Analyzer - Recipe Creater & Tracker </div>
@@ -1178,7 +1178,7 @@
                 <div class="quote-demo-state" id="quoteDemoState" hidden>
                     <div class="quote-demo-banner">
                         <div class="quote-demo-banner-copy">
-                            <span class="demo-badge">Demo Mode</span>
+                            <span class="demo-badge">Demo Mode - Sample Data</span>
                             <div class="quote-demo-banner-title">You are viewing a demo analysis</div>
                             <div class="quote-demo-banner-note">This sample supplier pricing set is here to help you explore the workflow before importing your own file or entering your own pricing rows.</div>
                         </div>
@@ -1465,7 +1465,7 @@
             };
         })();
     </script>
-    {% if is_authenticated %}
+    {% if has_workspace_access %}
     <script>
         document.addEventListener("DOMContentLoaded", () => {
             const logoutButton = document.getElementById("logoutButton");

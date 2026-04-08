@@ -299,7 +299,10 @@
         try {
             const rawValue = String(sessionStorage.getItem(SHARED_DATA_SCOPE_KEY) || "").trim();
             if (!rawValue) {
-                return { scope: "current_upload", session_id: "" };
+                return {
+                    scope: document.body?.dataset?.demoMode === "true" ? "demo" : "current_upload",
+                    session_id: ""
+                };
             }
             const parsed = JSON.parse(rawValue);
             if (parsed && typeof parsed === "object") {
@@ -309,9 +312,15 @@
                 };
             }
         } catch (error) {
-            return { scope: "current_upload", session_id: "" };
+            return {
+                scope: document.body?.dataset?.demoMode === "true" ? "demo" : "current_upload",
+                session_id: ""
+            };
         }
-        return { scope: "current_upload", session_id: "" };
+        return {
+            scope: document.body?.dataset?.demoMode === "true" ? "demo" : "current_upload",
+            session_id: ""
+        };
     }
 
     function writeSharedDataScope(scope, sessionId = "") {

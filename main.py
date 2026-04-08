@@ -5686,21 +5686,32 @@ def build_page_context(
 ) -> dict[str, Any]:
     context_started_at = perf_counter()
     is_authenticated = bool(getattr(request.state, "auth_user_id", None))
+    demo_mode = bool(getattr(request.state, "demo_mode", False))
+    has_workspace_access = is_authenticated or demo_mode
     current_user_id = get_current_user_id(request)
     latest_results_path = get_current_latest_results_path(current_user_id)
     has_saved_recipes = False
     if active_view == "recipes":
         try:
-            has_saved_recipes = bool(load_recipes_store().get("recipes", []))
+            if demo_mode:
+                has_saved_recipes = True
+            else:
+                has_saved_recipes = bool(load_recipes_store().get("recipes", []))
         except Exception:
             logger.exception("Failed to inspect saved recipes while building page context")
             has_saved_recipes = False
-    has_analysis = has_recipe_analysis_source() if active_view == "recipes" else latest_results_path.exists()
+    has_analysis = (
+        True
+        if demo_mode
+        else (has_recipe_analysis_source() if active_view == "recipes" else latest_results_path.exists())
+    )
     recipes_has_visible_content = has_analysis or has_saved_recipes
     context: dict[str, Any] = {
         "request": request,
         "active_view": active_view,
         "is_authenticated": is_authenticated,
+        "has_workspace_access": has_workspace_access,
+        "demo_mode": demo_mode,
         "current_user_id": current_user_id,
         "has_analysis": has_analysis,
         "has_saved_recipes": has_saved_recipes,
@@ -5714,8 +5725,6 @@ def build_page_context(
     }
     error = request.query_params.get("error")
     source_name = request.query_params.get("filename")
-    demo_mode = parse_bool_flag(request.query_params.get("demo_mode"))
-    context["demo_mode"] = demo_mode
     context["filename"] = source_name or ("Previous analysis" if has_analysis else "")
 
     if error:
@@ -5774,7 +5783,7 @@ def create_app() -> FastAPI:
 
     @app.get("/")
     def home(request: Request):
-        if not getattr(request.state, "auth_user_id", None):
+        if not getattr(request.state, "auth_user_id", None) and not getattr(request.state, "demo_mode", False):
             return RedirectResponse(url="/login", status_code=303)
         return safe_template_response(
             request,
@@ -6794,6 +6803,8 @@ SEED_DEFAULT_TEST_LICENSE = env_flag("SEED_DEFAULT_TEST_LICENSE", not IS_PRODUCT
 AUTH_COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "ppa_auth_session").strip() or "ppa_auth_session"
 AUTH_COOKIE_MAX_AGE_SECONDS = env_int("AUTH_COOKIE_MAX_AGE_SECONDS", 60 * 60 * 24 * 14)
 AUTH_COOKIE_SAMESITE = os.getenv("AUTH_COOKIE_SAMESITE", "lax").strip().lower() or "lax"
+DEMO_COOKIE_NAME = os.getenv("DEMO_COOKIE_NAME", "ppa_demo_session").strip() or "ppa_demo_session"
+DEMO_COOKIE_MAX_AGE_SECONDS = env_int("DEMO_COOKIE_MAX_AGE_SECONDS", 60 * 60 * 8)
 if AUTH_COOKIE_SAMESITE not in {"lax", "strict", "none"}:
     logger.warning("Invalid AUTH_COOKIE_SAMESITE value %r. Falling back to 'lax'.", AUTH_COOKIE_SAMESITE)
     AUTH_COOKIE_SAMESITE = "lax"
@@ -6889,6 +6900,18 @@ def create_auth_cookie_value(user_id: int) -> str:
     return base64.urlsafe_b64encode(token.encode("utf-8")).decode("ascii")
 
 
+def create_demo_cookie_value() -> str:
+    expires_at = int(datetime.now(timezone.utc).timestamp()) + DEMO_COOKIE_MAX_AGE_SECONDS
+    payload = f"demo:{expires_at}"
+    signature = hmac.new(
+        AUTH_SECRET_KEY.encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256
+    ).hexdigest()
+    token = f"{payload}:{signature}"
+    return base64.urlsafe_b64encode(token.encode("utf-8")).decode("ascii")
+
+
 def get_user_by_id(user_id: int) -> sqlite3.Row | None:
     conn = sqlite3.connect(str(AUTH_DB_PATH))
     conn.row_factory = sqlite3.Row
@@ -6935,9 +6958,44 @@ def resolve_authenticated_user_id(request: Request) -> tuple[int | None, bool]:
     return int(user_row["id"]), False
 
 
+def resolve_demo_access(request: Request) -> tuple[bool, bool]:
+    raw_cookie = request.cookies.get(DEMO_COOKIE_NAME)
+    if not raw_cookie:
+        return False, False
+
+    try:
+        decoded_token = base64.urlsafe_b64decode(raw_cookie.encode("ascii")).decode("utf-8")
+        mode_name, expires_at_text, signature = decoded_token.split(":", 2)
+        payload = f"{mode_name}:{expires_at_text}"
+        expected_signature = hmac.new(
+            AUTH_SECRET_KEY.encode("utf-8"),
+            payload.encode("utf-8"),
+            hashlib.sha256
+        ).hexdigest()
+        if mode_name != "demo" or not hmac.compare_digest(signature, expected_signature):
+            return False, True
+        expires_at = int(expires_at_text)
+        if expires_at <= int(datetime.now(timezone.utc).timestamp()):
+            return False, True
+    except (ValueError, TypeError, UnicodeDecodeError, base64.binascii.Error):
+        return False, True
+
+    return True, False
+
+
 def clear_auth_cookie(response: JSONResponse | RedirectResponse | HTMLResponse) -> None:
     response.delete_cookie(
         key=AUTH_COOKIE_NAME,
+        path="/",
+        httponly=True,
+        samesite=AUTH_COOKIE_SAMESITE,
+        secure=AUTH_COOKIE_SECURE
+    )
+
+
+def clear_demo_cookie(response: JSONResponse | RedirectResponse | HTMLResponse) -> None:
+    response.delete_cookie(
+        key=DEMO_COOKIE_NAME,
         path="/",
         httponly=True,
         samesite=AUTH_COOKIE_SAMESITE,
@@ -7282,6 +7340,7 @@ async def check_auth(request: Request, call_next):
 
     allowed_paths = [
         "/login",
+        "/demo",
         "/activate",
         "/forgot-password",
         "/reset-password",
@@ -7299,7 +7358,11 @@ async def check_auth(request: Request, call_next):
 
     if any(path.startswith(p) for p in allowed_paths):
         auth_user_id, should_clear_cookie = resolve_authenticated_user_id(request)
+        demo_mode, should_clear_demo_cookie = resolve_demo_access(request)
+        if auth_user_id:
+            demo_mode = False
         request.state.auth_user_id = auth_user_id
+        request.state.demo_mode = demo_mode
         auth_user = dict(get_user_by_id(auth_user_id)) if auth_user_id else None
         request.state.auth_user = auth_user
         request.state.auth_is_admin = bool(auth_user and auth_user.get("is_admin"))
@@ -7308,24 +7371,37 @@ async def check_auth(request: Request, call_next):
             response = await call_next(request)
             if should_clear_cookie:
                 clear_auth_cookie(response)
+            if should_clear_demo_cookie:
+                clear_demo_cookie(response)
             return response
         finally:
             CURRENT_STORAGE_USER_ID.reset(storage_token)
 
     auth_user_id, should_clear_cookie = resolve_authenticated_user_id(request)
+    demo_mode, should_clear_demo_cookie = resolve_demo_access(request)
+    if auth_user_id:
+        demo_mode = False
     request.state.auth_user_id = auth_user_id
+    request.state.demo_mode = demo_mode
     auth_user = dict(get_user_by_id(auth_user_id)) if auth_user_id else None
     request.state.auth_user = auth_user
     request.state.auth_is_admin = bool(auth_user and auth_user.get("is_admin"))
-    if not auth_user_id:
+    if not auth_user_id and not demo_mode:
         response = RedirectResponse(url="/login", status_code=303)
         if should_clear_cookie:
             clear_auth_cookie(response)
+        if should_clear_demo_cookie:
+            clear_demo_cookie(response)
         return response
 
     storage_token = CURRENT_STORAGE_USER_ID.set(auth_user_id)
     try:
-        return await call_next(request)
+        response = await call_next(request)
+        if should_clear_cookie:
+            clear_auth_cookie(response)
+        if should_clear_demo_cookie:
+            clear_demo_cookie(response)
+        return response
     finally:
         CURRENT_STORAGE_USER_ID.reset(storage_token)
 
@@ -7343,6 +7419,22 @@ async def login_page(request: Request):
             "request": request
         }
     )
+
+
+@app.get("/demo")
+async def enter_demo_mode():
+    response = RedirectResponse(url="/?demo=1", status_code=303)
+    response.set_cookie(
+        key=DEMO_COOKIE_NAME,
+        value=create_demo_cookie_value(),
+        httponly=True,
+        samesite=AUTH_COOKIE_SAMESITE,
+        secure=AUTH_COOKIE_SECURE,
+        path="/",
+        max_age=DEMO_COOKIE_MAX_AGE_SECONDS
+    )
+    clear_auth_cookie(response)
+    return response
 
 
 @app.get("/activate", response_class=HTMLResponse)
@@ -7609,6 +7701,7 @@ async def login(payload: LoginPayload, request: Request):
         path="/",
         max_age=AUTH_COOKIE_MAX_AGE_SECONDS
     )
+    clear_demo_cookie(response)
     return response
 
 
@@ -7684,6 +7777,7 @@ async def auth_logout():
         content={"success": True, "message": "Logout successful"}
     )
     clear_auth_cookie(response)
+    clear_demo_cookie(response)
     return response
 
 

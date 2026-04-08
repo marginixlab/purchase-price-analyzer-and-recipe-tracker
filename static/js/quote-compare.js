@@ -169,6 +169,27 @@
         }
     }
 
+    function shouldAutoStartDemo() {
+        try {
+            return new URLSearchParams(window.location.search || "").get("demo") === "1";
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function clearAutoStartDemoFlag() {
+        try {
+            const url = new URL(window.location.href);
+            if (url.searchParams.get("demo") !== "1") {
+                return;
+            }
+            url.searchParams.delete("demo");
+            window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+        } catch (error) {
+            // Ignore URL cleanup failures.
+        }
+    }
+
     function hasPersistedQuoteCompareActiveSession() {
         try {
             return Boolean(String(sessionStorage.getItem(QUOTE_COMPARE_ACTIVE_SESSION_KEY) || "").trim());
@@ -8199,6 +8220,7 @@
         let firstVisibleLogged = false;
         let readyMarked = false;
         const forceStartHome = shouldForceQuoteCompareStart();
+        const autoStartDemo = shouldAutoStartDemo();
         const resumeRequested = shouldResumeQuoteCompareSession();
         const hasPersistedActiveSession = hasPersistedQuoteCompareActiveSession();
         const markFirstVisibleWithoutScope = () => {
@@ -8224,7 +8246,7 @@
         };
         try {
             hardResetRequested = Boolean(window.PriceAnalyzerBootGuard?.didHardReset?.());
-            if (hardResetRequested) {
+            if (hardResetRequested || autoStartDemo) {
                 resetQuoteCompareUploadState(state);
             } else {
                 restoreQuoteCompareSession(state);
@@ -8298,6 +8320,15 @@
                 setStatus(state, "", "");
             }
             renderVisibleState();
+
+            if (autoStartDemo && !hasRestorableAnalyzeContext(state)) {
+                clearAutoStartDemoFlag();
+                state.demoMode = true;
+                state.currentScreen = "review";
+                state.mode = "upload";
+                renderApp(elements, state);
+                await triggerStep2StartAnalysis(elements, state);
+            }
 
             if (!forceStartHome && scopeBootstrapDeferred) {
                 const shouldFetchDeferredScopeBootstrap = !(
