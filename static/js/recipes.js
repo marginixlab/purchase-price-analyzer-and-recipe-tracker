@@ -541,6 +541,64 @@
         return normalizedIngredient;
     }
 
+    function buildNormalizedIngredientForSelectedProduct(state, ingredient = {}, productName = "") {
+        const lookupProductName = String(productName || ingredient.product_name || "").trim();
+        const nextIngredient = {
+            ...ingredient,
+            product_name: lookupProductName
+        };
+        if (!state?.productMap?.has(lookupProductName)) {
+            return normalizeIngredientDraft(nextIngredient, state);
+        }
+
+        const sourcePurchaseUnit = getSourcePurchaseUnitForProduct(state, lookupProductName);
+        const sourcePurchaseBaseUnit = getSourcePurchaseBaseUnitForProduct(state, lookupProductName);
+        const sourcePurchaseSize = getSourcePurchaseSizeForProduct(state, lookupProductName);
+        const preferredUsageUnit = getPreferredUsageUnitForProduct(state, lookupProductName);
+        const rememberedConversion = getRememberedPackageConversion(state, lookupProductName, sourcePurchaseUnit);
+        const currentUnit = normalizeUnit(nextIngredient.unit || "");
+        const currentUnitType = getUnitType(currentUnit);
+        const purchaseUnitType = getUnitType(sourcePurchaseUnit);
+        const compatibleCurrentUnit = Boolean(
+            currentUnit
+            && (
+                currentUnitType === getUnitType(sourcePurchaseBaseUnit)
+                || currentUnitType === getUnitType(preferredUsageUnit)
+                || (purchaseUnitType && purchaseUnitType !== "package" && currentUnitType === purchaseUnitType)
+            )
+        );
+        const usageUnit = normalizeUnit(
+            compatibleCurrentUnit
+                ? currentUnit
+                : rememberedConversion?.purchase_base_unit
+                    || preferredUsageUnit
+                    || sourcePurchaseBaseUnit
+                    || (purchaseUnitType === "package" ? "each" : sourcePurchaseUnit)
+                    || ""
+        );
+        const purchaseBaseUnit = resolvePurchaseBaseUnit(
+            sourcePurchaseUnit,
+            usageUnit,
+            rememberedConversion?.purchase_base_unit || sourcePurchaseBaseUnit || usageUnit
+        );
+        const purchaseSize = sourcePurchaseUnit && usageUnit && sourcePurchaseUnit === usageUnit
+            ? 1
+            : Number(
+                rememberedConversion?.purchase_size
+                || sourcePurchaseSize
+                || nextIngredient.purchase_size
+                || 0
+            );
+
+        return normalizeIngredientDraft({
+            ...nextIngredient,
+            purchase_unit: sourcePurchaseUnit,
+            unit: usageUnit,
+            purchase_base_unit: purchaseBaseUnit,
+            purchase_size: purchaseSize
+        }, state);
+    }
+
     function normalizeRecipeDraft(recipe, state) {
         const normalizedRecipe = clone(recipe || createEmptyRecipe());
         normalizedRecipe.recipe_id = normalizedRecipe.recipe_id || null;
@@ -872,37 +930,11 @@
         if (Number.isNaN(index) || !state.draft.ingredients[index]) {
             return false;
         }
-        state.draft.ingredients[index].product_name = productName;
-        const sourcePurchaseUnit = getSourcePurchaseUnitForProduct(state, productName);
-        const sourcePurchaseBaseUnit = getSourcePurchaseBaseUnitForProduct(state, productName);
-        const sourcePurchaseSize = getSourcePurchaseSizeForProduct(state, productName);
-        const preferredUsageUnit = getPreferredUsageUnitForProduct(state, productName);
-        state.draft.ingredients[index].purchase_unit = sourcePurchaseUnit
-            || normalizeUnit(state.draft.ingredients[index].purchase_unit || "");
-        const rememberedConversion = getRememberedPackageConversion(
+        state.draft.ingredients[index] = buildNormalizedIngredientForSelectedProduct(
             state,
-            productName,
-            state.draft.ingredients[index].purchase_unit
+            state.draft.ingredients[index],
+            productName
         );
-        const nextUsageUnit = normalizeUnit(state.draft.ingredients[index].unit || preferredUsageUnit);
-        state.draft.ingredients[index].purchase_base_unit = resolvePurchaseBaseUnit(
-            state.draft.ingredients[index].purchase_unit,
-            nextUsageUnit,
-            rememberedConversion?.purchase_base_unit || sourcePurchaseBaseUnit || state.draft.ingredients[index].purchase_base_unit
-        );
-        const compatibleUsageType = getUnitType(nextUsageUnit) === getUnitType(state.draft.ingredients[index].purchase_base_unit);
-        state.draft.ingredients[index].unit = nextUsageUnit && compatibleUsageType
-            ? nextUsageUnit
-            : normalizeUnit(preferredUsageUnit || state.draft.ingredients[index].purchase_base_unit || state.draft.ingredients[index].purchase_unit || "");
-        state.draft.ingredients[index].purchase_size = sourcePurchaseSize > 0
-            ? sourcePurchaseSize
-            : inferPurchaseSize(
-                state.draft.ingredients[index].purchase_unit,
-                state.draft.ingredients[index].purchase_base_unit || state.draft.ingredients[index].unit
-            );
-        if (rememberedConversion?.purchase_size > 0) {
-            state.draft.ingredients[index].purchase_size = rememberedConversion.purchase_size;
-        }
         rememberPackageConversion(
             state,
             state.draft.ingredients[index].product_name,
@@ -2237,42 +2269,11 @@
                         renderIngredients(elements, state);
                         return;
                     }
-                    const currentUnit = normalizeUnit(state.draft.ingredients[index].unit);
-                    const sourcePurchaseBaseUnit = getSourcePurchaseBaseUnitForProduct(state, event.target.value);
-                    const sourcePurchaseSize = getSourcePurchaseSizeForProduct(state, event.target.value);
-                    const preferredUsageUnit = getPreferredUsageUnitForProduct(state, event.target.value);
-                    const rememberedConversion = getRememberedPackageConversion(
+                    state.draft.ingredients[index] = buildNormalizedIngredientForSelectedProduct(
                         state,
-                        event.target.value,
-                        state.draft.ingredients[index].purchase_unit
+                        state.draft.ingredients[index],
+                        event.target.value
                     );
-                    state.draft.ingredients[index].purchase_unit = getSourcePurchaseUnitForProduct(state, event.target.value)
-                        || normalizeUnit(state.draft.ingredients[index].purchase_unit || "");
-                    state.draft.ingredients[index].purchase_base_unit = resolvePurchaseBaseUnit(
-                        state.draft.ingredients[index].purchase_unit,
-                        currentUnit || preferredUsageUnit,
-                        rememberedConversion?.purchase_base_unit || sourcePurchaseBaseUnit || state.draft.ingredients[index].purchase_base_unit
-                    );
-                    const compatibleUsageType = getUnitType(currentUnit) === getUnitType(state.draft.ingredients[index].purchase_base_unit);
-                    state.draft.ingredients[index].unit = currentUnit && compatibleUsageType
-                        ? currentUnit
-                        : normalizeUnit(preferredUsageUnit || state.draft.ingredients[index].purchase_base_unit || state.draft.ingredients[index].purchase_unit || "");
-                    if (
-                        state.draft.ingredients[index].purchase_unit
-                        && state.draft.ingredients[index].unit
-                        && state.draft.ingredients[index].purchase_unit !== state.draft.ingredients[index].unit
-                    ) {
-                        state.draft.ingredients[index].purchase_base_unit = state.draft.ingredients[index].unit;
-                    }
-                    state.draft.ingredients[index].purchase_size = sourcePurchaseSize > 0
-                        ? sourcePurchaseSize
-                        : inferPurchaseSize(
-                            state.draft.ingredients[index].purchase_unit,
-                            state.draft.ingredients[index].purchase_base_unit || state.draft.ingredients[index].unit
-                        );
-                    if (rememberedConversion?.purchase_size > 0) {
-                        state.draft.ingredients[index].purchase_size = rememberedConversion.purchase_size;
-                    }
                     rememberPackageConversion(
                         state,
                         state.draft.ingredients[index].product_name,
@@ -2285,24 +2286,7 @@
                     renderIngredients(elements, state);
                 }
                 if (field === "unit" || field === "purchase_base_unit") {
-                    state.draft.ingredients[index].unit = normalizeUnit(state.draft.ingredients[index].unit);
-                    state.draft.ingredients[index].purchase_unit = getSourcePurchaseUnitForProduct(
-                        state,
-                        state.draft.ingredients[index].product_name
-                    ) || normalizeUnit(state.draft.ingredients[index].purchase_unit);
-                    state.draft.ingredients[index].purchase_base_unit = state.draft.ingredients[index].purchase_unit !== state.draft.ingredients[index].unit
-                        ? state.draft.ingredients[index].unit
-                        : resolvePurchaseBaseUnit(
-                            state.draft.ingredients[index].purchase_unit,
-                            state.draft.ingredients[index].unit,
-                            state.draft.ingredients[index].purchase_base_unit
-                        );
-                    state.draft.ingredients[index].purchase_size = state.draft.ingredients[index].purchase_unit === state.draft.ingredients[index].unit
-                        ? 1
-                        : inferPurchaseSize(
-                            state.draft.ingredients[index].purchase_unit,
-                            state.draft.ingredients[index].purchase_base_unit || state.draft.ingredients[index].unit
-                        );
+                    state.draft.ingredients[index] = normalizeIngredientDraft(state.draft.ingredients[index], state);
                     rememberPackageConversion(
                         state,
                         state.draft.ingredients[index].product_name,
