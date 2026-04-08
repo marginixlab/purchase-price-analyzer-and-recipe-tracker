@@ -16,7 +16,7 @@
         }
     </style>
 </head>
-<body data-active-view="{{ active_view }}" data-is-authenticated="{{ 'true' if has_workspace_access else 'false' }}" data-demo-mode="{{ 'true' if demo_mode else 'false' }}" data-auth-user-id="{{ current_user_id if current_user_id is not none else '' }}" class="{% if not has_workspace_access %}app-booting{% endif %}">
+<body data-active-view="{{ active_view }}" data-is-authenticated="{{ 'true' if is_authenticated else 'false' }}" data-demo-mode="{{ 'true' if demo_mode else 'false' }}" data-auth-user-id="{{ current_user_id if current_user_id is not none else '' }}" class="{% if not has_workspace_access %}app-booting{% endif %}">
     {% if not has_workspace_access %}
     <section class="access-shell" id="accessShell" hidden>
         <div class="access-atmosphere" aria-hidden="true">
@@ -1453,8 +1453,29 @@
         document.addEventListener("DOMContentLoaded", () => {
             const logoutButton = document.getElementById("logoutButton");
             if (!logoutButton) return;
+            const clearDemoClientState = () => {
+                const demoSessionId = String(window.localStorage.getItem("demo_session_id") || "").trim();
+                try {
+                    window.localStorage.removeItem("demo_session_id");
+                    if (demoSessionId) {
+                        window.localStorage.removeItem(`workspaceNotesItemsV2:demo:${demoSessionId}`);
+                    }
+                    window.sessionStorage.removeItem("shared_analysis_scope_v1");
+                    window.sessionStorage.removeItem("quote_compare_active_session_v1");
+                    window.sessionStorage.removeItem("quote_compare_state_v1");
+                    window.sessionStorage.removeItem("quote_compare_scroll_v1");
+                    window.sessionStorage.removeItem("quote_compare_last_screen_v1");
+                    window.sessionStorage.removeItem(`recipes_bootstrap_cache_v2:anonymous:demo:${demoSessionId || "default"}`);
+                    if (window.__analysisScopeBootstrapCache && typeof window.__analysisScopeBootstrapCache === "object") {
+                        window.__analysisScopeBootstrapCache = {};
+                    }
+                } catch (error) {
+                    // Ignore storage cleanup failures.
+                }
+            };
             logoutButton.addEventListener("click", async () => {
                 try {
+                    clearDemoClientState();
                     await fetch("/api/logout", { method: "POST" });
                 } finally {
                     window.location.href = "/login";

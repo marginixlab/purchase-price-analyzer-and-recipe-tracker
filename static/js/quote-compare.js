@@ -522,7 +522,8 @@
 
     function updateDemoStateBanner(elements, state) {
         if (!elements.demoState) return;
-        elements.demoState.hidden = !Boolean(state.demoMode);
+        const isAuthenticatedUser = document.body?.dataset?.isAuthenticated === "true";
+        elements.demoState.hidden = !(Boolean(state.demoMode) && !isAuthenticatedUser);
         if (elements.exitDemoButton) {
             elements.exitDemoButton.hidden = true;
         }
