@@ -260,22 +260,6 @@
                             </div>
                         </section>
 
-                        <div class="upload-secondary-flow">
-                            <form action="/demo-data" method="post" class="demo-form" id="demoDataForm">
-                                <div class="upload-step">Step 2: Explore instantly</div>
-                                <div class="demo-cta-shell">
-                                    <div>
-                                        <div class="demo-cta-title">Try Demo Data</div>
-                                        <div class="demo-cta-copy">Load a ready-made purchasing file and explore the full dashboard before uploading anything.</div>
-                                    </div>
-                                    <div class="demo-cta-actions">
-                                        <button type="submit" class="secondary-btn demo-btn" id="demoDataButton">Try Demo Data</button>
-                                        <span class="demo-note">No setup required</span>
-                                    </div>
-                                </div>
-                            </form>
-                        </div>
-
                         <div class="sample-links">
                             <span class="sample-links-label">Need a template?</span>
                             <a href="/download-sample-csv" class="sample-link">Download sample CSV</a>
@@ -1182,7 +1166,7 @@
                             <div class="quote-demo-banner-title">You are viewing a demo analysis</div>
                             <div class="quote-demo-banner-note">This sample supplier pricing set is here to help you explore the workflow before importing your own file or entering your own pricing rows.</div>
                         </div>
-                        <button type="button" class="action-btn quote-demo-exit-btn" id="quoteExitDemoButton">Start Your Own Analysis</button>
+                        <button type="button" class="action-btn quote-demo-exit-btn" id="quoteExitDemoButton" {% if demo_mode %}hidden{% endif %}>Start Your Own Analysis</button>
                     </div>
                 </div>
             </section>

@@ -391,29 +391,46 @@
         elements.continueAnalysisButton.hidden = !canContinueAnalysis;
     }
 
-    function resumeQuoteCompareAnalysis(elements, state) {
-        if (!hasResumableContinueAnalysisContext(state)) {
+    async function resumeQuoteCompareAnalysis(elements, state) {
+        if (!hasRestorableAnalyzeContext(state)) {
+            const persistedSessionId = state.activeSessionId || sessionStorage.getItem(QUOTE_COMPARE_ACTIVE_SESSION_KEY) || "";
+            if (persistedSessionId) {
+                state.activeSessionId = persistedSessionId;
+                await loadSavedComparisons(state, { includeComparisons: false });
+            }
+        }
+        if (!hasRestorableAnalyzeContext(state)) {
             updateContinueAnalysisButton(elements, state);
             return false;
         }
         closeProductSummary(state);
+        closeHistoryDetailModal(state);
         state.currentScreen = "analyze";
         state.currentStep = 3;
+        state.lastQuoteCompareScreen = { currentScreen: "analyze", currentStep: 3 };
         renderApp(elements, state);
         return true;
     }
 
     async function handleQuoteCompareAction(action, actionTarget, elements, state) {
         if (action === "continue-analysis") {
-            return resumeQuoteCompareAnalysis(elements, state);
+            return await resumeQuoteCompareAnalysis(elements, state);
         }
         if (action === "start-analysis" || action === "manual-analyze") {
+            if (state.demoMode) {
+                return true;
+            }
             await triggerStep2StartAnalysis(elements, state);
             return true;
         }
         if (action === "back-home") {
             if (state.demoMode) {
-                clearDemoMode(state);
+                closeProductSummary(state);
+                closeHistoryDetailModal(state);
+                state.currentScreen = "analyze";
+                state.currentStep = 3;
+                renderApp(elements, state);
+                return true;
             }
             closeProductSummary(state);
             closeHistoryDetailModal(state);
@@ -453,6 +470,9 @@
     function updateDemoStateBanner(elements, state) {
         if (!elements.demoState) return;
         elements.demoState.hidden = !Boolean(state.demoMode);
+        if (elements.exitDemoButton) {
+            elements.exitDemoButton.hidden = Boolean(state.demoMode);
+        }
     }
 
     async function activateAnalysisScope(elements, state, scope, scopePayload = null, sessionId = "") {
@@ -3599,7 +3619,7 @@
         }
     }
 
-    function renderQcStart() {
+    function renderQcStart(state) {
         return `
             <section class="qc2-screen qc2-screen-start">
                 <div class="qc2-head">
@@ -3611,18 +3631,19 @@
                     <strong>Before you start:</strong>
                     Analysis quality depends on your data. Make sure your product names and units are consistent (e.g., lb vs lbs, case vs pcs).
                 </div>
+                ${state?.demoMode ? `
+                    <div class="info-box quote-compare-info-box">
+                        Demo Mode is preview-only. Upload and manual-entry actions are disabled while sample data is active.
+                    </div>
+                ` : ""}
                 <div class="qc2-choice-grid">
-                    <button type="button" class="qc2-choice-card" data-qc-action="start-upload">
+                    <button type="button" class="qc2-choice-card" data-qc-action="start-upload" ${state?.demoMode ? "hidden" : ""}>
                         <span class="qc2-choice-title">Upload Pricing File</span>
                         <span class="qc2-choice-copy">Parse one CSV or Excel file, review the detected mappings, and move straight into analysis.</span>
                     </button>
-                    <button type="button" class="qc2-choice-card qc2-choice-card-secondary" data-qc-action="start-manual">
+                    <button type="button" class="qc2-choice-card qc2-choice-card-secondary" data-qc-action="start-manual" ${state?.demoMode ? "hidden" : ""}>
                         <span class="qc2-choice-title">Enter Supplier Prices Manually</span>
                         <span class="qc2-choice-copy">Add supplier price rows one by one when data arrives outside a spreadsheet.</span>
-                    </button>
-                    <button type="button" class="qc2-choice-card qc2-choice-card-secondary" data-qc-action="start-demo">
-                        <span class="qc2-choice-title">Try Demo</span>
-                        <span class="qc2-choice-copy">Open the same analysis workspace instantly with realistic sample purchasing data and no upload required.</span>
                     </button>
                 </div>
             </section>
@@ -5167,7 +5188,7 @@
                 </div>
                 <div class="search-input-shell qc2-analysis-search-shell" role="search" aria-label="Search products or suppliers">
                     <input
-                        type="search"
+                        type="text"
                         class="search-input qc2-analysis-search-input"
                         data-qc-analysis-search
                         value="${escapeHtml(state.analysisTableSearch || "")}"
@@ -6298,7 +6319,7 @@
                     <div class="qc2-actions qc2-analyze-actions" id="qc2AnalysisLower">
                         <div class="qc2-analyze-actions-slot is-left">
                             <button type="button" id="qcStep3BackBtn" class="secondary-btn" data-qc-action="back-review">Back</button>
-                            <button type="button" class="secondary-btn" data-qc-action="back-home">Back to Home</button>
+                            ${state.demoMode ? "" : '<button type="button" class="secondary-btn" data-qc-action="back-home">Back to Home</button>'}
                         </div>
                         <div class="qc2-analyze-actions-slot is-right">
                             <button type="button" class="action-btn" data-qc-action="go-history">Product History</button>
@@ -7395,7 +7416,7 @@
 
             if (action === "start-upload") {
                 if (state.demoMode) {
-                    clearDemoMode(state);
+                    return;
                 }
                 closeProductSummary(state);
                 state.mode = "upload";
@@ -7407,7 +7428,7 @@
             }
             if (action === "start-manual") {
                 if (state.demoMode) {
-                    clearDemoMode(state);
+                    return;
                 }
                 closeProductSummary(state);
                 state.mode = "manual";
@@ -7428,7 +7449,10 @@
             }
             if (action === "back-start") {
                 if (state.demoMode) {
-                    clearDemoMode(state);
+                    state.currentScreen = "analyze";
+                    state.currentStep = 3;
+                    renderApp(elements, state);
+                    return;
                 }
                 closeProductSummary(state);
                 state.currentScreen = "start";
@@ -7439,21 +7463,25 @@
                 return;
             }
             if (action === "pick-file" || action === "replace-file") {
+                if (state.demoMode) return;
                 elements.app.querySelector("#qc2FileInput")?.click();
                 return;
             }
             if (action === "remove-file") {
+                if (state.demoMode) return;
                 await parseSelectedFile(state, null);
                 renderApp(elements, state);
                 return;
             }
             if (action === "go-review") {
+                if (state.demoMode) return;
                 closeProductSummary(state);
                 state.currentScreen = "review";
                 renderApp(elements, state);
                 return;
             }
             if (action === "back-upload") {
+                if (state.demoMode) return;
                 closeProductSummary(state);
                 state.currentScreen = "upload";
                 syncQuoteCompareStepState(state);
@@ -7477,10 +7505,17 @@
                 return;
             }
             if (action === "start-analysis" || action === "manual-analyze") {
+                if (state.demoMode) return;
                 await triggerStep2StartAnalysis(elements, state);
                 return;
             }
             if (action === "back-review") {
+                if (state.demoMode) {
+                    state.currentScreen = "analyze";
+                    state.currentStep = 3;
+                    renderApp(elements, state);
+                    return;
+                }
                 closeProductSummary(state);
                 if (state.currentScreen === "review" && state.mode === "manual") {
                     state.currentScreen = "manual";
@@ -7492,11 +7527,13 @@
                 return;
             }
             if (action === "add-manual-row") {
+                if (state.demoMode) return;
                 state.manualRows.push(createEmptyManualRow());
                 renderApp(elements, state);
                 return;
             }
             if (action === "remove-manual-row") {
+                if (state.demoMode) return;
                 const manualEntryScrollLeft = getManualEntryScroller(elements)?.scrollLeft || 0;
                 const index = Number(actionTarget.dataset.index || -1);
                 if (index > 0) state.manualRows.splice(index, 1);
@@ -7505,6 +7542,7 @@
                 return;
             }
             if (action === "go-manual-review") {
+                if (state.demoMode) return;
                 try {
                     prepareManualDraftForReview(state);
                     state.lastFlowScreen = "manual";
