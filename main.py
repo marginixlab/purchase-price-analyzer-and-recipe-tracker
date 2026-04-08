@@ -999,9 +999,9 @@ def with_demo_recipe_product_fallbacks(
         purchase_unit = units[0] if units else ""
         purchase_category = get_recipe_unit_category(purchase_unit)
         if purchase_category == "package":
-            purchase_base_unit = "each"
+            purchase_base_unit = purchase_unit
             purchase_size = 1.0
-            preferred_usage_unit = "each"
+            preferred_usage_unit = purchase_unit
         else:
             purchase_base_unit = resolve_recipe_purchase_base_unit(purchase_unit, purchase_unit, purchase_unit)
             purchase_size = 1.0
@@ -7505,7 +7505,7 @@ async def login_page(request: Request):
 
 @app.get("/demo")
 async def enter_demo_mode():
-    response = RedirectResponse(url="/?demo=1", status_code=303)
+    response = RedirectResponse(url="/?demo-entry=1", status_code=303)
     response.set_cookie(
         key=DEMO_COOKIE_NAME,
         value=create_demo_cookie_value(),
