@@ -1480,16 +1480,16 @@
         });
     </script>
     {% endif %}
-    <script defer src="{{ url_for('static', path='/js/workspace-reset.js') }}"></script>
-    <script defer src="{{ url_for('static', path='/js/workspace-notes.js') }}"></script>
+    <script defer src="{{ url_for('static', path='/js/workspace-reset.js') }}?v=2"></script>
+    <script defer src="{{ url_for('static', path='/js/workspace-notes.js') }}?v=2"></script>
     {% if active_view == 'guide' %}
-    <script defer src="{{ url_for('static', path='/js/guide-assistant.js') }}"></script>
+    <script defer src="{{ url_for('static', path='/js/guide-assistant.js') }}?v=2"></script>
     {% endif %}
     {% if active_view == 'recipes' %}
-    <script defer src="{{ url_for('static', path='/js/recipes.js') }}"></script>
+    <script defer src="{{ url_for('static', path='/js/recipes.js') }}?v=2"></script>
     {% endif %}
     {% if active_view == 'quote_compare' %}
-    <script defer src="{{ url_for('static', path='/js/quote-compare.js') }}"></script>
+    <script defer src="{{ url_for('static', path='/js/quote-compare.js') }}?v=2"></script>
     {% endif %}
 </body>
 </html>
