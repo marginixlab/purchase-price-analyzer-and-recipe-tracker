@@ -6672,10 +6672,18 @@
             button.classList.toggle("is-active", isActive);
             button.setAttribute("aria-pressed", isActive ? "true" : "false");
         });
+        const renderModel = getAnalyzeRenderModel(state);
+        const summaryGrid = elements.app.querySelector("[data-qc-analyze-summary-grid]");
         const tableContent = elements.app.querySelector("[data-qc-analysis-table-content]");
-        const summary = getAnalysisSummary(state.analysisResult || { comparison: { bids: [] } });
+        if (summaryGrid) {
+            summaryGrid.innerHTML = renderAnalyzeSummaryGridMarkup(
+                renderModel.visibleSummary,
+                renderModel.activeAnalyzeTab,
+                renderModel.comparisonCurrency
+            );
+        }
         if (tableContent) {
-            tableContent.innerHTML = renderAnalyzeRows(summary.decisionCards || [], state);
+            tableContent.innerHTML = renderAnalyzeRows(renderModel.summary.decisionCards || [], state);
         }
     }
 

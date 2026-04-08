@@ -1243,6 +1243,8 @@
                 </div>
                 <div class="recipes-library-actions">
                     <button type="button" class="action-btn" data-load-recipe-builder="${escapeHtml(selectedRecipe.recipe_id)}">Open in Builder</button>
+                    <a class="secondary-btn" href="/recipes/${encodeURIComponent(selectedRecipe.recipe_id)}/export.csv">Export CSV</a>
+                    <a class="secondary-btn" href="/recipes/${encodeURIComponent(selectedRecipe.recipe_id)}/export.xlsx">Export Excel</a>
                 </div>
                 <div class="recipes-library-detail-note">Open this snapshot in Recipe Builder to continue editing and save updated values.</div>
             </div>

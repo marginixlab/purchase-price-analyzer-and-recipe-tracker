@@ -27,6 +27,8 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jinja2 import TemplateError, TemplateNotFound
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill
 from pydantic import BaseModel
 
 
@@ -4486,6 +4488,168 @@ def enrich_saved_recipes_with_costs(
     return enriched_recipes
 
 
+def get_saved_recipe_by_id(recipe_id: str, user_id: int | str | None = None) -> dict[str, Any] | None:
+    normalized_recipe_id = str(recipe_id or "").strip()
+    if not normalized_recipe_id:
+        return None
+    recipes = load_recipes_store(user_id).get("recipes", [])
+    return next((recipe for recipe in recipes if str(recipe.get("recipe_id") or "").strip() == normalized_recipe_id), None)
+
+
+def get_saved_recipe_export_metrics(recipe: dict[str, Any]) -> dict[str, float | None]:
+    yield_portions = float(recipe.get("yield_portions") or 0)
+    selling_price_total = float(recipe.get("selling_price") or 0)
+    selling_price_per_portion = (selling_price_total / yield_portions) if selling_price_total > 0 and yield_portions > 0 else None
+    gross_profit_per_portion = float(recipe.get("gross_profit") or 0) if selling_price_total > 0 else None
+    gross_profit_total = (gross_profit_per_portion * yield_portions) if gross_profit_per_portion is not None and yield_portions > 0 else None
+    gross_margin_pct = float(recipe.get("gross_margin_pct") or 0) if selling_price_total > 0 else None
+    food_cost_pct = float(recipe.get("food_cost_pct") or 0) if selling_price_total > 0 else None
+    suggested_selling_price_per_portion = float(recipe.get("suggested_selling_price") or 0) or None
+    suggested_selling_price_total = (
+        suggested_selling_price_per_portion * yield_portions
+        if suggested_selling_price_per_portion is not None and yield_portions > 0
+        else None
+    )
+    pricing_goal_value = recipe.get("pricing_goal_value")
+    if pricing_goal_value is None:
+        pricing_goal_value = recipe.get("target_food_cost_pct")
+    return {
+        "selling_price_total": round(selling_price_total, 2),
+        "selling_price_per_portion": round(selling_price_per_portion, 2) if selling_price_per_portion is not None else None,
+        "gross_profit_per_portion": round(gross_profit_per_portion, 2) if gross_profit_per_portion is not None else None,
+        "gross_profit_total": round(gross_profit_total, 2) if gross_profit_total is not None else None,
+        "gross_margin_pct": round(gross_margin_pct, 2) if gross_margin_pct is not None else None,
+        "food_cost_pct": round(food_cost_pct, 2) if food_cost_pct is not None else None,
+        "suggested_selling_price_per_portion": round(suggested_selling_price_per_portion, 2) if suggested_selling_price_per_portion is not None else None,
+        "suggested_selling_price_total": round(suggested_selling_price_total, 2) if suggested_selling_price_total is not None else None,
+        "pricing_goal_value": round(float(pricing_goal_value), 2) if pricing_goal_value is not None else None
+    }
+
+
+def build_saved_recipe_export_rows(recipe: dict[str, Any]) -> list[dict[str, Any]]:
+    normalized_recipe = normalize_recipe_payload(recipe)
+    rows: list[dict[str, Any]] = []
+    ingredient_breakdown: list[dict[str, Any]] = []
+    try:
+        analysis_bundle = load_recipe_analysis_bundle()
+        calculation = calculate_recipe_cost(
+            normalized_recipe,
+            analysis_bundle["frame"],
+            pricing_lookup=analysis_bundle.get("pricing_lookup")
+        )
+        ingredient_breakdown = calculation.get("ingredient_breakdown", [])
+    except ValueError:
+        ingredient_breakdown = []
+
+    for index, ingredient in enumerate(normalized_recipe.get("ingredients", [])):
+        breakdown_item = ingredient_breakdown[index] if index < len(ingredient_breakdown) else {}
+        rows.append({
+            "Recipe Name": normalized_recipe.get("name"),
+            "Yield Portions": normalized_recipe.get("yield_portions"),
+            "Ingredient": ingredient.get("product_name"),
+            "Quantity Used": ingredient.get("quantity"),
+            "Usage Unit": ingredient.get("unit"),
+            "Purchase Unit": ingredient.get("purchase_unit"),
+            "Purchase Size": ingredient.get("purchase_size"),
+            "Unit Cost": breakdown_item.get("price_used"),
+            "Ingredient Cost": breakdown_item.get("ingredient_cost")
+        })
+    return rows
+
+
+def build_saved_recipe_export_dataframe(recipe: dict[str, Any]) -> pd.DataFrame:
+    return pd.DataFrame(build_saved_recipe_export_rows(recipe))
+
+
+def build_saved_recipe_export_summary_rows(recipe: dict[str, Any]) -> list[tuple[str, Any]]:
+    normalized_recipe = normalize_recipe_payload(recipe)
+    export_metrics = get_saved_recipe_export_metrics(recipe)
+    return [
+        ("Recipe Name", normalized_recipe.get("name")),
+        ("Yield Portions", normalized_recipe.get("yield_portions")),
+        ("Pricing Mode", RECIPE_PRICING_MODES.get(normalized_recipe.get("pricing_mode"), normalized_recipe.get("pricing_mode") or "")),
+        ("Total Recipe Cost", recipe.get("total_recipe_cost")),
+        ("Cost Per Portion", recipe.get("cost_per_portion")),
+        ("Selling Price", export_metrics.get("selling_price_total") or None),
+        ("Food Cost %", export_metrics.get("food_cost_pct")),
+        ("Gross Margin %", export_metrics.get("gross_margin_pct"))
+    ]
+
+
+def build_saved_recipe_excel_stream(recipe: dict[str, Any]) -> io.BytesIO:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Recipe Export"
+
+    header_fill = PatternFill(fill_type="solid", fgColor="DCE6F1")
+    section_fill = PatternFill(fill_type="solid", fgColor="EAF2F8")
+    bold_font = Font(bold=True)
+
+    sheet["A1"] = "Recipe Summary"
+    sheet["A1"].font = Font(bold=True, size=14)
+
+    summary_rows = build_saved_recipe_export_summary_rows(recipe)
+    summary_start_row = 3
+    for offset, (label, value) in enumerate(summary_rows):
+        row_number = summary_start_row + offset
+        sheet.cell(row=row_number, column=1, value=label).font = bold_font
+        sheet.cell(row=row_number, column=2, value=value if value not in (None, "") else "--")
+
+    ingredient_header_row = summary_start_row + len(summary_rows) + 2
+    sheet.cell(row=ingredient_header_row, column=1, value="Ingredients").font = Font(bold=True, size=13)
+    ingredient_table_row = ingredient_header_row + 1
+
+    ingredient_headers = [
+        "Ingredient",
+        "Quantity Used",
+        "Usage Unit",
+        "Purchase Unit",
+        "Purchase Size",
+        "Unit Cost",
+        "Ingredient Cost"
+    ]
+    for column_index, header in enumerate(ingredient_headers, start=1):
+        cell = sheet.cell(row=ingredient_table_row, column=column_index, value=header)
+        cell.font = bold_font
+        cell.fill = header_fill
+
+    ingredient_rows = build_saved_recipe_export_rows(recipe)
+    for row_offset, ingredient_row in enumerate(ingredient_rows, start=1):
+        row_number = ingredient_table_row + row_offset
+        sheet.cell(row=row_number, column=1, value=ingredient_row.get("Ingredient"))
+        sheet.cell(row=row_number, column=2, value=ingredient_row.get("Quantity Used"))
+        sheet.cell(row=row_number, column=3, value=ingredient_row.get("Usage Unit"))
+        sheet.cell(row=row_number, column=4, value=ingredient_row.get("Purchase Unit"))
+        sheet.cell(row=row_number, column=5, value=ingredient_row.get("Purchase Size"))
+        sheet.cell(row=row_number, column=6, value=ingredient_row.get("Unit Cost"))
+        sheet.cell(row=row_number, column=7, value=ingredient_row.get("Ingredient Cost"))
+
+    for cell_ref in ("A1", f"A{ingredient_header_row}"):
+        sheet[cell_ref].fill = section_fill
+
+    for column_letter, width in {
+        "A": 28,
+        "B": 16,
+        "C": 14,
+        "D": 16,
+        "E": 14,
+        "F": 14,
+        "G": 16
+    }.items():
+        sheet.column_dimensions[column_letter].width = width
+
+    output = io.BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    return output
+
+
+def build_saved_recipe_export_filename(recipe: dict[str, Any], extension: str) -> str:
+    recipe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(recipe.get("name") or "recipe").strip()).strip("._") or "recipe"
+    recipe_id = re.sub(r"[^A-Za-z0-9._-]+", "_", str(recipe.get("recipe_id") or "snapshot").strip()).strip("._") or "snapshot"
+    return f"{recipe_name}_{recipe_id}.{extension}"
+
+
 def normalize_ai_rows(rows: list[dict[str, Any]] | None = None) -> pd.DataFrame:
     if rows is None:
         latest_results_path = get_current_latest_results_path()
@@ -5771,6 +5935,34 @@ def create_app() -> FastAPI:
             "recipes": response_recipes,
             "message": f"Deleted recipe: {existing_recipe.get('name', 'Recipe')}"
         })
+
+    @app.get("/recipes/{recipe_id}/export.csv")
+    def export_recipe_csv(recipe_id: str):
+        recipe = get_saved_recipe_by_id(recipe_id)
+        if not recipe:
+            return JSONResponse({"success": False, "message": "The selected recipe could not be found."}, status_code=404)
+        export_df = build_saved_recipe_export_dataframe(recipe)
+        output = io.StringIO()
+        export_df.to_csv(output, index=False)
+        filename = build_saved_recipe_export_filename(recipe, "csv")
+        return StreamingResponse(
+            iter([output.getvalue().encode("utf-8")]),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
+    @app.get("/recipes/{recipe_id}/export.xlsx")
+    def export_recipe_excel(recipe_id: str):
+        recipe = get_saved_recipe_by_id(recipe_id)
+        if not recipe:
+            return JSONResponse({"success": False, "message": "The selected recipe could not be found."}, status_code=404)
+        output = build_saved_recipe_excel_stream(recipe)
+        filename = build_saved_recipe_export_filename(recipe, "xlsx")
+        return StreamingResponse(
+            output,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
 
     @app.get("/quote-compare/bootstrap")
     def quote_compare_bootstrap(session_id: str | None = None, include_comparisons: bool = False):
