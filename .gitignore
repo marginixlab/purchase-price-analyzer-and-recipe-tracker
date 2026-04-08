@@ -12,3 +12,4 @@ latest_results.csv
 quote_comparisons.json
 auth.db
 codes.json
+.demo_recipe_sessions/
