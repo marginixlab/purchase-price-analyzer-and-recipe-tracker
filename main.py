@@ -4541,19 +4541,55 @@ def build_saved_recipe_export_rows(recipe: dict[str, Any]) -> list[dict[str, Any
     except ValueError:
         ingredient_breakdown = []
 
+    summary_columns = {
+        "Recipe Name": normalized_recipe.get("name"),
+        "Yield / Portions": normalized_recipe.get("yield_portions"),
+        "Total Recipe Cost": recipe.get("total_recipe_cost"),
+        "Cost Per Portion": recipe.get("cost_per_portion"),
+        "Created Date": recipe.get("created_at") or recipe.get("updated_at") or ""
+    }
+
+    if not normalized_recipe.get("ingredients"):
+        rows.append({
+            **summary_columns,
+            "Ingredient Name": "",
+            "Quantity": "",
+            "Unit": "",
+            "Unit Cost": "",
+            "Ingredient Cost": "",
+            "Supplier / Source": ""
+        })
+        return rows
+
     for index, ingredient in enumerate(normalized_recipe.get("ingredients", [])):
         breakdown_item = ingredient_breakdown[index] if index < len(ingredient_breakdown) else {}
+        supplier_name = str(breakdown_item.get("supplier") or "").strip()
         rows.append({
-            "Recipe Name": normalized_recipe.get("name"),
-            "Yield Portions": normalized_recipe.get("yield_portions"),
-            "Ingredient": ingredient.get("product_name"),
-            "Quantity Used": ingredient.get("quantity"),
-            "Usage Unit": ingredient.get("unit"),
-            "Purchase Unit": ingredient.get("purchase_unit"),
-            "Purchase Size": ingredient.get("purchase_size"),
+            "Recipe Name": summary_columns["Recipe Name"] if index == 0 else "",
+            "Yield / Portions": summary_columns["Yield / Portions"] if index == 0 else "",
+            "Total Recipe Cost": summary_columns["Total Recipe Cost"] if index == 0 else "",
+            "Cost Per Portion": summary_columns["Cost Per Portion"] if index == 0 else "",
+            "Created Date": summary_columns["Created Date"] if index == 0 else "",
+            "Ingredient Name": ingredient.get("product_name"),
+            "Quantity": ingredient.get("quantity"),
+            "Unit": ingredient.get("unit"),
             "Unit Cost": breakdown_item.get("price_used"),
-            "Ingredient Cost": breakdown_item.get("ingredient_cost")
+            "Ingredient Cost": breakdown_item.get("ingredient_cost"),
+            "Supplier / Source": supplier_name or "N/A"
         })
+    rows.append({
+        "Recipe Name": "",
+        "Yield / Portions": "",
+        "Total Recipe Cost": "",
+        "Cost Per Portion": "",
+        "Created Date": "",
+        "Ingredient Name": "",
+        "Quantity": "",
+        "Unit": "",
+        "Unit Cost": "",
+        "Ingredient Cost": "",
+        "Supplier / Source": ""
+    })
     return rows
 
 
