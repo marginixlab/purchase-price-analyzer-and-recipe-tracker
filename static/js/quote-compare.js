@@ -446,10 +446,8 @@
         }
         if (action === "back-home") {
             if (state.demoMode) {
-                closeProductSummary(state);
-                closeHistoryDetailModal(state);
-                state.currentScreen = "analyze";
-                state.currentStep = 3;
+                enterDemoSafeStartState(state);
+                setStatus(state, "", "");
                 renderApp(elements, state);
                 return true;
             }
@@ -4159,7 +4157,9 @@
         const triggerStartedAt = performance.now();
         state.isSubmitting = true;
         await setProgressPhase(state, "Validating -> Mapping -> Aggregating -> Building analysis");
-        renderApp(elements, state, { preserveScroll: true });
+        if (!state.demoMode) {
+            renderApp(elements, state, { preserveScroll: true });
+        }
         await waitForNextPaint();
         const started = state.demoMode
             ? await startDemoAnalysis(state)
@@ -6374,7 +6374,7 @@
                     <div data-qc-product-summary-modal>${renderProductSummaryDrawer(state)}</div>
                     <div class="qc2-actions qc2-analyze-actions" id="qc2AnalysisLower">
                         <div class="qc2-analyze-actions-slot is-left">
-                            <button type="button" id="qcStep3BackBtn" class="secondary-btn" data-qc-action="back-review">Back</button>
+                            <button type="button" id="qcStep3BackBtn" class="secondary-btn" data-qc-action="${state.demoMode ? "back-home" : "back-review"}">Back</button>
                             ${state.demoMode ? "" : '<button type="button" class="secondary-btn" data-qc-action="back-home">Back to Home</button>'}
                         </div>
                         <div class="qc2-analyze-actions-slot is-right">
@@ -7500,15 +7500,16 @@
                 state.demoMode = true;
                 state.dataScope = "demo";
                 state.mode = "upload";
-                state.currentScreen = "review";
+                state.currentScreen = "start";
+                state.currentStep = 1;
                 state.isSubmitting = false;
                 await triggerStep2StartAnalysis(elements, state);
                 return;
             }
             if (action === "back-start") {
                 if (state.demoMode) {
-                    state.currentScreen = "analyze";
-                    state.currentStep = 3;
+                    enterDemoSafeStartState(state);
+                    setStatus(state, "", "");
                     renderApp(elements, state);
                     return;
                 }
@@ -7569,8 +7570,8 @@
             }
             if (action === "back-review") {
                 if (state.demoMode) {
-                    state.currentScreen = "analyze";
-                    state.currentStep = 3;
+                    enterDemoSafeStartState(state);
+                    setStatus(state, "", "");
                     renderApp(elements, state);
                     return;
                 }
@@ -8458,9 +8459,9 @@
                 clearAutoStartDemoFlag();
                 state.demoMode = true;
                 state.dataScope = "demo";
-                state.currentScreen = "review";
+                state.currentScreen = "start";
+                state.currentStep = 1;
                 state.mode = "upload";
-                renderApp(elements, state);
                 await triggerStep2StartAnalysis(elements, state);
             }
 

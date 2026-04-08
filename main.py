@@ -4315,6 +4315,8 @@ RECIPE_UNIT_ALIASES = {
     "litre": "l",
     "litres": "l",
     "each": "each",
+    "unit": "each",
+    "units": "each",
     "ea": "each",
     "piece": "each",
     "pieces": "each",
@@ -4469,6 +4471,9 @@ def resolve_recipe_usage_ratio(
         normalized_usage_unit,
         purchase_base_unit
     )
+    if normalized_usage_unit and normalized_purchase_unit and normalized_usage_unit == normalized_purchase_unit:
+        return quantity, quantity, normalized_purchase_unit
+
     purchase_category = get_recipe_unit_category(normalized_purchase_unit)
     usage_category = get_recipe_unit_category(normalized_usage_unit)
     base_category = get_recipe_unit_category(resolved_base_unit)
@@ -4591,8 +4596,13 @@ def validate_recipe_payload(recipe: dict[str, Any]) -> None:
         ):
             raise ValueError("Each ingredient must include a product, usage quantity, recipe unit, purchase unit, and valid conversion basis.")
 
-        purchase_category = get_recipe_unit_category(ingredient["purchase_unit"])
-        usage_category = get_recipe_unit_category(ingredient["unit"])
+        normalized_purchase_unit = normalize_recipe_unit_name(ingredient["purchase_unit"])
+        normalized_usage_unit = normalize_recipe_unit_name(ingredient["unit"])
+        if normalized_usage_unit and normalized_purchase_unit and normalized_usage_unit == normalized_purchase_unit:
+            continue
+
+        purchase_category = get_recipe_unit_category(normalized_purchase_unit)
+        usage_category = get_recipe_unit_category(normalized_usage_unit)
         base_category = get_recipe_unit_category(ingredient.get("purchase_base_unit", ""))
         if (
             usage_category == "package"

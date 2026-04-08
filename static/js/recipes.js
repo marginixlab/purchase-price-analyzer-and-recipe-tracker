@@ -55,6 +55,8 @@
         liter: "l",
         liters: "l",
         each: "each",
+        unit: "each",
+        units: "each",
         ea: "each",
         piece: "each",
         pieces: "each",
