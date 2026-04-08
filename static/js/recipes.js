@@ -118,7 +118,8 @@
     }
 
     function getRecipesBootstrapCacheKey() {
-        return `${RECIPES_BOOTSTRAP_CACHE_KEY}:${getAuthUserStorageSuffix()}`;
+        const sharedScope = readSharedDataScope();
+        return `${RECIPES_BOOTSTRAP_CACHE_KEY}:${getAuthUserStorageSuffix()}:${sharedScope.scope}:${sharedScope.session_id || "default"}`;
     }
 
     function readCachedRecipesBootstrap() {
@@ -288,15 +289,61 @@
 
     function hasAnalysis(elements) {
         const stateHost = elements.mainDashboardView || elements.recipesWorkspaceState;
-        return stateHost?.dataset.hasAnalysis === "true";
+        if (stateHost?.dataset.hasAnalysis === "true") {
+            return true;
+        }
+        return readSharedDataScope().scope === "demo";
     }
 
     function readSharedDataScope() {
-        return "current_upload";
+        try {
+            const rawValue = String(sessionStorage.getItem(SHARED_DATA_SCOPE_KEY) || "").trim();
+            if (!rawValue) {
+                return { scope: "current_upload", session_id: "" };
+            }
+            const parsed = JSON.parse(rawValue);
+            if (parsed && typeof parsed === "object") {
+                return {
+                    scope: String(parsed.scope || "current_upload").trim() || "current_upload",
+                    session_id: String(parsed.session_id || "").trim()
+                };
+            }
+        } catch (error) {
+            return { scope: "current_upload", session_id: "" };
+        }
+        return { scope: "current_upload", session_id: "" };
     }
 
-    function writeSharedDataScope() {
-        return;
+    function writeSharedDataScope(scope, sessionId = "") {
+        try {
+            sessionStorage.setItem(SHARED_DATA_SCOPE_KEY, JSON.stringify({
+                scope: String(scope || "current_upload").trim() || "current_upload",
+                session_id: String(sessionId || "").trim()
+            }));
+        } catch (error) {
+            // Ignore storage failures.
+        }
+    }
+
+    function getRecipesScopeParams(state) {
+        const scope = String(state?.dataScope || "current_upload").trim() || "current_upload";
+        const params = new URLSearchParams();
+        if (scope !== "current_upload") {
+            params.set("scope", scope);
+        }
+        if (scope === "demo" && state?.dataSessionId) {
+            params.set("session_id", state.dataSessionId);
+        }
+        return params;
+    }
+
+    function appendRecipesScopeQuery(url, state) {
+        const params = getRecipesScopeParams(state);
+        const query = params.toString();
+        if (!query) {
+            return url;
+        }
+        return `${url}${url.includes("?") ? "&" : "?"}${query}`;
     }
 
     function normalizeUnit(unit) {
@@ -508,6 +555,7 @@
     }
 
     function createState() {
+        const sharedScope = readSharedDataScope();
         return {
             products: [],
             productMap: new Map(),
@@ -527,6 +575,9 @@
             recipeLibraryOpen: false,
             recipeLibrarySearch: "",
             recipeLibrarySort: "newest",
+            dataScope: sharedScope.scope,
+            dataSessionId: sharedScope.session_id,
+            demoMode: sharedScope.scope === "demo",
             scopeSummary: null,
             sellingPrice: "",
             pricingGoalType: DEFAULT_PRICING_GOAL_TYPE,
@@ -734,7 +785,8 @@
 
     function renderScopeSummary(elements, state) {
         if (elements.recipeDataScopeSelect) {
-            elements.recipeDataScopeSelect.value = state.dataScope || "current_upload";
+            const hasMatchingOption = Array.from(elements.recipeDataScopeSelect.options || []).some((option) => option.value === (state.dataScope || "current_upload"));
+            elements.recipeDataScopeSelect.value = hasMatchingOption ? (state.dataScope || "current_upload") : "current_upload";
         }
         if (!elements.recipeDataScopeSummary) {
             return;
@@ -1181,6 +1233,8 @@
         const archivedGoalLabel = PRICING_GOAL_LABELS[archivedGoalType] || PRICING_GOAL_LABELS[DEFAULT_PRICING_GOAL_TYPE];
         const archivedGoalValue = Number(selectedRecipe.pricing_goal_value || selectedRecipe.target_food_cost_pct || 0);
         const archivePricingMetrics = getArchivePricingMetrics(selectedRecipe);
+        const exportQuery = getRecipesScopeParams(state).toString();
+        const exportSuffix = exportQuery ? `?${exportQuery}` : "";
         elements.recipeLibraryDetail.innerHTML = `
             <div class="recipes-library-detail-card">
                 <div class="panel-label">Archived Snapshot</div>
@@ -1243,8 +1297,8 @@
                 </div>
                 <div class="recipes-library-actions">
                     <button type="button" class="action-btn" data-load-recipe-builder="${escapeHtml(selectedRecipe.recipe_id)}">Open in Builder</button>
-                    <a class="secondary-btn" href="/recipes/${encodeURIComponent(selectedRecipe.recipe_id)}/export.csv">Export CSV</a>
-                    <a class="secondary-btn" href="/recipes/${encodeURIComponent(selectedRecipe.recipe_id)}/export.xlsx">Export Excel</a>
+                    <a class="secondary-btn" href="/recipes/${encodeURIComponent(selectedRecipe.recipe_id)}/export.csv${exportSuffix}">Export CSV</a>
+                    <a class="secondary-btn" href="/recipes/${encodeURIComponent(selectedRecipe.recipe_id)}/export.xlsx${exportSuffix}">Export Excel</a>
                 </div>
                 <div class="recipes-library-detail-note">Open this snapshot in Recipe Builder to continue editing and save updated values.</div>
             </div>
@@ -1648,7 +1702,7 @@
         logRecipesPerf("recipes.bootstrap.frontend_request_count", {
             count: state.frontendBootstrapRequestCount
         });
-        const data = await fetchJson("/recipes/bootstrap");
+        const data = await fetchJson(appendRecipesScopeQuery("/recipes/bootstrap", state));
         writeCachedRecipesBootstrap(data);
         applyBootstrapData(elements, state, data, {
             analysisAvailable: hasAnalysis(elements)
@@ -1694,7 +1748,7 @@
 
         try {
             const requestStartedAt = performance.now();
-            const data = await fetchJson("/recipes/calculate", {
+            const data = await fetchJson(appendRecipesScopeQuery("/recipes/calculate", state), {
                 method: "POST",
                 body: JSON.stringify(payload)
             });
@@ -1816,7 +1870,7 @@
 
         try {
             const requestStartedAt = performance.now();
-            const data = await fetchJson("/recipes/save", {
+            const data = await fetchJson(appendRecipesScopeQuery("/recipes/save", state), {
                 method: "POST",
                 body: JSON.stringify(payload)
             });
@@ -1871,7 +1925,7 @@
         renderRecipeCollections(elements, state);
 
         try {
-            const data = await fetchJson("/recipes/delete", {
+            const data = await fetchJson(appendRecipesScopeQuery("/recipes/delete", state), {
                 method: "POST",
                 body: JSON.stringify({ recipe_id: recipeId })
             });
@@ -1952,10 +2006,13 @@
 
         if (elements.recipeDataScopeSelect && elements.recipeDataScopeSelect.dataset.bound !== "true") {
             elements.recipeDataScopeSelect.dataset.bound = "true";
-            elements.recipeDataScopeSelect.value = state.dataScope || "current_upload";
+            const hasMatchingOption = Array.from(elements.recipeDataScopeSelect.options || []).some((option) => option.value === (state.dataScope || "current_upload"));
+            elements.recipeDataScopeSelect.value = hasMatchingOption ? (state.dataScope || "current_upload") : "current_upload";
             elements.recipeDataScopeSelect.addEventListener("change", async (event) => {
                 state.dataScope = event.target.value || "current_upload";
-                writeSharedDataScope(state.dataScope);
+                state.dataSessionId = state.dataScope === "demo" ? state.dataSessionId : "";
+                state.demoMode = state.dataScope === "demo";
+                writeSharedDataScope(state.dataScope, state.dataSessionId);
                 try {
                     await loadBootstrap(elements, state);
                     await calculateRecipe(elements, state, { quiet: true });
@@ -2521,15 +2578,20 @@
                 return;
             }
             const nextScope = readSharedDataScope();
-            if (nextScope === state.dataScope) {
+            if (nextScope.scope === state.dataScope && nextScope.session_id === state.dataSessionId) {
                 return;
             }
-            state.dataScope = nextScope;
+            state.dataScope = nextScope.scope;
+            state.dataSessionId = nextScope.session_id;
+            state.demoMode = state.dataScope === "demo";
             scheduleBootstrapRefresh("storage_scope_change");
         });
 
         window.addEventListener("shared-analysis-context-updated", async () => {
-            state.dataScope = readSharedDataScope();
+            const sharedScope = readSharedDataScope();
+            state.dataScope = sharedScope.scope;
+            state.dataSessionId = sharedScope.session_id;
+            state.demoMode = state.dataScope === "demo";
             scheduleBootstrapRefresh("shared_analysis_context_updated");
         });
 

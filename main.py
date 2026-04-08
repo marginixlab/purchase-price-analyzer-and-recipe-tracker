@@ -14,7 +14,7 @@ import hashlib
 import hmac
 import secrets
 import threading
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic, perf_counter
 from typing import Any
@@ -83,6 +83,7 @@ RECIPES_PATH = BASE_DIR / "recipes.json"
 QUOTE_COMPARISONS_PATH = BASE_DIR / "quote_comparisons.json"
 QUOTE_COMPARE_UPLOAD_CACHE_DIR = BASE_DIR / ".quote_compare_uploads"
 QUOTE_COMPARE_SESSION_CACHE_DIR = BASE_DIR / ".quote_compare_sessions"
+DEMO_RECIPES_SESSION_DIR = BASE_DIR / ".demo_recipe_sessions"
 GUIDE_KNOWLEDGE_PATH = BASE_DIR / "guide_knowledge.json"
 LATEST_ANALYSIS_CACHE: dict[str, Any] = {
     "signature": None,
@@ -797,6 +798,190 @@ def build_quote_compare_sample_dataframe() -> pd.DataFrame:
             "Best landed price"
         ]
     })
+
+
+def build_demo_analysis_dataframe() -> pd.DataFrame:
+    suppliers = [
+        {"name": "Sysco", "delivery": "2 days", "terms": "Net 14", "price_bias": 1.04},
+        {"name": "US Foods", "delivery": "3 days", "terms": "Net 21", "price_bias": 1.00},
+        {"name": "Restaurant Depot", "delivery": "1 day", "terms": "Due on receipt", "price_bias": 0.96},
+        {"name": "Gordon Food Service", "delivery": "4 days", "terms": "Net 30", "price_bias": 1.02}
+    ]
+    products = [
+        {"name": "Espresso Beans", "unit": "lb", "quantity": 18, "base_price": 9.85, "notes": "House espresso blend"},
+        {"name": "Whole Milk", "unit": "case", "quantity": 6, "base_price": 23.40, "notes": "4 x 1 gallon"},
+        {"name": "Oat Milk", "unit": "case", "quantity": 4, "base_price": 27.80, "notes": "12 barista cartons"},
+        {"name": "Heavy Cream", "unit": "case", "quantity": 3, "base_price": 31.20, "notes": "Dairy program pricing"},
+        {"name": "Vanilla Syrup", "unit": "case", "quantity": 2, "base_price": 34.60, "notes": "6 bottle pack"},
+        {"name": "Chocolate Syrup", "unit": "case", "quantity": 2, "base_price": 29.40, "notes": "Cafe beverage station"},
+        {"name": "Cane Sugar", "unit": "lb", "quantity": 25, "base_price": 0.92, "notes": "Bakery prep stock"},
+        {"name": "All-Purpose Flour", "unit": "lb", "quantity": 50, "base_price": 0.68, "notes": "High-turn bakery item"},
+        {"name": "Butter", "unit": "lb", "quantity": 20, "base_price": 3.42, "notes": "Unsalted"},
+        {"name": "Croissant Dough", "unit": "case", "quantity": 5, "base_price": 78.00, "notes": "Frozen laminated dough"},
+        {"name": "Bagels", "unit": "case", "quantity": 4, "base_price": 32.40, "notes": "Assorted breakfast mix"},
+        {"name": "Sourdough Bread", "unit": "case", "quantity": 3, "base_price": 41.80, "notes": "Sandwich station"},
+        {"name": "Turkey Breast", "unit": "lb", "quantity": 15, "base_price": 4.95, "notes": "Deli sliced"},
+        {"name": "Smoked Bacon", "unit": "lb", "quantity": 12, "base_price": 5.85, "notes": "Breakfast line"},
+        {"name": "Avocado", "unit": "case", "quantity": 2, "base_price": 48.60, "notes": "Produce market variable"},
+        {"name": "Romaine Lettuce", "unit": "case", "quantity": 3, "base_price": 27.10, "notes": "Salad station"},
+        {"name": "Tomatoes", "unit": "case", "quantity": 3, "base_price": 29.80, "notes": "Slicer tomatoes"},
+        {"name": "Red Onion", "unit": "case", "quantity": 2, "base_price": 21.50, "notes": "Prep staple"},
+        {"name": "Cheddar Cheese", "unit": "lb", "quantity": 18, "base_price": 3.78, "notes": "Shredded blend"},
+        {"name": "Mozzarella Cheese", "unit": "lb", "quantity": 18, "base_price": 3.34, "notes": "Pizza and panini"},
+        {"name": "Chicken Breast", "unit": "lb", "quantity": 20, "base_price": 3.96, "notes": "Grill station"},
+        {"name": "Salmon Fillet", "unit": "lb", "quantity": 12, "base_price": 9.25, "notes": "Weekend feature"},
+        {"name": "Ground Beef", "unit": "lb", "quantity": 20, "base_price": 4.62, "notes": "Burger program"},
+        {"name": "Burger Buns", "unit": "case", "quantity": 4, "base_price": 27.20, "notes": "Brioche style"},
+        {"name": "Frozen Fries", "unit": "case", "quantity": 8, "base_price": 24.90, "notes": "Straight cut"},
+        {"name": "Ketchup", "unit": "case", "quantity": 2, "base_price": 18.30, "notes": "Front of house refill"},
+        {"name": "Mayonnaise", "unit": "case", "quantity": 2, "base_price": 22.40, "notes": "Sauce program"},
+        {"name": "Pickles", "unit": "case", "quantity": 2, "base_price": 26.70, "notes": "Burger garnish"},
+        {"name": "Tortilla Chips", "unit": "case", "quantity": 3, "base_price": 29.20, "notes": "Bar snack"},
+        {"name": "Flour Tortillas", "unit": "case", "quantity": 3, "base_price": 24.50, "notes": "Wrap station"},
+        {"name": "Black Beans", "unit": "case", "quantity": 2, "base_price": 19.80, "notes": "Prep pantry"},
+        {"name": "Jasmine Rice", "unit": "lb", "quantity": 25, "base_price": 1.08, "notes": "Rice bowl base"},
+        {"name": "Penne Pasta", "unit": "lb", "quantity": 20, "base_price": 1.14, "notes": "Dinner line"},
+        {"name": "Marinara Sauce", "unit": "case", "quantity": 3, "base_price": 36.20, "notes": "House red sauce"},
+        {"name": "Parmesan Cheese", "unit": "lb", "quantity": 10, "base_price": 5.95, "notes": "Finishing cheese"},
+        {"name": "Olive Oil", "unit": "case", "quantity": 2, "base_price": 79.50, "notes": "Kitchen premium oil"},
+        {"name": "Lemons", "unit": "case", "quantity": 2, "base_price": 44.70, "notes": "Bar citrus"},
+        {"name": "Limes", "unit": "case", "quantity": 2, "base_price": 42.20, "notes": "Cocktail garnish"},
+        {"name": "Simple Syrup", "unit": "case", "quantity": 2, "base_price": 25.80, "notes": "Bar batch syrup"},
+        {"name": "Tequila Blanco", "unit": "case", "quantity": 1, "base_price": 198.00, "notes": "12 bottle case"},
+        {"name": "Vodka", "unit": "case", "quantity": 1, "base_price": 176.00, "notes": "Well spirit"},
+        {"name": "IPA Draft Keg", "unit": "each", "quantity": 2, "base_price": 158.00, "notes": "Half barrel"},
+        {"name": "House Red Wine", "unit": "case", "quantity": 1, "base_price": 112.00, "notes": "12 bottle case"},
+        {"name": "Paper Cups 12 oz", "unit": "case", "quantity": 5, "base_price": 44.60, "notes": "To-go service"},
+        {"name": "Lids 12 oz", "unit": "case", "quantity": 5, "base_price": 28.50, "notes": "Matching cup lids"},
+        {"name": "Takeout Containers", "unit": "case", "quantity": 4, "base_price": 52.80, "notes": "Compostable"},
+        {"name": "Napkins", "unit": "case", "quantity": 6, "base_price": 31.40, "notes": "Dining room"},
+        {"name": "Dish Soap", "unit": "case", "quantity": 2, "base_price": 46.20, "notes": "Back of house"},
+        {"name": "Sanitizer", "unit": "case", "quantity": 2, "base_price": 54.80, "notes": "Food-safe sanitizer"},
+        {"name": "Toilet Paper", "unit": "case", "quantity": 3, "base_price": 38.60, "notes": "Restroom supplies"}
+    ]
+    delivery_notes = ["Stable contract pricing", "Promo lane price", "Spot market pressure", "Preferred account rate"]
+    rows: list[dict[str, Any]] = []
+    base_date = date(2026, 1, 6)
+
+    for product_index, product in enumerate(products):
+        for supplier_index, supplier in enumerate(suppliers):
+            for week_offset in range(5):
+                current_date = base_date + timedelta(days=(week_offset * 14) + ((product_index + supplier_index) % 5))
+                seasonal_factor = 1 + (((product_index % 7) - 3) * 0.006) + (week_offset * 0.008)
+                competitive_factor = 1 + (((supplier_index * 2) - 3) * 0.01)
+                product_factor = 1 + ((product_index % 5) * 0.004)
+                unit_price = round(product["base_price"] * supplier["price_bias"] * seasonal_factor * competitive_factor * product_factor, 2)
+                quantity = product["quantity"] + ((week_offset + supplier_index) % 3)
+                total_price = round(unit_price * quantity, 2)
+                valid_until = current_date + timedelta(days=21 + (supplier_index * 3))
+                rows.append({
+                    "Supplier": supplier["name"],
+                    "Product Name": product["name"],
+                    "Unit": product["unit"],
+                    "Quantity": quantity,
+                    "Unit Price": unit_price,
+                    "Total Price": total_price,
+                    "Currency": "USD",
+                    "Delivery Time": supplier["delivery"],
+                    "Payment Terms": supplier["terms"],
+                    "Valid Until": valid_until.strftime("%Y-%m-%d"),
+                    "Notes": f"{product['notes']} | {delivery_notes[(product_index + week_offset + supplier_index) % len(delivery_notes)]}",
+                    "Date": current_date.strftime("%Y-%m-%d")
+                })
+
+    return pd.DataFrame(rows)
+
+
+def build_demo_recipes() -> list[dict[str, Any]]:
+    return [
+        {
+            "recipe_id": "demo-iced-latte",
+            "name": "Iced Vanilla Latte",
+            "yield_portions": 1,
+            "pricing_mode": "latest_price",
+            "selling_price": 6.5,
+            "pricing_goal_type": "food_cost_pct",
+            "pricing_goal_value": 28,
+            "target_food_cost_pct": 28,
+            "ingredients": [
+                {"product_name": "Espresso Beans", "quantity": 0.08, "unit": "lb", "purchase_unit": "lb", "purchase_size": 1, "purchase_base_unit": "lb"},
+                {"product_name": "Whole Milk", "quantity": 12, "unit": "fl oz", "purchase_unit": "case", "purchase_size": 512, "purchase_base_unit": "fl oz"},
+                {"product_name": "Vanilla Syrup", "quantity": 1, "unit": "fl oz", "purchase_unit": "case", "purchase_size": 202.8, "purchase_base_unit": "fl oz"}
+            ],
+            "created_at": "2026-03-10T09:00:00+00:00",
+            "updated_at": "2026-03-10T09:00:00+00:00"
+        },
+        {
+            "recipe_id": "demo-turkey-club",
+            "name": "Turkey Club Sandwich",
+            "yield_portions": 1,
+            "pricing_mode": "latest_price",
+            "selling_price": 14.0,
+            "pricing_goal_type": "food_cost_pct",
+            "pricing_goal_value": 30,
+            "target_food_cost_pct": 30,
+            "ingredients": [
+                {"product_name": "Sourdough Bread", "quantity": 2, "unit": "each", "purchase_unit": "case", "purchase_size": 24, "purchase_base_unit": "each"},
+                {"product_name": "Turkey Breast", "quantity": 0.25, "unit": "lb", "purchase_unit": "lb", "purchase_size": 1, "purchase_base_unit": "lb"},
+                {"product_name": "Smoked Bacon", "quantity": 0.1, "unit": "lb", "purchase_unit": "lb", "purchase_size": 1, "purchase_base_unit": "lb"},
+                {"product_name": "Tomatoes", "quantity": 2, "unit": "each", "purchase_unit": "case", "purchase_size": 80, "purchase_base_unit": "each"},
+                {"product_name": "Romaine Lettuce", "quantity": 2, "unit": "each", "purchase_unit": "case", "purchase_size": 24, "purchase_base_unit": "each"},
+                {"product_name": "Mayonnaise", "quantity": 1, "unit": "fl oz", "purchase_unit": "case", "purchase_size": 384, "purchase_base_unit": "fl oz"}
+            ],
+            "created_at": "2026-03-12T10:30:00+00:00",
+            "updated_at": "2026-03-12T10:30:00+00:00"
+        },
+        {
+            "recipe_id": "demo-house-margarita",
+            "name": "House Margarita",
+            "yield_portions": 1,
+            "pricing_mode": "latest_price",
+            "selling_price": 12.0,
+            "pricing_goal_type": "gross_margin_pct",
+            "pricing_goal_value": 72,
+            "target_food_cost_pct": 0,
+            "ingredients": [
+                {"product_name": "Tequila Blanco", "quantity": 2, "unit": "fl oz", "purchase_unit": "case", "purchase_size": 304.32, "purchase_base_unit": "fl oz"},
+                {"product_name": "Simple Syrup", "quantity": 0.75, "unit": "fl oz", "purchase_unit": "case", "purchase_size": 202.8, "purchase_base_unit": "fl oz"},
+                {"product_name": "Limes", "quantity": 1, "unit": "each", "purchase_unit": "case", "purchase_size": 175, "purchase_base_unit": "each"}
+            ],
+            "created_at": "2026-03-15T16:15:00+00:00",
+            "updated_at": "2026-03-15T16:15:00+00:00"
+        }
+    ]
+
+
+def ensure_demo_recipe_session_dir() -> Path:
+    DEMO_RECIPES_SESSION_DIR.mkdir(parents=True, exist_ok=True)
+    return DEMO_RECIPES_SESSION_DIR
+
+
+def get_demo_recipe_session_path(session_id: str) -> Path:
+    normalized_session_id = re.sub(r"[^A-Za-z0-9._-]+", "_", str(session_id or "default").strip()).strip("._") or "default"
+    return ensure_demo_recipe_session_dir() / f"{normalized_session_id}.json"
+
+
+def load_demo_recipe_store(session_id: str) -> dict[str, Any]:
+    session_path = get_demo_recipe_session_path(session_id)
+    if not session_path.exists():
+        store = {"recipes": build_demo_recipes()}
+        session_path.write_text(json.dumps(store, ensure_ascii=False, indent=2), encoding="utf-8")
+        return store
+    try:
+        payload = json.loads(session_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Demo recipe session is invalid.") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("recipes"), list):
+        payload = {"recipes": build_demo_recipes()}
+    return payload
+
+
+def save_demo_recipe_store(session_id: str, store: dict[str, Any]) -> None:
+    session_path = get_demo_recipe_session_path(session_id)
+    session_path.write_text(
+        json.dumps(store, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
 
 
 def dataframe_to_excel_stream(dataframe: pd.DataFrame, sheet_name: str) -> io.BytesIO:
@@ -2005,7 +2190,8 @@ def seed_analysis_history_from_latest_results() -> None:
 
 
 def normalize_analysis_scope(scope: str | None) -> str:
-    return "current_upload"
+    normalized_scope = str(scope or "current_upload").strip().lower()
+    return "demo" if normalized_scope == "demo" else "current_upload"
 
 
 def build_analysis_scope_options() -> list[dict[str, str]]:
@@ -2013,7 +2199,7 @@ def build_analysis_scope_options() -> list[dict[str, str]]:
 
 
 def get_analysis_scope_label(scope: str | None) -> str:
-    return "Current File"
+    return "Demo Data" if normalize_analysis_scope(scope) == "demo" else "Current File"
 
 
 def serialize_dataframe_records(dataframe: pd.DataFrame) -> list[dict[str, Any]]:
@@ -3708,21 +3894,24 @@ def load_analysis_history_frame() -> pd.DataFrame:
 
 
 def filter_analysis_frame_by_scope(frame: pd.DataFrame, scope: str) -> pd.DataFrame:
+    if normalize_analysis_scope(scope) == "demo":
+        return build_demo_analysis_dataframe()
     return frame.copy()
 
 
 def build_analysis_scope_summary(frame: pd.DataFrame, *, scope: str) -> dict[str, Any]:
-    latest_upload = get_latest_analysis_upload_meta()
+    normalized_scope = normalize_analysis_scope(scope)
+    latest_upload = None if normalized_scope == "demo" else get_latest_analysis_upload_meta()
     dated_rows = frame["Date"].dropna() if "Date" in frame.columns else pd.Series(dtype="datetime64[ns]")
     return {
-        "scope": "current_upload",
-        "scope_label": get_analysis_scope_label("current_upload"),
+        "scope": normalized_scope,
+        "scope_label": get_analysis_scope_label(normalized_scope),
         "row_count": int(len(frame.index)),
         "product_count": count_unique_products_by_name_unit(frame),
         "product_name_count": count_unique_product_names(frame),
         "supplier_count": int(frame["Supplier"].nunique()) if "Supplier" in frame.columns and not frame.empty else 0,
-        "current_upload_id": str((latest_upload or {}).get("upload_id") or "").strip(),
-        "current_upload_name": str((latest_upload or {}).get("source_name") or "").strip(),
+        "current_upload_id": str((latest_upload or {}).get("upload_id") or (normalized_scope if normalized_scope == "demo" else "")).strip(),
+        "current_upload_name": str((latest_upload or {}).get("source_name") or ("Demo Data" if normalized_scope == "demo" else "")).strip(),
         "date_range": {
             "start": dated_rows.min().strftime("%Y-%m-%d") if not dated_rows.empty else "",
             "end": dated_rows.max().strftime("%Y-%m-%d") if not dated_rows.empty else ""
@@ -3733,18 +3922,20 @@ def build_analysis_scope_summary(frame: pd.DataFrame, *, scope: str) -> dict[str
 def build_analysis_scope_summary_with_upload(
     frame: pd.DataFrame,
     *,
-    latest_upload: dict[str, Any] | None
+    latest_upload: dict[str, Any] | None,
+    scope: str = "current_upload"
 ) -> dict[str, Any]:
+    normalized_scope = normalize_analysis_scope(scope)
     dated_rows = frame["Date"].dropna() if "Date" in frame.columns else pd.Series(dtype="datetime64[ns]")
     return {
-        "scope": "current_upload",
-        "scope_label": get_analysis_scope_label("current_upload"),
+        "scope": normalized_scope,
+        "scope_label": get_analysis_scope_label(normalized_scope),
         "row_count": int(len(frame.index)),
         "product_count": count_unique_products_by_name_unit(frame),
         "product_name_count": count_unique_product_names(frame),
         "supplier_count": int(frame["Supplier"].nunique()) if "Supplier" in frame.columns and not frame.empty else 0,
-        "current_upload_id": str((latest_upload or {}).get("upload_id") or "").strip(),
-        "current_upload_name": str((latest_upload or {}).get("source_name") or "").strip(),
+        "current_upload_id": str((latest_upload or {}).get("upload_id") or (normalized_scope if normalized_scope == "demo" else "")).strip(),
+        "current_upload_name": str((latest_upload or {}).get("source_name") or ("Demo Data" if normalized_scope == "demo" else "")).strip(),
         "date_range": {
             "start": dated_rows.min().strftime("%Y-%m-%d") if not dated_rows.empty else "",
             "end": dated_rows.max().strftime("%Y-%m-%d") if not dated_rows.empty else ""
@@ -3755,8 +3946,10 @@ def build_analysis_scope_summary_with_upload(
 def build_analysis_scope_summary_from_comparison(
     comparison: dict[str, Any] | None,
     *,
-    latest_upload: dict[str, Any] | None = None
+    latest_upload: dict[str, Any] | None = None,
+    scope: str = "current_upload"
 ) -> dict[str, Any]:
+    normalized_scope = normalize_analysis_scope(scope)
     normalized_comparison = comparison if isinstance(comparison, dict) else {}
     bids = normalized_comparison.get("bids")
     normalized_bids = bids if isinstance(bids, list) else []
@@ -3791,14 +3984,14 @@ def build_analysis_scope_summary_from_comparison(
         if isinstance(bid, dict) and str(bid.get("product_name") or "").strip()
     }
     return {
-        "scope": "current_upload",
-        "scope_label": get_analysis_scope_label("current_upload"),
+        "scope": normalized_scope,
+        "scope_label": get_analysis_scope_label(normalized_scope),
         "row_count": len(normalized_bids),
         "product_count": len(product_keys),
         "product_name_count": len(product_names),
         "supplier_count": len(suppliers),
-        "current_upload_id": str((latest_upload or {}).get("upload_id") or normalized_comparison.get("upload_id") or "").strip(),
-        "current_upload_name": str((latest_upload or {}).get("source_name") or normalized_comparison.get("name") or "").strip(),
+        "current_upload_id": str((latest_upload or {}).get("upload_id") or normalized_comparison.get("upload_id") or (normalized_scope if normalized_scope == "demo" else "")).strip(),
+        "current_upload_name": str((latest_upload or {}).get("source_name") or normalized_comparison.get("name") or ("Demo Data" if normalized_scope == "demo" else "")).strip(),
         "date_range": {
             "start": sorted_dates[0].strftime("%Y-%m-%d") if sorted_dates else "",
             "end": sorted_dates[-1].strftime("%Y-%m-%d") if sorted_dates else ""
@@ -3918,7 +4111,16 @@ def build_recipe_pricing_lookup(frame: pd.DataFrame) -> dict[tuple[str, str], di
     return pricing_lookup
 
 
-def load_recipe_analysis_bundle(*, scope: str = "current_upload") -> dict[str, Any]:
+def load_recipe_analysis_bundle(*, scope: str = "current_upload", session_id: str | None = None) -> dict[str, Any]:
+    normalized_scope = normalize_analysis_scope(scope)
+    if normalized_scope == "demo":
+        frame = normalize_recipe_analysis_frame(build_demo_analysis_dataframe())
+        return {
+            "frame": frame,
+            "product_catalog": build_recipe_product_catalog(frame),
+            "pricing_lookup": build_recipe_pricing_lookup(frame)
+        }
+
     cache_signature = get_recipe_analysis_cache_signature()
     if cache_signature is None:
         raise ValueError("No analyzed dataset is available yet. Please upload and analyze a file first.")
@@ -3973,10 +4175,12 @@ def load_recipe_analysis_bundle(*, scope: str = "current_upload") -> dict[str, A
     }
 
 
-def load_recipe_analysis_dataframe(*, scope: str = "current_upload") -> pd.DataFrame:
+def load_recipe_analysis_dataframe(*, scope: str = "current_upload", session_id: str | None = None) -> pd.DataFrame:
+    if normalize_analysis_scope(scope) == "demo":
+        return load_recipe_analysis_bundle(scope=scope, session_id=session_id)["frame"]
     if get_current_latest_results_path().exists():
         try:
-            return load_recipe_analysis_bundle(scope=scope)["frame"]
+            return load_recipe_analysis_bundle(scope=scope, session_id=session_id)["frame"]
         except ValueError:
             pass
         except Exception:
@@ -4488,11 +4692,41 @@ def enrich_saved_recipes_with_costs(
     return enriched_recipes
 
 
-def get_saved_recipe_by_id(recipe_id: str, user_id: int | str | None = None) -> dict[str, Any] | None:
+def load_recipe_store_for_scope(
+    *,
+    scope: str = "current_upload",
+    session_id: str | None = None,
+    user_id: int | str | None = None
+) -> dict[str, Any]:
+    if normalize_analysis_scope(scope) == "demo":
+        return load_demo_recipe_store(str(session_id or "").strip())
+    return load_recipes_store(user_id)
+
+
+def save_recipe_store_for_scope(
+    store: dict[str, Any],
+    *,
+    scope: str = "current_upload",
+    session_id: str | None = None,
+    user_id: int | str | None = None
+) -> None:
+    if normalize_analysis_scope(scope) == "demo":
+        save_demo_recipe_store(str(session_id or "").strip(), store)
+        return
+    save_recipes_store(store, user_id)
+
+
+def get_saved_recipe_by_id(
+    recipe_id: str,
+    user_id: int | str | None = None,
+    *,
+    scope: str = "current_upload",
+    session_id: str | None = None
+) -> dict[str, Any] | None:
     normalized_recipe_id = str(recipe_id or "").strip()
     if not normalized_recipe_id:
         return None
-    recipes = load_recipes_store(user_id).get("recipes", [])
+    recipes = load_recipe_store_for_scope(scope=scope, session_id=session_id, user_id=user_id).get("recipes", [])
     return next((recipe for recipe in recipes if str(recipe.get("recipe_id") or "").strip() == normalized_recipe_id), None)
 
 
@@ -4526,11 +4760,16 @@ def get_saved_recipe_export_metrics(recipe: dict[str, Any]) -> dict[str, float |
     }
 
 
-def build_saved_recipe_export_context(recipe: dict[str, Any]) -> dict[str, Any]:
+def build_saved_recipe_export_context(
+    recipe: dict[str, Any],
+    *,
+    scope: str = "current_upload",
+    session_id: str | None = None
+) -> dict[str, Any]:
     normalized_recipe = normalize_recipe_payload(recipe)
     ingredient_breakdown: list[dict[str, Any]] = []
     try:
-        analysis_bundle = load_recipe_analysis_bundle()
+        analysis_bundle = load_recipe_analysis_bundle(scope=scope, session_id=session_id)
         calculation = calculate_recipe_cost(
             normalized_recipe,
             analysis_bundle["frame"],
@@ -4569,8 +4808,13 @@ def build_saved_recipe_export_context(recipe: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_saved_recipe_export_rows(recipe: dict[str, Any]) -> list[dict[str, Any]]:
-    export_context = build_saved_recipe_export_context(recipe)
+def build_saved_recipe_export_rows(
+    recipe: dict[str, Any],
+    *,
+    scope: str = "current_upload",
+    session_id: str | None = None
+) -> list[dict[str, Any]]:
+    export_context = build_saved_recipe_export_context(recipe, scope=scope, session_id=session_id)
     summary_columns = export_context["summary"]
     ingredient_rows = export_context["ingredient_rows"]
 
@@ -4596,12 +4840,22 @@ def build_saved_recipe_export_rows(recipe: dict[str, Any]) -> list[dict[str, Any
     return rows
 
 
-def build_saved_recipe_export_dataframe(recipe: dict[str, Any]) -> pd.DataFrame:
-    return pd.DataFrame(build_saved_recipe_export_rows(recipe))
+def build_saved_recipe_export_dataframe(
+    recipe: dict[str, Any],
+    *,
+    scope: str = "current_upload",
+    session_id: str | None = None
+) -> pd.DataFrame:
+    return pd.DataFrame(build_saved_recipe_export_rows(recipe, scope=scope, session_id=session_id))
 
 
-def build_saved_recipe_export_summary_rows(recipe: dict[str, Any]) -> list[tuple[str, Any]]:
-    summary = build_saved_recipe_export_context(recipe)["summary"]
+def build_saved_recipe_export_summary_rows(
+    recipe: dict[str, Any],
+    *,
+    scope: str = "current_upload",
+    session_id: str | None = None
+) -> list[tuple[str, Any]]:
+    summary = build_saved_recipe_export_context(recipe, scope=scope, session_id=session_id)["summary"]
     return [
         ("Recipe Name", summary.get("Recipe Name")),
         ("Yield / Portions", summary.get("Yield / Portions")),
@@ -4611,7 +4865,12 @@ def build_saved_recipe_export_summary_rows(recipe: dict[str, Any]) -> list[tuple
     ]
 
 
-def build_saved_recipe_excel_stream(recipe: dict[str, Any]) -> io.BytesIO:
+def build_saved_recipe_excel_stream(
+    recipe: dict[str, Any],
+    *,
+    scope: str = "current_upload",
+    session_id: str | None = None
+) -> io.BytesIO:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Recipe Export"
@@ -4623,7 +4882,7 @@ def build_saved_recipe_excel_stream(recipe: dict[str, Any]) -> io.BytesIO:
     sheet["A1"] = "Recipe Summary"
     sheet["A1"].font = Font(bold=True, size=14)
 
-    summary_rows = build_saved_recipe_export_summary_rows(recipe)
+    summary_rows = build_saved_recipe_export_summary_rows(recipe, scope=scope, session_id=session_id)
     summary_start_row = 3
     for offset, (label, value) in enumerate(summary_rows):
         row_number = summary_start_row + offset
@@ -4649,7 +4908,7 @@ def build_saved_recipe_excel_stream(recipe: dict[str, Any]) -> io.BytesIO:
         cell.font = bold_font
         cell.fill = header_fill
 
-    ingredient_rows = build_saved_recipe_export_context(recipe)["ingredient_rows"]
+    ingredient_rows = build_saved_recipe_export_context(recipe, scope=scope, session_id=session_id)["ingredient_rows"]
     for row_offset, ingredient_row in enumerate(ingredient_rows, start=1):
         row_number = ingredient_table_row + row_offset
         sheet.cell(row=row_number, column=1, value=ingredient_row.get("Ingredient Name"))
@@ -5626,19 +5885,31 @@ def create_app() -> FastAPI:
         })
 
     @app.get("/recipes/bootstrap")
-    def recipes_bootstrap(scope: str = "current_upload"):
+    def recipes_bootstrap(scope: str = "current_upload", session_id: str | None = None):
         bootstrap_started_at = perf_counter()
+        normalized_scope = normalize_analysis_scope(scope)
         bootstrap_substeps: dict[str, Any] = {
-            "scope": scope
+            "scope": normalized_scope
         }
         recipe_bootstrap_metrics = {
             "deduplicate_call_count": 0
         }
         bootstrap_metrics_token = RECIPE_BOOTSTRAP_METRICS_CONTEXT.set(recipe_bootstrap_metrics)
-        analysis_signature = get_recipe_analysis_cache_signature()
-        recipes_signature = get_recipes_store_cache_signature()
+        analysis_signature = ("demo_analysis", len(build_demo_analysis_dataframe().index)) if normalized_scope == "demo" else get_recipe_analysis_cache_signature()
+        if normalized_scope == "demo":
+            demo_store = load_demo_recipe_store(str(session_id or "").strip())
+            demo_session_path = get_demo_recipe_session_path(str(session_id or "").strip())
+            recipes_signature = (
+                str(demo_session_path),
+                demo_session_path.stat().st_mtime_ns,
+                demo_session_path.stat().st_size,
+                len(demo_store.get("recipes", []))
+            )
+        else:
+            recipes_signature = get_recipes_store_cache_signature()
         response_cache_signature = (
-            str(scope or "current_upload"),
+            normalized_scope,
+            str(session_id or "").strip() if normalized_scope == "demo" else "",
             analysis_signature,
             recipes_signature
         )
@@ -5664,7 +5935,7 @@ def create_app() -> FastAPI:
 
             try:
                 analysis_load_started_at = perf_counter()
-                analysis_bundle = load_recipe_analysis_bundle(scope=scope)
+                analysis_bundle = load_recipe_analysis_bundle(scope=normalized_scope, session_id=session_id)
                 frame = analysis_bundle["frame"]
                 bootstrap_substeps["analysis_load_ms"] = round((perf_counter() - analysis_load_started_at) * 1000, 1)
             except ValueError:
@@ -5673,7 +5944,7 @@ def create_app() -> FastAPI:
                 bootstrap_substeps["analysis_load_ms"] = round((perf_counter() - bootstrap_started_at) * 1000, 1)
 
             recipes_load_started_at = perf_counter()
-            recipes = load_recipes_store().get("recipes", [])
+            recipes = load_recipe_store_for_scope(scope=normalized_scope, session_id=session_id).get("recipes", [])
             bootstrap_substeps["load_recipes_store_ms"] = round((perf_counter() - recipes_load_started_at) * 1000, 1)
             if frame.empty:
                 products = []
@@ -5702,13 +5973,17 @@ def create_app() -> FastAPI:
             scope_options = build_analysis_scope_options()
             build_payload_substeps["scope_options_ms"] = round((perf_counter() - scope_options_started_at) * 1000, 1)
             latest_upload_started_at = perf_counter()
-            latest_upload = get_latest_analysis_upload_meta(
-                prepared_frame=frame,
-                perf_label="recipes.bootstrap.latest_upload_meta.substeps"
+            latest_upload = (
+                {"upload_id": "demo", "source_name": "Demo Data"}
+                if normalized_scope == "demo"
+                else get_latest_analysis_upload_meta(
+                    prepared_frame=frame,
+                    perf_label="recipes.bootstrap.latest_upload_meta.substeps"
+                )
             )
             build_payload_substeps["latest_upload_meta_ms"] = round((perf_counter() - latest_upload_started_at) * 1000, 1)
             scope_summary_started_at = perf_counter()
-            scope_summary = build_analysis_scope_summary_with_upload(frame, latest_upload=latest_upload)
+            scope_summary = build_analysis_scope_summary_with_upload(frame, latest_upload=latest_upload, scope=normalized_scope)
             build_payload_substeps["scope_summary_ms"] = round((perf_counter() - scope_summary_started_at) * 1000, 1)
             pricing_modes_started_at = perf_counter()
             pricing_modes = [
@@ -5750,7 +6025,7 @@ def create_app() -> FastAPI:
     @app.get("/analysis/scope-bootstrap")
     def analysis_scope_bootstrap(scope: str = "current_upload", session_id: str | None = None):
         request_started_at = perf_counter()
-        normalized_scope = str(scope or "current_upload").strip() or "current_upload"
+        normalized_scope = normalize_analysis_scope(scope)
         fast_path_details: dict[str, Any] = {
             "scope": normalized_scope,
             "has_session_id": bool(str(session_id or "").strip()),
@@ -5759,6 +6034,18 @@ def create_app() -> FastAPI:
         }
         overlap_reason = "analysis_frame_required"
         endpoint_selection = "analysis.scope_bootstrap.frame"
+
+        if normalized_scope == "demo":
+            frame = build_demo_analysis_dataframe()
+            summary = build_analysis_scope_summary(frame, scope="demo")
+            response_payload = {
+                "success": True,
+                "has_analysis": bool(summary["row_count"]),
+                "scope_options": build_analysis_scope_options(),
+                "scope_summary": summary
+            }
+            response_json = json.dumps(response_payload, ensure_ascii=False, separators=(",", ":"))
+            return Response(content=response_json, media_type="application/json")
 
         if normalized_scope == "current_upload" and str(session_id or "").strip():
             active_session_started_at = perf_counter()
@@ -5777,7 +6064,7 @@ def create_app() -> FastAPI:
                         or str(comparison.get("name") or "").strip()
                     )
                 }
-                summary = build_analysis_scope_summary_from_comparison(comparison, latest_upload=latest_upload)
+                summary = build_analysis_scope_summary_from_comparison(comparison, latest_upload=latest_upload, scope="current_upload")
                 response_payload = {
                     "success": True,
                     "has_analysis": bool(summary["row_count"]),
@@ -5835,11 +6122,11 @@ def create_app() -> FastAPI:
             )
 
     @app.post("/recipes/calculate")
-    def calculate_recipe(payload: RecipePayload):
+    def calculate_recipe(payload: RecipePayload, scope: str = "current_upload", session_id: str | None = None):
         calculate_started_at = perf_counter()
         try:
             analysis_load_started_at = perf_counter()
-            analysis_bundle = load_recipe_analysis_bundle()
+            analysis_bundle = load_recipe_analysis_bundle(scope=scope, session_id=session_id)
             frame = analysis_bundle["frame"]
             normalized_started_at = perf_counter()
             normalized_recipe = normalize_recipe_payload(payload.model_dump())
@@ -5869,11 +6156,12 @@ def create_app() -> FastAPI:
         })
 
     @app.post("/recipes/save")
-    def save_recipe(payload: RecipePayload):
+    def save_recipe(payload: RecipePayload, scope: str = "current_upload", session_id: str | None = None):
         save_started_at = perf_counter()
+        normalized_scope = normalize_analysis_scope(scope)
         try:
             analysis_load_started_at = perf_counter()
-            analysis_bundle = load_recipe_analysis_bundle()
+            analysis_bundle = load_recipe_analysis_bundle(scope=normalized_scope, session_id=session_id)
             frame = analysis_bundle["frame"]
             normalize_started_at = perf_counter()
             normalized_recipe = normalize_recipe_payload(payload.model_dump())
@@ -5891,7 +6179,7 @@ def create_app() -> FastAPI:
             return JSONResponse({"success": False, "message": str(exc)}, status_code=status_code)
 
         now = datetime.now(timezone.utc).isoformat()
-        store = load_recipes_store()
+        store = load_recipe_store_for_scope(scope=normalized_scope, session_id=session_id)
         recipes = store.get("recipes", [])
         recipe_id = normalized_recipe["recipe_id"] or str(uuid.uuid4())
         existing_recipe = next((recipe for recipe in recipes if recipe.get("recipe_id") == recipe_id), None)
@@ -5914,7 +6202,7 @@ def create_app() -> FastAPI:
 
         store["recipes"] = recipes
         persist_started_at = perf_counter()
-        save_recipes_store(store)
+        save_recipe_store_for_scope(store, scope=normalized_scope, session_id=session_id)
         persist_ms = round((perf_counter() - persist_started_at) * 1000, 1)
 
         enrich_started_at = perf_counter()
@@ -5945,12 +6233,13 @@ def create_app() -> FastAPI:
         })
 
     @app.post("/recipes/delete")
-    def delete_recipe(payload: RecipeDeletePayload):
+    def delete_recipe(payload: RecipeDeletePayload, scope: str = "current_upload", session_id: str | None = None):
         recipe_id = str(payload.recipe_id or "").strip()
         if not recipe_id:
             return JSONResponse({"success": False, "message": "Choose a saved recipe to delete."}, status_code=400)
 
-        store = load_recipes_store()
+        normalized_scope = normalize_analysis_scope(scope)
+        store = load_recipe_store_for_scope(scope=normalized_scope, session_id=session_id)
         recipes = store.get("recipes", [])
         existing_recipe = next((recipe for recipe in recipes if recipe.get("recipe_id") == recipe_id), None)
         if not existing_recipe:
@@ -5958,10 +6247,10 @@ def create_app() -> FastAPI:
 
         updated_recipes = [recipe for recipe in recipes if recipe.get("recipe_id") != recipe_id]
         store["recipes"] = updated_recipes
-        save_recipes_store(store)
+        save_recipe_store_for_scope(store, scope=normalized_scope, session_id=session_id)
 
         try:
-            frame = load_recipe_analysis_dataframe()
+            frame = load_recipe_analysis_dataframe(scope=normalized_scope, session_id=session_id)
             response_recipes = enrich_saved_recipes_with_costs(updated_recipes, frame)
         except ValueError:
             response_recipes = updated_recipes
@@ -5974,11 +6263,11 @@ def create_app() -> FastAPI:
         })
 
     @app.get("/recipes/{recipe_id}/export.csv")
-    def export_recipe_csv(recipe_id: str):
-        recipe = get_saved_recipe_by_id(recipe_id)
+    def export_recipe_csv(recipe_id: str, scope: str = "current_upload", session_id: str | None = None):
+        recipe = get_saved_recipe_by_id(recipe_id, scope=scope, session_id=session_id)
         if not recipe:
             return JSONResponse({"success": False, "message": "The selected recipe could not be found."}, status_code=404)
-        export_df = build_saved_recipe_export_dataframe(recipe)
+        export_df = build_saved_recipe_export_dataframe(recipe, scope=scope, session_id=session_id)
         output = io.StringIO()
         export_df.to_csv(output, index=False)
         filename = build_saved_recipe_export_filename(recipe, "csv")
@@ -5989,11 +6278,11 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/recipes/{recipe_id}/export.xlsx")
-    def export_recipe_excel(recipe_id: str):
-        recipe = get_saved_recipe_by_id(recipe_id)
+    def export_recipe_excel(recipe_id: str, scope: str = "current_upload", session_id: str | None = None):
+        recipe = get_saved_recipe_by_id(recipe_id, scope=scope, session_id=session_id)
         if not recipe:
             return JSONResponse({"success": False, "message": "The selected recipe could not be found."}, status_code=404)
-        output = build_saved_recipe_excel_stream(recipe)
+        output = build_saved_recipe_excel_stream(recipe, scope=scope, session_id=session_id)
         filename = build_saved_recipe_export_filename(recipe, "xlsx")
         return StreamingResponse(
             output,
@@ -6084,14 +6373,31 @@ def create_app() -> FastAPI:
 
     @app.post("/quote-compare/demo-data")
     def quote_compare_demo_data():
+        session_id = str(uuid.uuid4())
+        demo_frame = build_demo_analysis_dataframe()
         normalized_comparison = normalize_quote_comparison_payload({
-            "name": "Demo Supplier Offers",
-            "sourcing_need": "Starter packaging comparison",
-            "bids": build_quote_bids_from_dataframe(build_quote_compare_sample_dataframe())
+            "name": "Demo Data",
+            "sourcing_need": "Cafe and restaurant purchasing demo",
+            "bids": build_quote_bids_from_dataframe(demo_frame)
         })
         evaluation = calculate_quote_comparison(normalized_comparison)
         return JSONResponse({
             "success": True,
+            "session_id": session_id,
+            "headers": [str(column) for column in demo_frame.columns],
+            "mapping": {
+                "Product Name": "Product Name",
+                "Supplier": "Supplier",
+                "Unit": "Unit",
+                "Quantity": "Quantity",
+                "Unit Price": "Unit Price",
+                "Date": "Date",
+                "Currency": "Currency",
+                "Delivery Time": "Delivery Time",
+                "Payment Terms": "Payment Terms",
+                "Valid Until": "Valid Until",
+                "Notes": "Notes"
+            },
             "comparison": normalized_comparison,
             "evaluation": evaluation,
             "message": "Loaded demo supplier offers."

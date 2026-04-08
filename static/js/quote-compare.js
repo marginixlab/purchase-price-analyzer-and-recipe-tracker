@@ -22,6 +22,7 @@
     const QUOTE_COMPARE_MAPPING_MEMORY_KEY = "quote_compare_mapping_memory_v1";
     const QUOTE_COMPARE_HISTORY_COLUMNS_KEY = "quote_compare_history_columns_v1";
     const QUOTE_COMPARE_HISTORY_COLUMNS_ORDER_KEY = "quote_compare_history_columns_order_v1";
+    const SHARED_ANALYSIS_SCOPE_KEY = "shared_analysis_scope_v1";
     const OPPORTUNITY_CARD_BATCH_SIZE = 24;
     const RESTORE_INITIAL_OPPORTUNITY_CARD_BATCH_SIZE = 8;
     const RESTORE_INITIAL_ANALYSIS_VIEWPORT_END = 24;
@@ -126,7 +127,9 @@
             shell: document.getElementById("quoteCompareShell"),
             app: document.getElementById("quoteCompareApp"),
             quoteDataScopeSummary: document.getElementById("quoteDataScopeSummary"),
-            continueAnalysisButton: document.getElementById("quoteContinueAnalysisButton")
+            continueAnalysisButton: document.getElementById("quoteContinueAnalysisButton"),
+            demoState: document.getElementById("quoteDemoState"),
+            exitDemoButton: document.getElementById("quoteExitDemoButton")
         };
     }
 
@@ -287,19 +290,20 @@
         const summary = getAnalysisSummary(analysisResult || { comparison: { bids: [] } });
         const comparison = analysisResult?.comparison || {};
         const rowCount = Number(summary?.rowCount || 0);
+        const scope = state?.demoMode ? "demo" : "current_upload";
         return {
             success: true,
             has_analysis: rowCount > 0,
             scope_options: [],
             scope_summary: {
-                scope: "current_upload",
-                scope_label: "Current File",
+                scope,
+                scope_label: state?.demoMode ? "Demo Data" : "Current File",
                 row_count: rowCount,
                 product_count: Number(summary?.productCount || 0),
                 product_name_count: Number(summary?.productCount || 0),
                 supplier_count: Number(summary?.supplierCount || 0),
-                current_upload_id: String(comparison.upload_id || state?.activeSessionId || state?.manualUploadId || "").trim(),
-                current_upload_name: String(comparison.name || state?.file?.name || "").trim(),
+                current_upload_id: String(comparison.upload_id || state?.demoSessionId || state?.activeSessionId || state?.manualUploadId || "").trim(),
+                current_upload_name: String(comparison.name || (state?.demoMode ? "Demo Data" : state?.file?.name) || "").trim(),
                 date_range: {
                     start: "",
                     end: ""
@@ -326,15 +330,16 @@
 
     async function refreshSharedScopeSummaryCached(elements, state, { scopePayload = null, force = false, sessionId = "" } = {}) {
         const refreshStartedAt = performance.now();
-        const resolvedSessionId = String(sessionId || state?.activeSessionId || "").trim();
+        const resolvedSessionId = String(sessionId || state?.demoSessionId || state?.activeSessionId || "").trim();
+        const resolvedScope = String(state?.dataScope || "current_upload").trim() || "current_upload";
         if (!elements.quoteDataScopeSummary) {
             updateContinueAnalysisButton(elements, state);
             return;
         }
         try {
-            const resolvedPayload = scopePayload || await getCachedAnalysisScopeBootstrap("current_upload", { force, sessionId: resolvedSessionId });
+            const resolvedPayload = scopePayload || await getCachedAnalysisScopeBootstrap(resolvedScope, { force, sessionId: resolvedSessionId });
             if (resolvedPayload) {
-                setCachedAnalysisScopeBootstrap("current_upload", resolvedPayload, resolvedSessionId);
+                setCachedAnalysisScopeBootstrap(resolvedScope, resolvedPayload, resolvedSessionId);
             }
             applySharedScopeSummaryPayload(elements, state, resolvedPayload || { has_analysis: false, scope_summary: null });
         } catch (error) {
@@ -386,12 +391,16 @@
             return true;
         }
         if (action === "back-home") {
+            if (state.demoMode) {
+                clearDemoMode(state);
+            }
             closeProductSummary(state);
             closeHistoryDetailModal(state);
             state.currentScreen = "start";
             state.currentStep = 1;
             setStatus(state, "", "");
             renderApp(elements, state);
+            refreshSharedScopeSummaryCached(elements, state, { force: true }).catch(() => null);
             return true;
         }
         return null;
@@ -409,19 +418,40 @@
         }
     }
 
-    async function activateCurrentUploadScope(elements, state, scopePayload = null) {
-        state.dataScope = "current_upload";
+    function writeSharedDataScope(scope, sessionId = "") {
+        try {
+            sessionStorage.setItem(SHARED_ANALYSIS_SCOPE_KEY, JSON.stringify({
+                scope: String(scope || "current_upload").trim() || "current_upload",
+                session_id: String(sessionId || "").trim()
+            }));
+        } catch (error) {
+            // Ignore storage failures.
+        }
+    }
+
+    function updateDemoStateBanner(elements, state) {
+        if (!elements.demoState) return;
+        elements.demoState.hidden = !Boolean(state.demoMode);
+    }
+
+    async function activateAnalysisScope(elements, state, scope, scopePayload = null, sessionId = "") {
+        state.dataScope = String(scope || "current_upload").trim() || "current_upload";
+        writeSharedDataScope(state.dataScope, sessionId);
         setSharedAnalysisAvailability(true);
         const resolvedScopePayload = scopePayload || buildClientAnalysisScopePayload(state);
-        setCachedAnalysisScopeBootstrap("current_upload", resolvedScopePayload, state.activeSessionId);
-        await refreshSharedScopeSummaryCached(elements, state, { scopePayload: resolvedScopePayload, sessionId: state.activeSessionId });
+        setCachedAnalysisScopeBootstrap(state.dataScope, resolvedScopePayload, sessionId);
+        await refreshSharedScopeSummaryCached(elements, state, { scopePayload: resolvedScopePayload, sessionId });
         window.dispatchEvent(new CustomEvent("shared-analysis-context-updated", {
             detail: {
-                scope: "current_upload",
-                uploadId: state.analysisResult?.comparison?.upload_id || state.activeSessionId || state.manualUploadId || "",
+                scope: state.dataScope,
+                uploadId: state.analysisResult?.comparison?.upload_id || sessionId || state.activeSessionId || state.manualUploadId || "",
                 scopePayload: resolvedScopePayload
             }
         }));
+    }
+
+    async function activateCurrentUploadScope(elements, state, scopePayload = null) {
+        await activateAnalysisScope(elements, state, "current_upload", scopePayload, state.activeSessionId);
     }
 
     function scheduleDeferredSharedScopeSummaryRefresh(elements, state, { force = false, reason = "deferred_init" } = {}) {
@@ -430,7 +460,7 @@
             requestAnimationFrame(() => {
                 refreshSharedScopeSummaryCached(elements, state, {
                     force,
-                    sessionId: state.activeSessionId
+                    sessionId: state.demoMode ? state.demoSessionId : state.activeSessionId
                 }).then(() => {
                     console.info("[PERF] quote_compare.init.scope_bootstrap_deferred", {
                         reason,
@@ -1257,6 +1287,9 @@
             detectedMappings: state.detectedMappings,
             selectedMappings: state.selectedMappings,
             activeSessionId: state.activeSessionId,
+            demoMode: state.demoMode,
+            demoSessionId: state.demoSessionId,
+            dataScope: state.dataScope,
             manualUploadId: state.manualUploadId,
             historyFilters: state.historyFilters,
             historyFocusedSeriesKey: state.historyFocusedSeriesKey,
@@ -1436,6 +1469,9 @@
         state.analysisResult = null;
         state.uploadReview = null;
         state.activeSessionId = "";
+        state.demoMode = false;
+        state.demoSessionId = "";
+        state.dataScope = "current_upload";
         state.manualUploadId = createManualUploadId();
         state.productSummaryModalOpen = false;
         state.productSummaryModalData = null;
@@ -1450,9 +1486,17 @@
         state.lastQuoteCompareScreen = { currentScreen: "start", currentStep: 1 };
         state.lastFlowScreen = "review";
         clearPersistedQuoteCompareState();
+        writeSharedDataScope("current_upload", "");
         if (message) {
             setStatus(state, message, "info");
         }
+    }
+
+    function clearDemoMode(state) {
+        state.demoMode = false;
+        state.demoSessionId = "";
+        state.dataScope = "current_upload";
+        writeSharedDataScope("current_upload", "");
     }
 
     function clearQuoteCompareFrontendCaches() {
@@ -1519,6 +1563,9 @@
         state.detectedMappings = snapshot.detectedMappings || state.detectedMappings;
         state.selectedMappings = snapshot.selectedMappings || state.selectedMappings;
         state.activeSessionId = snapshot.activeSessionId || state.activeSessionId;
+        state.demoMode = Boolean(snapshot.demoMode);
+        state.demoSessionId = snapshot.demoSessionId || state.demoSessionId;
+        state.dataScope = snapshot.dataScope || (state.demoMode ? "demo" : state.dataScope);
         state.manualUploadId = snapshot.manualUploadId || state.manualUploadId;
         state.historyFilters = { ...state.historyFilters, ...(snapshot.historyFilters || {}) };
         state.historyFocusedSeriesKey = snapshot.historyFocusedSeriesKey || state.historyFocusedSeriesKey;
@@ -1816,6 +1863,9 @@
             analysisResult: null,
             uploadReview: null,
             activeSessionId: "",
+            demoMode: false,
+            demoSessionId: "",
+            dataScope: "current_upload",
             manualUploadId: createManualUploadId(),
             hasSharedScopeAnalysis: false,
             dataScopeSummary: null,
@@ -3549,6 +3599,10 @@
                         <span class="qc2-choice-title">Enter Supplier Prices Manually</span>
                         <span class="qc2-choice-copy">Add supplier price rows one by one when data arrives outside a spreadsheet.</span>
                     </button>
+                    <button type="button" class="qc2-choice-card qc2-choice-card-secondary" data-qc-action="start-demo">
+                        <span class="qc2-choice-title">Try Demo</span>
+                        <span class="qc2-choice-copy">Open the same analysis workspace instantly with realistic sample purchasing data and no upload required.</span>
+                    </button>
                 </div>
             </section>
         `;
@@ -4009,7 +4063,9 @@
         await setProgressPhase(state, "Validating -> Mapping -> Aggregating -> Building analysis");
         renderApp(elements, state, { preserveScroll: true });
         await waitForNextPaint();
-        const started = state.mode === "manual"
+        const started = state.demoMode
+            ? await startDemoAnalysis(state)
+            : state.mode === "manual"
             ? await startManualAnalysis(state, elements)
             : await startUploadAnalysis(state, elements);
         state.progressPhase = "";
@@ -4036,7 +4092,10 @@
                 requestAnimationFrame(() => {
                     const scopePayload = state.pendingPostConfirmScopePayload || buildClientAnalysisScopePayload(state);
                     state.pendingPostConfirmScopePayload = null;
-                    activateCurrentUploadScope(elements, state, scopePayload).catch(() => null);
+                    (state.demoMode
+                        ? activateAnalysisScope(elements, state, "demo", scopePayload, state.demoSessionId)
+                        : activateCurrentUploadScope(elements, state, scopePayload)
+                    ).catch(() => null);
                     state.deferPersistUntilPostConfirmPaint = false;
                     scheduleQuoteCompareSessionPersist(state, elements);
                 });
@@ -6800,6 +6859,7 @@
         sanitizeQuoteCompareStepState(state);
         updateLastQuoteCompareScreen(state);
         updateContinueAnalysisButton(elements, state);
+        updateDemoStateBanner(elements, state);
         const tableDomStartedAt = performance.now();
         elements.app.innerHTML = renderCurrentScreen(state);
         const tableDomEndedAt = performance.now();
@@ -6915,6 +6975,59 @@
             fileName: file.name,
             totalFileSelectionMs: Number((performance.now() - parseSelectedStartedAt).toFixed(1))
         });
+    }
+
+    async function startDemoAnalysis(state) {
+        const data = await fetchJson("/quote-compare/demo-data", {
+            method: "POST"
+        });
+        const fieldReviews = [...REQUIRED_FIELDS, ...OPTIONAL_FIELDS].map((field) => ({
+            field,
+            detected_column: data.mapping?.[field] || null,
+            score: data.mapping?.[field] ? 100 : 0,
+            match_quality: data.mapping?.[field] ? "exact" : "missing"
+        }));
+        state.demoMode = true;
+        state.demoSessionId = data.session_id || state.demoSessionId || "";
+        state.mode = "upload";
+        state.uploadReview = {
+            session_id: data.session_id || "",
+            filename: "Demo Data",
+            required_fields: REQUIRED_FIELDS,
+            optional_fields: OPTIONAL_FIELDS,
+            message: data.message || "",
+            review_message: "Demo data uses the same mapping contract as uploaded files.",
+            mapping: { ...(data.mapping || {}) },
+            field_reviews: fieldReviews,
+            matched_fields: REQUIRED_FIELDS.length,
+            missing_fields: [],
+            optional_columns: [],
+            headers: data.headers || []
+        };
+        state.headers = data.headers || [];
+        state.detectedMappings = { ...(data.mapping || {}) };
+        state.selectedMappings = { ...(data.mapping || {}) };
+        computeValidation(state);
+        state.analyzeMode = "compare";
+        state.analysisResult = {
+            comparison: { ...data.comparison, source_type: "demo" },
+            evaluation: data.evaluation,
+            summary: buildAnalyzeSummary({ comparison: { ...data.comparison, source_type: "demo" } })
+        };
+        state.rows = data.comparison?.bids || [];
+        state.activeAnalyzeTab = "savings";
+        state.showOpportunitySection = true;
+        state.showFullComparison = false;
+        state.opportunityRenderCount = OPPORTUNITY_CARD_BATCH_SIZE;
+        clearActiveProductFilterState(state);
+        state.collapsedDecisionCards = clearDecisionCardsForScope(state.collapsedDecisionCards, "spotlight");
+        state.selectedAnalysisRowKey = "";
+        state.lastFlowScreen = "review";
+        state.currentScreen = "analyze";
+        state.currentStep = 3;
+        state.pendingPostConfirmScopePayload = buildClientAnalysisScopePayload(state);
+        setStatus(state, data.message || "Demo analysis is ready.", "success");
+        return true;
     }
 
     async function startUploadAnalysis(state, elements) {
@@ -7260,27 +7373,48 @@
             }
 
             if (action === "start-upload") {
+                if (state.demoMode) {
+                    clearDemoMode(state);
+                }
                 closeProductSummary(state);
                 state.mode = "upload";
                 state.currentScreen = "upload";
                 setStatus(state, "", "");
                 renderApp(elements, state);
+                refreshSharedScopeSummaryCached(elements, state, { force: true }).catch(() => null);
                 return;
             }
             if (action === "start-manual") {
+                if (state.demoMode) {
+                    clearDemoMode(state);
+                }
                 closeProductSummary(state);
                 state.mode = "manual";
                 state.currentScreen = "manual";
                 setStatus(state, "", "");
                 renderApp(elements, state);
+                refreshSharedScopeSummaryCached(elements, state, { force: true }).catch(() => null);
+                return;
+            }
+            if (action === "start-demo") {
+                closeProductSummary(state);
+                state.demoMode = true;
+                state.mode = "upload";
+                state.currentScreen = "review";
+                state.isSubmitting = false;
+                await triggerStep2StartAnalysis(elements, state);
                 return;
             }
             if (action === "back-start") {
+                if (state.demoMode) {
+                    clearDemoMode(state);
+                }
                 closeProductSummary(state);
                 state.currentScreen = "start";
                 syncQuoteCompareStepState(state);
                 setStatus(state, "", "");
                 renderApp(elements, state);
+                refreshSharedScopeSummaryCached(elements, state, { force: true }).catch(() => null);
                 return;
             }
             if (action === "pick-file" || action === "replace-file") {
@@ -8102,10 +8236,16 @@
             }
             bindEvents(elements, state);
             exposeApi(elements, state);
+            elements.exitDemoButton?.addEventListener("click", () => {
+                resetQuoteCompareUploadState(state);
+                renderApp(elements, state);
+                refreshSharedScopeSummaryCached(elements, state, { force: true }).catch(() => null);
+            });
 
             if (hasRestorableAnalyzeContext(state)) {
                 initialScopePayload = buildClientAnalysisScopePayload(state);
-                setCachedAnalysisScopeBootstrap("current_upload", initialScopePayload, state.activeSessionId);
+                writeSharedDataScope(state.demoMode ? "demo" : "current_upload", state.demoMode ? state.demoSessionId : state.activeSessionId);
+                setCachedAnalysisScopeBootstrap(state.demoMode ? "demo" : "current_upload", initialScopePayload, state.demoMode ? state.demoSessionId : state.activeSessionId);
                 applySharedScopeSummaryPayload(elements, state, initialScopePayload);
                 scopeBootstrapDeferred = true;
                 bootstrapDependencyReason = "restored_analyze_context";
@@ -8142,7 +8282,7 @@
 
             if (state.currentScreen === "analyze" && hasRestorableAnalyzeContext(state)) {
                 initialScopePayload = buildClientAnalysisScopePayload(state);
-                setCachedAnalysisScopeBootstrap("current_upload", initialScopePayload, state.activeSessionId);
+                setCachedAnalysisScopeBootstrap(state.demoMode ? "demo" : "current_upload", initialScopePayload, state.demoMode ? state.demoSessionId : state.activeSessionId);
                 applySharedScopeSummaryPayload(elements, state, initialScopePayload);
                 scopeBootstrapDeferred = true;
                 bootstrapDependencyReason = "bootstrap_active_session_contains_step3";
@@ -8242,7 +8382,7 @@
         });
 
         window.addEventListener("shared-analysis-context-updated", async (event) => {
-            if (event.detail?.scope && event.detail.scope !== "current_upload") {
+            if (event.detail?.scope && event.detail.scope !== (state.demoMode ? "demo" : "current_upload")) {
                 return;
             }
             await refreshSharedScopeSummaryCached(elements, state, { scopePayload: event.detail?.scopePayload || null });
