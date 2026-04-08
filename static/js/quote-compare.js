@@ -5095,7 +5095,6 @@
                         autocomplete="off"
                     >
                     <button type="button" class="secondary-btn qc2-analysis-search-clear" data-qc-action="clear-analysis-search" ${state.analysisTableSearch ? "" : "hidden"} aria-label="Clear search">X</button>
-                    <button type="button" class="secondary-btn qc2-analysis-search-export" data-qc-action="export-analysis-csv" data-export-scope="full-table">Export CSV</button>
                     <button type="button" class="action-btn qc2-analysis-search-button" tabindex="-1" aria-hidden="true">Search</button>
                 </div>
             </div>
@@ -5776,7 +5775,10 @@
                 Math.max(state.opportunityRenderCount || OPPORTUNITY_CARD_BATCH_SIZE, OPPORTUNITY_CARD_BATCH_SIZE)
             );
         }
-        return getFilteredAnalysisCards(state, renderModel.decisionCards || []);
+        const sourceCards = Array.isArray(renderModel.summary?.decisionCards)
+            ? renderModel.summary.decisionCards
+            : (renderModel.decisionCards || []);
+        return getFilteredAnalysisCards(state, sourceCards);
     }
 
     function sanitizeExportFilePart(value, fallback = "export") {
@@ -6184,6 +6186,7 @@
                                         <div class="mapping-section-copy">Structured all-products price intelligence view across the complete pricing set.</div>
                                     </div>
                                     <div class="qc2-analysis-section-actions">
+                                        <button type="button" class="secondary-btn qc2-section-action-btn" data-qc-action="export-analysis-csv" data-export-scope="full-table">Export CSV</button>
                                         ${shouldRenderFullComparison ? '<button type="button" class="secondary-btn qc2-section-action-btn" data-qc-action="hide-all-details">Hide selections</button>' : ""}
                                         <button type="button" class="secondary-btn qc2-section-action-btn" data-qc-action="toggle-full-comparison" aria-expanded="${state.showFullComparison ? "true" : "false"}">
                                             ${state.showFullComparison ? "Hide table" : "Open table"}
