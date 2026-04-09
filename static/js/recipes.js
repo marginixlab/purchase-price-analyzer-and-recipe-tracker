@@ -3,7 +3,7 @@
     const SHARED_DATA_SCOPE_KEY = "shared_analysis_scope_v1";
     const RECIPES_BOOTSTRAP_CACHE_KEY = "recipes_bootstrap_cache_v2";
     const DEMO_SESSION_ID_KEY = "demo_session_id";
-    const RECIPE_UNIT_OPTIONS = ["g", "kg", "oz", "lb", "ml", "l", "fl oz", "each", "portion"];
+    const RECIPE_UNIT_OPTIONS = ["g", "kg", "oz", "lb", "ml", "l", "fl oz", "each", "slice"];
     const PACKAGE_BASE_UNIT_OPTIONS = ["g", "ml", "each"];
     const UNIT_TYPE_MAP = {
         g: "weight",
@@ -15,9 +15,13 @@
         "fl oz": "volume",
         each: "count",
         portion: "count",
+        slice: "count",
+        serving: "count",
         pack: "package",
         box: "package",
         case: "package",
+        tray: "package",
+        loaf: "package",
         carton: "package",
         bottle: "package",
         can: "package",
@@ -65,14 +69,23 @@
         pcs: "each",
         portion: "portion",
         portions: "portion",
+        slice: "slice",
+        slices: "slice",
+        serving: "serving",
+        servings: "serving",
         package: "pack",
         packages: "pack",
         pack: "pack",
         packs: "pack",
+        cs: "case",
         box: "box",
         boxes: "box",
         case: "case",
         cases: "case",
+        tray: "tray",
+        trays: "tray",
+        loaf: "loaf",
+        loaves: "loaf",
         carton: "carton",
         cartons: "carton",
         bottle: "bottle",
@@ -93,7 +106,9 @@
         "fl oz": { type: "volume", factor: 29.5735 },
         l: { type: "volume", factor: 1000 },
         each: { type: "count", factor: 1 },
-        portion: { type: "count", factor: 1 }
+        portion: { type: "count", factor: 1 },
+        slice: { type: "count", factor: 1 },
+        serving: { type: "count", factor: 1 }
     };
     const DEFAULT_PRICING_GOAL_TYPE = "food_cost_pct";
     const PRICING_GOAL_LABELS = {
@@ -490,6 +505,9 @@
     }
 
     function hasUnitTypeMismatch(ingredient) {
+        if (hasExplicitConversion(ingredient)) {
+            return false;
+        }
         const normalizedUsageUnit = normalizeUnit(ingredient?.unit);
         const normalizedPurchaseUnit = normalizeUnit(ingredient?.purchase_unit);
         const normalizedPurchaseBaseUnit = normalizeUnit(ingredient?.purchase_base_unit);
@@ -506,6 +524,18 @@
             return !purchaseBaseType || purchaseBaseType === "package" || usageType !== purchaseBaseType;
         }
         return usageType !== purchaseType;
+    }
+
+    function hasExplicitConversion(ingredient) {
+        const normalizedUsageUnit = normalizeUnit(ingredient?.unit);
+        const normalizedPurchaseUnit = normalizeUnit(ingredient?.purchase_unit);
+        const purchaseSize = Number(ingredient?.purchase_size || 0);
+        return Boolean(
+            normalizedUsageUnit
+            && normalizedPurchaseUnit
+            && normalizedUsageUnit !== normalizedPurchaseUnit
+            && purchaseSize > 0
+        );
     }
 
     function createEmptyIngredient() {
@@ -610,15 +640,7 @@
         const rememberedConversion = getRememberedPackageConversion(state, lookupProductName, sourcePurchaseUnit);
         const currentUnit = normalizeUnit(nextIngredient.unit || "");
         const currentUnitType = getUnitType(currentUnit);
-        const purchaseUnitType = getUnitType(sourcePurchaseUnit);
-        const compatibleCurrentUnit = Boolean(
-            currentUnit
-            && (
-                currentUnitType === getUnitType(sourcePurchaseBaseUnit)
-                || currentUnitType === getUnitType(preferredUsageUnit)
-                || (purchaseUnitType && purchaseUnitType !== "package" && currentUnitType === purchaseUnitType)
-            )
-        );
+        const compatibleCurrentUnit = Boolean(currentUnit && currentUnitType !== "package");
         const usageUnit = normalizeUnit(
             compatibleCurrentUnit
                 ? currentUnit
@@ -626,7 +648,7 @@
                     || rememberedConversion?.purchase_base_unit
                     || preferredUsageUnit
                     || sourcePurchaseBaseUnit
-                    || (purchaseUnitType === "package" ? "each" : sourcePurchaseUnit)
+                    || (isPackageUnit(sourcePurchaseUnit) ? "each" : sourcePurchaseUnit)
                     || ""
         );
         const purchaseBaseUnit = resolvePurchaseBaseUnit(
@@ -1197,7 +1219,7 @@
                 && normalizedIngredient.purchase_unit !== normalizedIngredient.unit
             );
             const conversionTargetUnit = normalizeUnit(normalizedIngredient.unit || purchaseBaseUnit || "unit");
-            const conversionMissing = showConversionBasis && Number(normalizedIngredient.purchase_size || 0) <= 0;
+            const conversionMissing = showConversionBasis && !hasExplicitConversion(normalizedIngredient);
 
             return `
                 <div class="recipe-ingredient-row recipe-ingredient-grid${productDropdownOpen ? " is-product-open" : ""}" data-index="${index}">
@@ -1683,6 +1705,7 @@
             ingredient.product_name
             && ingredient.unit
             && ingredient.purchase_unit
+            && !hasExplicitConversion(ingredient)
             && hasUnitTypeMismatch(ingredient)
         ));
         if (mismatchedIngredient) {

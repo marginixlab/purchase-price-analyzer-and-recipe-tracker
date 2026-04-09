@@ -4336,14 +4336,23 @@ RECIPE_UNIT_ALIASES = {
     "pcs": "each",
     "portion": "portion",
     "portions": "portion",
+    "slice": "slice",
+    "slices": "slice",
+    "serving": "serving",
+    "servings": "serving",
     "package": "pack",
     "packages": "pack",
     "pack": "pack",
     "packs": "pack",
+    "cs": "case",
     "box": "box",
     "boxes": "box",
     "case": "case",
     "cases": "case",
+    "tray": "tray",
+    "trays": "tray",
+    "loaf": "loaf",
+    "loaves": "loaf",
     "carton": "carton",
     "cartons": "carton",
     "bottle": "bottle",
@@ -4365,7 +4374,9 @@ RECIPE_UNIT_FACTORS = {
     "fl oz": ("volume", 29.5735),
     "l": ("volume", 1000.0),
     "each": ("count", 1.0),
-    "portion": ("count", 1.0)
+    "portion": ("count", 1.0),
+    "slice": ("count", 1.0),
+    "serving": ("count", 1.0)
 }
 
 RECIPE_UNIT_CATEGORIES = {
@@ -4378,9 +4389,13 @@ RECIPE_UNIT_CATEGORIES = {
     "fl oz": "volume",
     "each": "count",
     "portion": "count",
+    "slice": "count",
+    "serving": "count",
     "pack": "package",
     "box": "package",
     "case": "package",
+    "tray": "package",
+    "loaf": "package",
     "carton": "package",
     "bottle": "package",
     "can": "package",
@@ -4469,6 +4484,21 @@ def convert_recipe_quantity_to_base(quantity: float, source_unit: str, base_unit
     return quantity * (source_meta[1] / base_meta[1])
 
 
+def has_explicit_recipe_conversion(
+    usage_unit: str,
+    purchase_unit: str,
+    purchase_size: float
+) -> bool:
+    normalized_usage_unit = normalize_recipe_unit_name(usage_unit)
+    normalized_purchase_unit = normalize_recipe_unit_name(purchase_unit)
+    return bool(
+        normalized_usage_unit
+        and normalized_purchase_unit
+        and normalized_usage_unit != normalized_purchase_unit
+        and float(purchase_size or 0) > 0
+    )
+
+
 def resolve_recipe_usage_ratio(
     quantity: float,
     usage_unit: str,
@@ -4485,6 +4515,9 @@ def resolve_recipe_usage_ratio(
     )
     if normalized_usage_unit and normalized_purchase_unit and normalized_usage_unit == normalized_purchase_unit:
         return quantity, quantity, normalized_purchase_unit
+
+    if has_explicit_recipe_conversion(normalized_usage_unit, normalized_purchase_unit, purchase_size):
+        return quantity / purchase_size, quantity, normalized_usage_unit
 
     purchase_category = get_recipe_unit_category(normalized_purchase_unit)
     usage_category = get_recipe_unit_category(normalized_usage_unit)
@@ -4611,6 +4644,13 @@ def validate_recipe_payload(recipe: dict[str, Any]) -> None:
         normalized_purchase_unit = normalize_recipe_unit_name(ingredient["purchase_unit"])
         normalized_usage_unit = normalize_recipe_unit_name(ingredient["unit"])
         if normalized_usage_unit and normalized_purchase_unit and normalized_usage_unit == normalized_purchase_unit:
+            continue
+
+        if has_explicit_recipe_conversion(
+            normalized_usage_unit,
+            normalized_purchase_unit,
+            float(ingredient["purchase_size"] or 0)
+        ):
             continue
 
         purchase_category = get_recipe_unit_category(normalized_purchase_unit)
