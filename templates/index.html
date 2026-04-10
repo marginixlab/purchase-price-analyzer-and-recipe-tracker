@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Purchase Price Analyzer</title>
 
+    <!-- Favicon -->
     <link rel="icon" type="image/png" href="{{ url_for('static', path='/favicon-32.png') }}">
 
     {% if not has_workspace_access %}
@@ -12,6 +13,8 @@
         document.documentElement.classList.add("auth-pending");
     </script>
     {% endif %}
+
+    <!-- Styles -->
     <link rel="stylesheet" href="{{ url_for('static', path='/css/styles.css') }}">
 </head>
 <body data-active-view="{{ active_view }}" data-is-authenticated="{{ 'true' if is_authenticated else 'false' }}" data-demo-mode="{{ 'true' if demo_mode else 'false' }}" data-auth-user-id="{{ current_user_id if current_user_id is not none else '' }}" class="{% if not has_workspace_access %}app-booting{% endif %}">
