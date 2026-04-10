@@ -102,6 +102,13 @@
             transform: translateY(-1px);
         }
 
+        .admin-btn:disabled,
+        .admin-copy-btn:disabled {
+            cursor: default;
+            opacity: 0.65;
+            transform: none;
+        }
+
         .admin-link {
             display: inline-flex;
             align-items: center;
@@ -214,6 +221,16 @@
             color: var(--text);
         }
 
+        .admin-inline-form {
+            margin: 0;
+        }
+
+        .admin-action-btn {
+            min-width: 110px;
+            background: transparent;
+            color: var(--text);
+        }
+
         .admin-empty {
             padding: 28px;
             color: var(--text-secondary);
@@ -265,6 +282,11 @@
                 <button class="admin-copy-btn" type="button" data-copy-code="{{ generated_code }}">Copy Code</button>
             </div>
             {% endif %}
+            {% if action_message %}
+            <div class="admin-notice" role="status" aria-live="polite">
+                <span><strong>Success:</strong> {{ action_message }}</span>
+            </div>
+            {% endif %}
             {% if error_message %}
             <div class="admin-notice error" role="alert" aria-live="polite">
                 <span><strong>Request blocked:</strong> {{ error_message }}</span>
@@ -284,6 +306,7 @@
                             <th>Used By Email</th>
                             <th>Created</th>
                             <th>Used</th>
+                            <th>Action</th>
                             <th>Copy</th>
                         </tr>
                     </thead>
@@ -296,10 +319,37 @@
                                     {% if license.is_used %}Used{% else %}Unused{% endif %}
                                 </span>
                             </td>
-                            <td><span class="admin-meta">{{ license.status or "active" }}</span></td>
+                            <td>
+                                <span class="admin-meta">
+                                    {{ license.status or "active" }}
+                                    {% if license.is_used and license.user_status == "deactivated" %}
+                                    | user deactivated
+                                    {% elif license.is_used and license.user_status == "active" %}
+                                    | user active
+                                    {% endif %}
+                                </span>
+                            </td>
                             <td><span class="admin-meta">{{ license.used_by_email }}</span></td>
                             <td><span class="admin-meta">{{ license.created_at or "-" }}</span></td>
                             <td><span class="admin-meta">{{ license.used_at or "-" }}</span></td>
+                            <td>
+                                {% if license.is_used %}
+                                <form
+                                    class="admin-inline-form"
+                                    method="post"
+                                    action="/admin/licenses/{{ license.code }}/{% if license.user_status == 'deactivated' %}reactivate{% else %}deactivate{% endif %}"
+                                >
+                                    <button
+                                        class="admin-copy-btn admin-action-btn"
+                                        type="submit"
+                                    >
+                                        {% if license.user_status == "deactivated" %}Reactivate{% else %}Deactivate{% endif %}
+                                    </button>
+                                </form>
+                                {% else %}
+                                <span class="admin-meta">-</span>
+                                {% endif %}
+                            </td>
                             <td><button class="admin-copy-btn" type="button" data-copy-code="{{ license.code }}">Copy</button></td>
                         </tr>
                         {% endfor %}

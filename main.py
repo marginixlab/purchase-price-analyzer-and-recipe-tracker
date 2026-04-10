@@ -7290,6 +7290,11 @@ def list_license_codes() -> list[dict[str, Any]]:
                     WHEN u.email IS NULL OR trim(u.email) = '' THEN 'unknown'
                     ELSE u.email
                 END AS used_by_email,
+                CASE
+                    WHEN lc.used_by_user_id IS NULL THEN '-'
+                    WHEN u.is_active = 1 THEN 'active'
+                    ELSE 'deactivated'
+                END AS user_status,
                 lc.created_at,
                 COALESCE(used_at, activated_at) AS used_at
             FROM license_codes lc
@@ -7324,6 +7329,94 @@ def create_unique_license_code() -> str:
             """, (candidate, created_at))
             conn.commit()
             return candidate
+    finally:
+        conn.close()
+
+
+def deactivate_license_user(code: str) -> tuple[bool, str]:
+    normalized_code = str(code or "").strip()
+    if not normalized_code:
+        return False, "License code is required."
+
+    conn = sqlite3.connect(str(AUTH_DB_PATH))
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.cursor()
+        license_row = cursor.execute("""
+            SELECT code, is_used, used_by_user_id
+            FROM license_codes
+            WHERE code = ?
+        """, (normalized_code,)).fetchone()
+
+        if not license_row:
+            return False, "License code not found."
+        if not bool(license_row["is_used"]):
+            return False, "Only used licenses can be deactivated."
+
+        user_id = license_row["used_by_user_id"]
+        if user_id is None:
+            return False, "This used license is not linked to a user account."
+
+        user_row = cursor.execute(
+            "SELECT is_active FROM users WHERE id = ?",
+            (int(user_id),)
+        ).fetchone()
+        if not user_row:
+            return False, "The linked user account could not be found."
+
+        if not bool(user_row["is_active"]):
+            return True, "User account already deactivated."
+
+        cursor.execute(
+            "UPDATE users SET is_active = 0 WHERE id = ?",
+            (int(user_id),)
+        )
+        conn.commit()
+        return True, "User account deactivated."
+    finally:
+        conn.close()
+
+
+def reactivate_license_user(code: str) -> tuple[bool, str]:
+    normalized_code = str(code or "").strip()
+    if not normalized_code:
+        return False, "License code is required."
+
+    conn = sqlite3.connect(str(AUTH_DB_PATH))
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.cursor()
+        license_row = cursor.execute("""
+            SELECT code, is_used, used_by_user_id
+            FROM license_codes
+            WHERE code = ?
+        """, (normalized_code,)).fetchone()
+
+        if not license_row:
+            return False, "License code not found."
+        if not bool(license_row["is_used"]):
+            return False, "Only used licenses can be reactivated."
+
+        user_id = license_row["used_by_user_id"]
+        if user_id is None:
+            return False, "This used license is not linked to a user account."
+
+        user_row = cursor.execute(
+            "SELECT is_active FROM users WHERE id = ?",
+            (int(user_id),)
+        ).fetchone()
+        if not user_row:
+            return False, "The linked user account could not be found."
+
+        if bool(user_row["is_active"]):
+            return True, "User account already active."
+
+        cursor.execute(
+            "UPDATE users SET is_active = 1 WHERE id = ?",
+            (int(user_id),)
+        )
+        conn.commit()
+        return True, "User account reactivated."
     finally:
         conn.close()
 
@@ -7939,7 +8032,8 @@ async def admin_licenses_page(request: Request):
     if admin_gate is not None:
         return admin_gate
 
-    success_message = str(request.query_params.get("success") or "").strip()
+    generated_code = str(request.query_params.get("success") or "").strip()
+    action_message = str(request.query_params.get("message") or "").strip()
     error_message = str(request.query_params.get("error") or "").strip()
     return safe_template_response(
         request,
@@ -7947,7 +8041,8 @@ async def admin_licenses_page(request: Request):
         {
             "request": request,
             "licenses": list_license_codes(),
-            "generated_code": success_message,
+            "generated_code": generated_code,
+            "action_message": action_message,
             "error_message": error_message,
             "is_admin_only": True
         }
@@ -7972,6 +8067,32 @@ async def admin_generate_license(request: Request):
 
     new_code = create_unique_license_code()
     redirect_url = "/admin/licenses?" + urlencode({"success": new_code})
+    return RedirectResponse(url=redirect_url, status_code=303)
+
+
+@app.post("/admin/licenses/{code}/deactivate")
+async def admin_deactivate_license_user(code: str, request: Request):
+    admin_gate = require_admin_user(request, failure_status_code=403)
+    if admin_gate is not None:
+        return admin_gate
+
+    success, message = deactivate_license_user(code)
+    redirect_url = "/admin/licenses?" + urlencode(
+        {"message": message} if success else {"error": message}
+    )
+    return RedirectResponse(url=redirect_url, status_code=303)
+
+
+@app.post("/admin/licenses/{code}/reactivate")
+async def admin_reactivate_license_user(code: str, request: Request):
+    admin_gate = require_admin_user(request, failure_status_code=403)
+    if admin_gate is not None:
+        return admin_gate
+
+    success, message = reactivate_license_user(code)
+    redirect_url = "/admin/licenses?" + urlencode(
+        {"message": message} if success else {"error": message}
+    )
     return RedirectResponse(url=redirect_url, status_code=303)
 
 
