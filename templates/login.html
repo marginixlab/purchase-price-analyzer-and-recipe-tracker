@@ -209,6 +209,43 @@
             text-decoration: underline;
         }
 
+        .auth-help-details {
+            display: grid;
+            justify-items: center;
+            gap: 8px;
+            margin-top: -2px;
+        }
+
+        .auth-help-email {
+            color: var(--text-secondary);
+            font-size: 0.84rem;
+            line-height: 1.4;
+        }
+
+        .auth-copy-btn {
+            padding: 6px 12px;
+            border-radius: 999px;
+            border: 1px solid var(--border-strong);
+            background: transparent;
+            color: var(--text-secondary);
+            font: inherit;
+            font-size: 0.8rem;
+            line-height: 1;
+            cursor: pointer;
+            transition: color 0.18s ease, border-color 0.18s ease, background-color 0.18s ease;
+        }
+
+        .auth-copy-btn:hover {
+            color: var(--text);
+            border-color: var(--border-soft);
+            background: rgba(255, 255, 255, 0.04);
+        }
+
+        .auth-copy-btn:focus-visible {
+            outline: 2px solid var(--primary-ring);
+            outline-offset: 2px;
+        }
+
         .auth-links {
             display: flex;
             justify-content: space-between;
@@ -288,6 +325,10 @@
                             class="auth-help-link"
                             href="mailto:marginixlab@gmail.com?subject=Need%20Help%20-%20MarginixLab"
                         >Need help?</a>
+                        <div class="auth-help-details">
+                            <div class="auth-help-email">marginixlab@gmail.com</div>
+                            <button id="copyHelpEmailButton" class="auth-copy-btn" type="button">Copy email</button>
+                        </div>
                         <a class="secondary-btn auth-submit" href="/demo">Try Demo</a>
                     </div>
                 </form>
@@ -307,10 +348,31 @@
             const passwordInput = document.getElementById("loginPassword");
             const button = document.getElementById("loginButton");
             const errorBox = document.getElementById("loginError");
+            const copyHelpEmailButton = document.getElementById("copyHelpEmailButton");
+            const helpEmail = "marginixlab@gmail.com";
 
             function setError(message) {
                 errorBox.textContent = message || "";
             }
+
+            async function copyHelpEmail() {
+                const originalLabel = copyHelpEmailButton.textContent;
+
+                try {
+                    await navigator.clipboard.writeText(helpEmail);
+                    copyHelpEmailButton.textContent = "Copied";
+                } catch (error) {
+                    copyHelpEmailButton.textContent = "Copy failed";
+                } finally {
+                    window.setTimeout(() => {
+                        copyHelpEmailButton.textContent = originalLabel;
+                    }, 1600);
+                }
+            }
+
+            copyHelpEmailButton.addEventListener("click", () => {
+                copyHelpEmail();
+            });
 
             form.addEventListener("submit", async (event) => {
                 event.preventDefault();
