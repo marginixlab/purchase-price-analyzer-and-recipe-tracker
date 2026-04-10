@@ -195,6 +195,20 @@
             justify-content: center;
         }
 
+        .auth-help-link {
+            display: block;
+            width: fit-content;
+            margin: 2px auto 0;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            text-decoration: none;
+        }
+
+        .auth-help-link:hover {
+            color: var(--muted-soft);
+            text-decoration: underline;
+        }
+
         .auth-links {
             display: flex;
             justify-content: space-between;
@@ -270,6 +284,10 @@
 
                     <div class="auth-actions">
                         <button id="loginButton" class="action-btn auth-submit" type="submit">Login</button>
+                        <a
+                            class="auth-help-link"
+                            href="mailto:marginixlab@gmail.com?subject=Need%20Help%20-%20MarginixLab"
+                        >Need help?</a>
                         <a class="secondary-btn auth-submit" href="/demo">Try Demo</a>
                     </div>
                 </form>
