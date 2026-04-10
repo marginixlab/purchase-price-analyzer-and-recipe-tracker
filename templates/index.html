@@ -4,17 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Purchase Price Analyzer</title>
+
+    <link rel="icon" type="image/png" href="{{ url_for('static', path='/favicon-32.png') }}">
+
     {% if not has_workspace_access %}
     <script>
         document.documentElement.classList.add("auth-pending");
     </script>
     {% endif %}
     <link rel="stylesheet" href="{{ url_for('static', path='/css/styles.css') }}">
-    <style>
-        #quoteCompareWorkspaceView[data-qc-ready="false"] #quoteCompareApp {
-            visibility: hidden;
-        }
-    </style>
 </head>
 <body data-active-view="{{ active_view }}" data-is-authenticated="{{ 'true' if is_authenticated else 'false' }}" data-demo-mode="{{ 'true' if demo_mode else 'false' }}" data-auth-user-id="{{ current_user_id if current_user_id is not none else '' }}" class="{% if not has_workspace_access %}app-booting{% endif %}">
     {% if not has_workspace_access %}
